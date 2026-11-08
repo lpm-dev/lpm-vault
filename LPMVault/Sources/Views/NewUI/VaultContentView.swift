@@ -350,13 +350,13 @@ struct VaultContentView: View {
 	/// environment's name, so every page's title starts at the same edge.
 	private func identity(_ derived: VaultContentDerivation) -> (title: String, counts: String) {
 		if case .matrix = mode {
-			return ("All variables",
+			return ("All Keys",
 				"\(derived.allKeys.count.counted("key")) · \(project.secretCount.counted("value")) · \(environments.count.counted("env"))")
 		}
-		let stored = project.secretCount(for: selectedEnvironment)
-		let declaredOnly = max(0, derived.environmentKeys.count - stored)
+		// Every key the table lists, and how many of them it doesn't set, which lpm.json declares.
+		let unset = derived.environmentUnsetCount
 		return (VaultProject.displayName(for: selectedEnvironment),
-			stored.counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) declared, not set"))
+			derived.environmentKeyCount.counted("key") + (unset == 0 ? "" : " · \(unset) not set"))
 	}
 
 	private func headerIdentity(_ derived: VaultContentDerivation, showsApproval: Bool, showsCounts: Bool = true) -> some View {
@@ -1038,10 +1038,10 @@ struct VaultContentView: View {
 	/// then names only the smart views' counts, then leaves them out. The key
 	/// count and unsaved changes always stay.
 	private func tableStatus(_ derived: VaultContentDerivation, unsaved: String?, counts: VaultSmartViewCounts) -> some View {
-		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
+		// Said as All Keys says it, so the header's totals aren't repeated in other words.
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
-			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) declared, not set"))
+			: "\(derived.environmentKeys.count) of \(derived.environmentKeyCount.counted("key")) shown")
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
 		let details: [Text] = []
 		return ViewThatFits(in: .horizontal) {
@@ -1070,7 +1070,7 @@ struct VaultContentView: View {
 				Text(unsaved).foregroundStyle(VaultPalette.orangeTintText)
 			}
 			Spacer(minLength: 0)
-			// All variables counts these in its filter chips; elsewhere they're the project's, and say so.
+			// All Keys counts these in its filter chips; elsewhere they're the project's, and say so.
 			if links != .hidden, mode != .matrix {
 				VaultSmartViewLinks(counts: counts, scope: "Project", compact: links == .compact) { view in
 					mode = .matrix

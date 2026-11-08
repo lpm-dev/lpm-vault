@@ -71,8 +71,9 @@ struct ConnectCLISheet: View {
 				// Numbered steps, in the order they're done: the folder only while none is linked.
 				VStack(alignment: .leading, spacing: 22) {
 					if status == .noFolder {
-						VStack(alignment: .leading, spacing: 8) {
+						stepGroup {
 							step(1, "Choose the project folder")
+						} content: {
 							missingFolderNotice
 						}
 					}
@@ -167,12 +168,13 @@ struct ConnectCLISheet: View {
 	}
 
 	private func projectSection(number: Int) -> some View {
-		VStack(alignment: .leading, spacing: 8) {
+		stepGroup {
 			HStack(spacing: 8) {
 				step(number, "Add the vault field to lpm.json")
 				Spacer()
 				VaultSegmentedPicker(title: "How to add the vault field", options: SetupMode.allCases.map { ($0, $0.title) }, selection: $setupMode)
 			}
+		} content: {
 			vaultIDSection
 			VStack(alignment: .leading, spacing: 0) {
 				HStack(spacing: 8) {
@@ -343,7 +345,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private func terminalSection(number: Int) -> some View {
-		VStack(alignment: .leading, spacing: 8) {
+		stepGroup {
 			HStack(alignment: .center, spacing: 8) {
 				step(number, "Use it from the terminal")
 				Text(status == .noFolder ? "Runs once the folder is linked" : "Runs in the linked folder")
@@ -351,6 +353,7 @@ struct ConnectCLISheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
 			}
+		} content: {
 			let commands = showsAllCommands ? guidance.commands : Array(guidance.commands.prefix(1))
 			VStack(spacing: 0) {
 				ForEach(Array(commands.enumerated()), id: \.element) { index, command in
@@ -460,6 +463,19 @@ struct ConnectCLISheet: View {
 	// MARK: - Actions
 
 	/// A step's number and title, in the order the steps are done.
+	/// A step: its numbered title, then what it holds, indented to the title's
+	/// edge so each step plainly owns what's under it.
+	private func stepGroup<Header: View, Content: View>(@ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			header()
+			VStack(alignment: .leading, spacing: 8) { content() }
+				.padding(.leading, Self.stepIndent)
+		}
+	}
+
+	/// The step number's badge and the gap after it, where the step's title starts.
+	private static let stepIndent: CGFloat = 18 + 8
+
 	private func step(_ number: Int, _ title: String) -> some View {
 		HStack(spacing: 8) {
 			Text("\(number)")

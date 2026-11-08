@@ -127,6 +127,14 @@ struct VaultAppearanceTests {
 		}
 	}
 
+	@Test("an off switch's edge keeps 3:1 against the cards and pages switches sit on, in both appearances",
+		arguments: [ColorScheme.light, .dark])
+	func switchBorderContrast(scheme: ColorScheme) {
+		for surface in [VaultPalette.card, VaultPalette.content, VaultPalette.inspector] {
+			#expect(Self.contrast(VaultPalette.switchOffBorder, on: surface, in: scheme) >= 3, "The switch's edge on \(surface) in \(scheme)")
+		}
+	}
+
 	@Test("a text field's edge keeps 3:1 against the field and the surfaces fields sit on, in both appearances",
 		arguments: [ColorScheme.light, .dark])
 	func inputBorderContrast(scheme: ColorScheme) {
@@ -299,7 +307,7 @@ extension SheetInteractionTests {
 			let suffix = scheme == .dark ? "dark" : "light"
 			try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 				size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
-				expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
+				expectedText: ["All Keys", "CLI", "API_URL", "PORT", "protected-api"])
 			try await render(VaultAppearanceSettingsSection().environment(settings),
 				size: CGSize(width: 520, height: 120), scheme: scheme, name: "settings-appearance-\(suffix)",
 				expectedText: ["Theme", "System", "Light", "Dark"])
@@ -309,7 +317,8 @@ extension SheetInteractionTests {
 			try await render(VaultGeneralSettingsSection().environment(VaultQuitSettings(defaults: defaults)),
 				size: CGSize(width: 520, height: 120), scheme: scheme, name: "settings-general-\(suffix)",
 				expectedText: ["Quit shortcut", "Direct", "Double press", "Hold"])
-			for (category, text) in [(VaultSettingsCategory.general, "Quit shortcut"), (.appearance, "Theme"), (.account, "SERVER"), (.updates, "Installed version")] {
+			for (category, text) in [(VaultSettingsCategory.general, "Quit shortcut"), (.appearance, "Theme"), (.account, "SERVER"), (.updates, "Installed version"),
+				(.platforms, "connects in your browser")] {
 				try await render(VaultSettingsOverlay(store: store, category: category).environment(settings).environment(UpdateChecker())
 					.environment(VaultQuitSettings(defaults: defaults)),
 					size: CGSize(width: 1040, height: 700), scheme: scheme, name: "settings-\(category.rawValue)-\(suffix)",

@@ -85,7 +85,7 @@ struct VaultProjectSettingsView: View {
 		HStack(spacing: 12) {
 			// The way back reads as a step on the path, lighter than the page it leads from, on the title's baseline.
 			HStack(alignment: .firstTextBaseline, spacing: 7) {
-				VaultBackTitle(title: "All variables", action: onBack)
+				VaultBackTitle(title: "All Keys", action: onBack)
 				Image(systemName: "chevron.right")
 					.font(.system(size: 10, weight: .semibold))
 					.foregroundStyle(VaultPalette.textFaint)
@@ -446,7 +446,7 @@ private struct VaultBackTitle: View {
 		.buttonStyle(VaultPressStyle(cornerRadius: 5))
 		.vaultPointingHand()
 		.onHover { hovering = $0 }
-		.help("Back to All variables")
-		.accessibilityLabel("Back to all variables")
+		.help("Back to All Keys")
+		.accessibilityLabel("Back to All Keys")
 	}
 }

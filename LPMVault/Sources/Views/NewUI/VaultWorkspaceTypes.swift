@@ -23,7 +23,7 @@ enum VaultWorkspaceMode: Equatable {
 }
 
 enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
-  case all = "All Keys"
+  case all = "All"
   case drift = "Drift"
   case missing = "Missing"
   /// Keys whose values fail their lpm.json rules.
@@ -876,6 +876,11 @@ struct VaultContentDerivation: Equatable {
   let allKeys: [String]
   let filteredKeys: [String]
   let environmentKeys: [String]
+  /// How many keys the environment's table lists before a search narrows
+  /// it: its stored keys, and those lpm.json declares that it doesn't set.
+  let environmentKeyCount: Int
+  /// How many of those it doesn't set.
+  let environmentUnsetCount: Int
   /// Every visible value that can be masked is revealed.
   let allVisibleRevealed: Bool
   /// Some visible value can be masked; public values always show.
@@ -933,10 +938,14 @@ struct VaultContentDerivation: Equatable {
         filteredKeys = matchingKeys
       }
       environmentKeys = []
+      environmentKeyCount = 0
+      environmentUnsetCount = 0
     case .environment:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       let extra = unstoredKeys.filter { project.value(for: $0, in: selectedEnvironment) == nil }
+      environmentUnsetCount = extra.count
+      environmentKeyCount = project.secretCount(for: selectedEnvironment) + extra.count
       if extra.isEmpty {
         let ascendingKeys = snapshot.allSecretKeys
         let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment, sortOrder)
@@ -969,6 +978,8 @@ struct VaultContentDerivation: Equatable {
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []
+      environmentKeyCount = 0
+      environmentUnsetCount = 0
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
     hasMaskableValues = visibleKeys.contains { !publicKeys.contains($0) }

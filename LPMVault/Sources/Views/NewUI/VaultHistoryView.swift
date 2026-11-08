@@ -117,8 +117,10 @@ struct VaultHistoryView: View {
 					separated: index == 0, isChecked: current == environment.name)
 			}
 		return VaultBarMenu(accessibilityLabel: "Environment, \(current ?? "All Environments")", rows: rows, onChoose: setEnvironment) {
+			// Regular, as the key search beside it: a filter, lighter than the rows it narrows.
 			Text(current ?? "All Environments")
-				.font(.system(size: 12.5, weight: .medium))
+				.font(.system(size: 12.5))
+				.foregroundStyle(VaultPalette.textSecondary)
 		}
 	}
 
@@ -137,7 +139,7 @@ struct VaultHistoryView: View {
 			Task { await history.reload() }
 		} label: {
 			HStack(spacing: 6) {
-				Text(title).font(.system(size: 12.5, weight: .medium))
+				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textSecondary)
 				// A count says how many changes the filter leaves, so it shows only once one does.
 				if history.filter.source != nil, let selectedCount {
 					Text("\(selectedCount)")

@@ -79,19 +79,16 @@ struct VaultSettingsContent: View {
 					if let plan = user.plan {
 						VaultTagBadge(text: plan.uppercased(), foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint)
 					}
-				}
-			}
-			serverSettings
-			settingsSection("ACTIONS") {
-				HStack(spacing: 8) {
+					// The account's own actions, on its row rather than a card of their own.
 					VaultBarButton(systemImage: "globe", title: "Manage on lpm.dev") {
 						if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
 					}
-					VaultBarButton(systemImage: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
+					VaultBarButton(title: "Sign Out…") {
 						showLogoutConfirmation = true
 					}
 				}
 			}
+			serverSettings
 		} else {
 			settingsSection("ACCOUNT") {
 				VStack(alignment: .leading, spacing: 12) {

@@ -54,7 +54,7 @@ extension SheetInteractionTests {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
-			#expect(try await host.waitForText("All variables"))
+			#expect(try await host.waitForText("All Keys"))
 			#expect(fixture.store.selectedProjectCliAccess == .automatic)
 			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.label?.hasPrefix("CLI approval") == true },
 				"The header names no approval that's set as it should be")
@@ -82,6 +82,10 @@ extension SheetInteractionTests {
 			defer { card.window.close() }
 			#expect(try await card.waitForText("1 key fails its rules"))
 			#expect(try await !card.text().contains("invalid"), "Not again as invalid keys")
+			let order = card.lines().map(\.text)
+			let files = order.firstIndex { $0.contains("env file") }
+			let failing = order.firstIndex { $0.contains("fails its rules") }
+			#expect(files != nil && failing != nil && files! < failing!, "Facts first, then what needs attention: \(order)")
 		}
 
 		@Test("Settings' menu shows each part and the header names it; Esc or a click on the dimmed workspace closes it")
@@ -228,7 +232,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
 			defer { host.window.close() }
-			#expect(try await host.waitUntil { selected(in: host) == ["All Keys"] })
+			#expect(try await host.waitUntil { selected(in: host) == ["All"] })
 			try #require(chip("Drift, 1", in: host)).press()
 			#expect(try await host.waitUntil { selected(in: host) == ["Drift, 1"] })
 			_ = try await host.clickSidebarEnvironment(".env")
@@ -301,7 +305,7 @@ extension SheetInteractionTests {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox && $0.says("Reveal all values") }
 		}
 
-		private static let chips: Set<String> = ["All Keys", "Drift, 1", "Missing, 1", "Invalid, 1"]
+		private static let chips: Set<String> = ["All", "Drift, 1", "Missing, 1", "Invalid, 1"]
 
 		private func chip<V: View>(_ name: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .button && $0.label == name }

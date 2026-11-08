@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A view of a project's keys that need attention, which All variables shows filtered.
+/// A view of a project's keys that need attention, which All Keys shows filtered.
 enum VaultSmartView: CaseIterable {
 	/// Keys whose values differ between environments.
 	case drift
@@ -91,7 +91,7 @@ struct VaultSmartViewCounts: Equatable {
 /// page, so a link's number is how many keys the view it opens lists.
 struct VaultSmartViewLinks: View {
 	let counts: VaultSmartViewCounts
-	/// The smart view All variables shows now, which its link marks.
+	/// The smart view All Keys shows now, which its link marks.
 	var current: VaultWorkspaceFilter?
 	/// Whose keys the counts are, said before them, such as "Project" below one environment.
 	var scope: String?

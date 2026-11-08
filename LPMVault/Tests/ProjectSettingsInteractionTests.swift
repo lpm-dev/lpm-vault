@@ -88,7 +88,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.keychain.envStorage["demo"]?.name == "renamed-project" })
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
-			try await host.click("All variables")
+			try await host.click("All Keys")
 			#expect(try await host.waitForText("New Key", exactly: true))
 		}
 
@@ -130,7 +130,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try host.choose("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
-			try await host.click("All variables")
+			try await host.click("All Keys")
 			#expect(try await host.waitForText("New Key", exactly: true))
 			host.window.makeFirstResponder(nil)
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)

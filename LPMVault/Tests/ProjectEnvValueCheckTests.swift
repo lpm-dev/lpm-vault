@@ -366,5 +366,8 @@ struct VaultValueCheckPresentationTests {
 		#expect(derive(.environment("production"), unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["API_TOKEN", "DATABASE_URL", "PORT"])
 		#expect(derive(.environment("production"), order: .descending, unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["PORT", "DATABASE_URL", "API_TOKEN"])
 		#expect(derive(.environment("production"), search: "port", unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["PORT"])
+		let counted = derive(.environment("production"), search: "port", unstored: ["API_TOKEN", "PORT"])
+		#expect(counted.environmentKeyCount == 3 && counted.environmentUnsetCount == 2,
+			"Every key the table lists before the search, and those it doesn't set")
 	}
 }

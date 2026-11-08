@@ -91,7 +91,8 @@ enum VaultPalette {
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
 	/// A switch's track while it's off: visible on every surface, with its own edge.
 	static let switchOff = adaptive(light: 0xD9D8DF, dark: 0x3A3A3F)
-	static let switchOffBorder = adaptive(light: 0xBEBDC6, dark: 0x4A4A50)
+	/// An off switch's edge: 3:1 against the card it sits on, as a control's boundary needs, the same as a field's.
+	static let switchOffBorder = adaptive(light: 0x8E8E99, dark: 0x6E6E78)
 	/// Darkens a control while it's pressed, over whatever fill it has.
 	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
 	/// A default button while it's off: its accent, faded, so it keeps its place
@@ -99,7 +100,7 @@ enum VaultPalette {
 	static let accentOff = adaptive(light: 0x5E5CE6, dark: 0x5E5CE6, lightOpacity: 0.4, darkOpacity: 0.2)
 	static let accentOffText = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightOpacity: 0.8, darkOpacity: 0.36)
 	/// What dims the window behind an overlay, such as Settings.
-	static let scrim = adaptive(light: 0x1C1C1E, dark: 0x000000, lightOpacity: 0.32, darkOpacity: 0.5)
+	static let scrim = adaptive(light: 0x1C1C1E, dark: 0x000000, lightOpacity: 0.2, darkOpacity: 0.5)
 
 	static let avatarNeutral = adaptive(light: 0xE2E1EA, dark: 0x2E2E33)
 	static let avatarNeutralForeground = adaptive(light: 0x55546A, dark: 0xFFFFFF, darkOpacity: 0.7)
@@ -1120,7 +1121,7 @@ struct VaultInitialsAvatar: View {
 			.frame(width: size, height: size)
 			.background {
 				if square {
-					RoundedRectangle(cornerRadius: size * 0.28).fill(VaultPalette.accentTint)
+					RoundedRectangle(cornerRadius: size * 0.22).fill(VaultPalette.accentTint)
 				} else {
 					Circle().fill(VaultPalette.avatarNeutral)
 				}

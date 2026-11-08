@@ -30,16 +30,18 @@ struct VaultProjectHoverCard: View {
 			}
 			.padding(.bottom, 12)
 
+			// Facts about the project above the line; what needs attention below it, the worst first.
+			let schemaLine = schema
+			let fails = schemaLine.symbol == VaultSmartView.invalid.symbol
 			VStack(alignment: .leading, spacing: 8) {
 				line(approval)
-				line(schema)
+				if !fails { line(schemaLine) }
 				line(changed)
+				line(.init(symbol: "doc", text: project.environmentNames.count.counted("env file")))
 			}
 			VaultHairline().padding(.vertical, 11)
-			// The worst first, as the matrix's marks are: missing, then drifting. Keys that fail
-			// lpm.json are counted once, on its line above.
 			VStack(alignment: .leading, spacing: 8) {
-				line(.init(symbol: "doc", text: project.environmentNames.count.counted("env file")))
+				if fails { line(schemaLine) }
 				if let snapshot = store.workspaceSnapshots[project.id] {
 					line(.init(symbol: VaultSmartView.missing.symbol, text: VaultSmartView.missing.summary(snapshot.missingKeyCount),
 						tint: snapshot.missingKeyCount > 0 ? VaultSmartView.missing.tint : nil))

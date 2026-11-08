@@ -146,7 +146,7 @@ extension SheetInteractionTests {
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
-			@Test("drift marks every drifting key in All variables at rest, however many drift, at the key cell's trailing edge apart from the key, and not in one environment's table",
+			@Test("drift marks every drifting key in All Keys at rest, however many drift, at the key cell's trailing edge apart from the key, and not in one environment's table",
 				arguments: [VaultAppearance.light, .dark])
 			func driftMarkShowsWhereItHelps(appearance: VaultAppearance) async throws {
 				// Every key drifts: masked values look alike, so the mark is how a row says it.
@@ -292,7 +292,7 @@ extension SheetInteractionTests {
 						try await host.clickSidebarEnvironment(".env.production")
 						#expect(try await host.waitForText("ACTIONS", exactly: true))
 						try await host.click("Workspace")
-						#expect(try await host.waitForText("All variables"))
+						#expect(try await host.waitForText("All Keys"))
 					}
 					try await host.settle()
 					let image = try host.snapshot(host.view)
@@ -310,7 +310,7 @@ extension SheetInteractionTests {
 				}
 			}
 
-			@Test("All variables' chips and the status bar of every other page open the smart views, each showing only its keys")
+			@Test("All Keys' chips and the status bar of every other page open the smart views, each showing only its keys")
 			func statusBarSmartViews() async throws {
 				let (store, _) = makeStore(environments: ["default": ["DRIFTS": "a", "LACKS": "b"], "production": ["DRIFTS": "z"]])
 				defer { store.lock() }
@@ -330,7 +330,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("ACTIONS", exactly: true))
 				#expect(try await host.waitForText("1 key missing", footer: footer))
 				try await host.click("1 key differs")
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 				#expect(try await host.waitForTextToDisappear("LACKS"))
 				#expect(try await host.text().contains("DRIFTS"))
 
@@ -338,7 +338,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("editing unavailable", footer: footer))
 				#expect(try await host.waitForText("1 key differs", footer: footer))
 				try await host.click("1 key missing")
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 				#expect(try await host.waitForTextToDisappear("DRIFTS"))
 				#expect(try await host.text().contains("LACKS"))
 			}
@@ -405,7 +405,7 @@ extension SheetInteractionTests {
 			if singleEnvironment {
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
 				try await host.settle()
 				try await host.clickSidebarEnvironment(".env")
@@ -415,7 +415,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 			}
 			try await host.settle()
 			let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
@@ -481,7 +481,7 @@ extension SheetInteractionTests {
 				try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
 				#expect(try await host.waitForText("VALUES", exactly: true))
 			}
-			let title = try await host.drawnFrame(saying: "All variables")
+			let title = try await host.drawnFrame(saying: "All Keys")
 			// The inspector takes the sidebar's place in a window this narrow, so the table can start at the window's edge.
 			let keyColumn = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0, y: 0.6, width: 0.65, height: 0.25))
 			#expect(abs(keyColumn.minX - title.minX) < 3, "KEY starts at \(keyColumn.minX), the title at \(title.minX)")
@@ -902,7 +902,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(!host.lines().contains { $0.text.contains("Select an env project") })
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
-			#expect(try await host.waitForText("All variables"))
+			#expect(try await host.waitForText("All Keys"))
 		}
 
 		@Test("Settings shows over the workspace, which keeps its project and environment, and closing it returns to them as they were", arguments: [false, true])

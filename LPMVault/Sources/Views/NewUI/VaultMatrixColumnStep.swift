@@ -20,7 +20,8 @@ struct VaultColumnStepButton: View {
 		var text: String {
 			switch self {
 			case .named(let name): name
-			case .counted(let count): "+\(count.counted("env"))"
+			// No plus, which the sidebar's New Environment uses: this goes to columns that exist.
+			case .counted(let count): "\(count) more"
 			}
 		}
 	}

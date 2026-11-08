@@ -481,7 +481,7 @@ extension ProjectEnvSchemaRule {
 	func availability(of field: Field, in context: Context) -> Availability {
 		switch field {
 		case .required: .init(isAvailable: true, hint: "every environment")
-		case .requiredIn: .init(isAvailable: true, hint: "scopes")
+		case .requiredIn: .init(isAvailable: true, hint: "where you choose")
 		case .requiredWhen:
 			context.declaredKeys?.contains(where: { $0 != context.key }) == false
 				? .init(isAvailable: false, hint: "No other keys") : .init(isAvailable: true, hint: "another key")
@@ -495,7 +495,7 @@ extension ProjectEnvSchemaRule {
 		case .pattern: .init(isAvailable: true, hint: "regular expression")
 		case .allowedValues: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "enum")
 		case .defaultValue: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "value")
-		case .defaultsIn: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "per scope")
+		case .defaultsIn: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "per environment or stage")
 		case .secret:
 			if context.publicPrefix != nil { .init(isAvailable: false, hint: "Not for public keys") }
 			else if let source = context.comparedBy.first { .init(isAvailable: false, hint: "\(source) compares its value") }

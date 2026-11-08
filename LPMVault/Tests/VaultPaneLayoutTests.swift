@@ -480,9 +480,9 @@ struct VaultTableColumnLayoutTests {
 		typealias Step = VaultColumnStepButton
 		#expect(Step.content(nearest: ".env.staging", count: 1, room: 200) == .named(".env.staging"))
 		#expect(Step.content(nearest: ".env.staging", count: 2, room: 70) == .counted(2))
-		#expect(Step.Content.counted(1).text == "+1 env" && Step.Content.counted(2).text == "+2 envs")
+		#expect(Step.Content.counted(1).text == "1 more" && Step.Content.counted(2).text == "2 more")
 		#expect(Step.accessibilityLabel(.named(".env.staging"), nearest: ".env.staging") == "Show .env.staging")
-		#expect(Step.accessibilityLabel(.counted(2), nearest: ".env.staging") == "+2 envs: show .env.staging",
+		#expect(Step.accessibilityLabel(.counted(2), nearest: ".env.staging") == "2 more: show .env.staging",
 			"Its name holds the words it shows")
 	}
 

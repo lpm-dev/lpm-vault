@@ -762,7 +762,7 @@ struct VaultAccountSwitcher: View {
 			}
 			VaultHairline().padding(.horizontal, 8).padding(.vertical, 6)
 			if store.isLoggedIn {
-				menuRow("Import Projects from lpm.dev…", systemImage: "icloud.and.arrow.down", choice: .importProjects) {
+				menuRow("Import from lpm.dev…", systemImage: "icloud.and.arrow.down", choice: .importProjects) {
 					isPresented = false
 					onImport()
 				}
@@ -846,6 +846,7 @@ struct VaultAccountSwitcher: View {
 					.frame(width: 24)
 					.accessibilityHidden(true)
 				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textPrimary)
+					.lineLimit(1)
 				Spacer(minLength: 4)
 			}
 			.padding(.horizontal, 8)

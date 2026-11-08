@@ -28,9 +28,10 @@ struct PlatformsView: View {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 20) {
 					if !showsHeader {
-						Text(Self.tokensNote)
+						Text(Self.tokensNote + ". " + Self.connectingNote)
 							.font(.system(size: 12))
 							.foregroundStyle(VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
 					}
 					if let notice = platforms.notice { noticeBanner(notice) }
 					connectedSection
@@ -96,6 +97,8 @@ struct PlatformsView: View {
 	}
 
 	private static let tokensNote = "Tokens stay in this Mac's Keychain"
+	/// How every platform connects, said once above them rather than on each card.
+	static let connectingNote = "Each platform connects in your browser, except Coolify, which takes an API token you create."
 
 	private var header: some View {
 		HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -455,7 +458,7 @@ struct PlatformsView: View {
 				}
 			}
 			Text(browser.map { Self.browserGuidance($0, waiting: isConnectingHere && platforms.phase == .waitingForBrowser) }
-				?? "Connects a team on your Coolify instance with an API token you create there.")
+				?? "Connects a team on your Coolify instance.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.lineSpacing(2)
@@ -493,18 +496,19 @@ struct PlatformsView: View {
 			"Finish in your browser: choose the Vercel team and the projects LPM Vault can reach, then come back here."
 		case (.netlify, true):
 			"Finish in your browser: authorize LPM Vault on Netlify, then come back here."
+		// What each one reaches, which differs; how they connect is said once above them.
 		case (.netlify, false):
-			"Opens Netlify in your browser to authorize LPM Vault. It reaches the sites of every team your Netlify account belongs to."
+			"Reaches the sites of every team your Netlify account belongs to."
 		case (.vercel, false):
-			"Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account."
+			"Installs the LPM Vault integration for a team or your personal account."
 		case (.github, true):
 			"Finish in your browser: authorize LPM Vault on GitHub, then come back here."
 		case (.github, false):
-			"Opens GitHub in your browser to authorize LPM Vault. It reaches the repositories you can reach on the accounts where its GitHub App is installed."
+			"Reaches your repositories on the accounts where its GitHub App is installed."
 		case (.cloudflare, true):
 			"Finish in your browser: choose the Cloudflare accounts LPM Vault can reach, approve it, then come back here."
 		case (.cloudflare, false):
-			"Opens Cloudflare in your browser to approve LPM Vault for the accounts you choose. It publishes your Workers' runtime secrets."
+			"Publishes Workers' runtime secrets for the accounts you approve."
 		}
 	}
 

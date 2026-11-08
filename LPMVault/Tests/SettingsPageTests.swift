@@ -110,13 +110,15 @@ extension SheetInteractionTests {
 			let signedIn = store(signedIn: true)
 			let host = menu(signedIn, isPresented: Binding(get: { shown }, set: { shown = $0 }), onImport: { imported = true })
 			defer { host.window.close() }
-			try await host.click("Import Projects from lpm.dev…")
+			let row = try await host.drawnFrame(saying: "Import from lpm.dev…")
+			#expect(row.height < 18, "One line, as every menu row: \(row)")
+			try await host.click("Import from lpm.dev…")
 			#expect(try await host.waitUntil { imported && !shown })
 
 			let signedOut = menu(store(signedIn: false))
 			defer { signedOut.window.close() }
 			#expect(try await signedOut.waitForText("Sign In…"))
-			#expect(try await !signedOut.text().contains("Import Projects"))
+			#expect(try await !signedOut.text().contains("Import from"))
 		}
 
 		@Test("the menu lists the person's own vault, then their organizations', then importing, the account on lpm.dev and signing out")
@@ -126,7 +128,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Manage Account on lpm.dev"))
 			let order = host.lines().map(\.text)
-			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Import Projects from lpm.dev…", "Manage Account on lpm.dev", "Sign Out…"].map { name in
+			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Import from lpm.dev…", "Manage Account on lpm.dev", "Sign Out…"].map { name in
 				order.firstIndex { $0.contains(name) }
 			}
 			#expect(positions.allSatisfy { $0 != nil } && positions == positions.sorted { ($0 ?? 0) < ($1 ?? 0) }, "\(order)")
