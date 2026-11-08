@@ -36,12 +36,10 @@ struct VaultProjectHoverCard: View {
 				line(changed)
 			}
 			VaultHairline().padding(.vertical, 11)
-			// The worst first, as the matrix's marks are: invalid, missing, then drifting.
+			// The worst first, as the matrix's marks are: missing, then drifting. Keys that fail
+			// lpm.json are counted once, on its line above.
 			VStack(alignment: .leading, spacing: 8) {
 				line(.init(symbol: "doc", text: project.environmentNames.count.counted("env file")))
-				if let invalid = invalidKeyCount, invalid > 0 {
-					line(.init(symbol: VaultSmartView.invalid.symbol, text: VaultSmartView.invalid.summary(invalid), tint: VaultSmartView.invalid.tint))
-				}
 				if let snapshot = store.workspaceSnapshots[project.id] {
 					line(.init(symbol: VaultSmartView.missing.symbol, text: VaultSmartView.missing.summary(snapshot.missingKeyCount),
 						tint: snapshot.missingKeyCount > 0 ? VaultSmartView.missing.tint : nil))
@@ -86,11 +84,6 @@ struct VaultProjectHoverCard: View {
 		case .automatic?: .init(symbol: "lock.open", text: "CLI approval off")
 		case nil: .init(symbol: "questionmark.circle", text: "CLI approval can't be read")
 		}
-	}
-
-	/// Keys whose stored values fail lpm.json, once they've been checked.
-	private var invalidKeyCount: Int? {
-		store.valueChecks[project.id].map { Set($0.environments.values.flatMap(\.problems.keys)).count }
 	}
 
 	private var schema: Line {

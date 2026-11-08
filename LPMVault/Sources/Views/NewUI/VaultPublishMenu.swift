@@ -39,10 +39,10 @@ struct VaultPublishMenu: View {
 		.frame(width: Self.width)
 		.background {
 			RoundedRectangle(cornerRadius: 10)
-				.fill(VaultPalette.control)
+				.fill(VaultPalette.popover)
 				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
 		}
-		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.popoverBorder, lineWidth: 1) }
 		.background {
 			VaultMenuKeys { key in
 				switch key {

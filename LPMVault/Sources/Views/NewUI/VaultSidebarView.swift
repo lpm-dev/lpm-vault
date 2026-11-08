@@ -774,7 +774,7 @@ struct VaultAccountSwitcher: View {
 			}
 			VaultHairline().padding(.horizontal, 8).padding(.vertical, 6)
 			if store.isLoggedIn {
-				menuRow("Manage account on lpm.dev", systemImage: "arrow.up.right.square", choice: .manage) {
+				menuRow("Manage Account on lpm.dev", systemImage: "arrow.up.right.square", choice: .manage) {
 					if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
 					isPresented = false
 				}
@@ -792,10 +792,10 @@ struct VaultAccountSwitcher: View {
 		.padding(6)
 		.background {
 			RoundedRectangle(cornerRadius: 10)
-				.fill(VaultPalette.control)
+				.fill(VaultPalette.popover)
 				.shadow(color: VaultPalette.shadow.opacity(0.12), radius: 10, y: 4)
 		}
-		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.popoverBorder, lineWidth: 1) }
 		.onExitCommand { isPresented = false }
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Account menu")

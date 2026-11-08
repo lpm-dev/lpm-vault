@@ -1104,19 +1104,12 @@ private struct VaultSchemaKeyEditor: View {
 	@ViewBuilder
 	private func removeButton(_ field: Field) -> some View {
 		if field != .client {
-			Button {
+			VaultRowIconButton(systemImage: "xmark", help: "Remove rule", label: "Remove \(field.title)", disabled: !canEdit, compact: true, quiet: true) {
 				update { $0.remove(field) }
 				shownFields.remove(field)
-			} label: {
-				Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(VaultPalette.textFaint)
-					.frame(width: 18, height: 18).contentShape(Rectangle())
 			}
-			.buttonStyle(.plain)
-			.disabled(!canEdit)
-			.help("Remove rule")
-			.accessibilityLabel("Remove \(field.title)")
 		} else {
-			Color.clear.frame(width: 18, height: 18)
+			Color.clear.frame(width: 24, height: 24)
 		}
 	}
 

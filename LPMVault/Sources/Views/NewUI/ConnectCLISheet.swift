@@ -237,7 +237,7 @@ struct ConnectCLISheet: View {
 		if let example = ProjectCLITaskExample(vaultId: projectId, environments: project?.environmentNames ?? [], selectedEnvironment: store.selectedEnvironment, configuration: configuration) {
 			VStack(alignment: .leading, spacing: 0) {
 				Button { showsTaskExample.toggle() } label: {
-					Label("Optional task environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
+					Label("Optional Task Environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
 						.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
 				}.buttonStyle(.plain).foregroundStyle(VaultPalette.textSecondary)
 					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
@@ -366,9 +366,13 @@ struct ConnectCLISheet: View {
 			if status != .noFolder, let warning = guidance.warning {
 				VaultInlineWarning(text: warning)
 			}
+			// The commands' caption, under them as step 2's is under its JSON, before the disclosure that opens more.
+			Text("An explicit --env overrides a script's own environment.")
+				.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
 			let more = guidance.commands.count - 1
 			if more > 0 {
-				// A disclosure, as Optional task environments is, so it reads as something that opens.
+				// A disclosure, as Optional Task Environments is, so it reads as something that opens.
 				Button { showsAllCommands.toggle() } label: {
 					Label(showsAllCommands ? "Show Fewer" : "Show \(more) More \(more == 1 ? "Command" : "Commands")",
 						systemImage: showsAllCommands ? "chevron.down" : "chevron.right")
@@ -379,9 +383,6 @@ struct ConnectCLISheet: View {
 				.buttonStyle(.plain)
 				.accessibilityValue(showsAllCommands ? "Expanded" : "Collapsed")
 			}
-			Text("An explicit --env overrides a script's own environment.")
-				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-				.fixedSize(horizontal: false, vertical: true)
 		}
 	}
 

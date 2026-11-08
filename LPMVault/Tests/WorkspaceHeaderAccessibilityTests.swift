@@ -70,6 +70,20 @@ extension SheetInteractionTests {
 			#expect(try await fixing.waitForText("Delete Locally"))
 		}
 
+		@Test("the project card counts the keys that fail lpm.json once, on its lpm.json line")
+		func projectCardCountsFailuresOnce() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { fixture.store.valueChecks["header"] != nil })
+			let project = try #require(fixture.store.projects.first { $0.id == "header" })
+			let card = SheetTestHost(VaultProjectHoverCard(store: fixture.store, project: project), size: NSSize(width: 300, height: 260))
+			defer { card.window.close() }
+			#expect(try await card.waitForText("1 key fails lpm.json"))
+			#expect(try await !card.text().contains("invalid"), "Not again as invalid keys")
+		}
+
 		@Test("the header's Settings button opens the project's settings")
 		func settingsButton() async throws {
 			let fixture = try makeFixture()

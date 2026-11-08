@@ -426,9 +426,9 @@ private struct VaultPopoverCard: View {
 
 	var body: some View {
 		content
-			.background(VaultPalette.control)
+			.background(VaultPalette.popover)
 			.clipShape(RoundedRectangle(cornerRadius: 10))
-			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.popoverBorder, lineWidth: 1) }
 			.fixedSize()
 			.onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
 	}

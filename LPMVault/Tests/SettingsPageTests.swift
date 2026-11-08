@@ -91,9 +91,9 @@ extension SheetInteractionTests {
 			let store = store(signedIn: true)
 			let host = menu(store)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("Manage account on lpm.dev"))
+			#expect(try await host.waitForText("Manage Account on lpm.dev"))
 			let order = host.lines().map(\.text)
-			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Manage account on lpm.dev", "Sign Out…"].map { name in
+			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Manage Account on lpm.dev", "Sign Out…"].map { name in
 				order.firstIndex { $0.contains(name) }
 			}
 			#expect(positions.allSatisfy { $0 != nil } && positions == positions.sorted { ($0 ?? 0) < ($1 ?? 0) }, "\(order)")

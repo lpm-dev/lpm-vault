@@ -46,7 +46,6 @@ struct VaultCliApprovalLink: View {
 				.font(VaultTypography.tabular(12))
 				.foregroundStyle(VaultPalette.orangeTintText)
 				.underline(hovering)
-				.padding(.horizontal, 3)
 				.frame(height: 22)
 				.contentShape(Rectangle())
 				.vaultHoverAnimation(hovering)

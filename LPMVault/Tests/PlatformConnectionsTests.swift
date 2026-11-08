@@ -1560,7 +1560,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { !opened.urls.isEmpty })
 			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
 			try host.scrollToEnd()
-			try await host.click("How to remove LPM Vault's access")
+			try await host.click("How to Remove LPM Vault's Access")
 			// The steps open below the end of the page, so it scrolls to them as they arrive.
 			#expect(try await host.waitUntil {
 				try host.scrollToEnd()

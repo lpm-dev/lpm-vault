@@ -161,9 +161,11 @@ struct VaultTitleBarView: View {
 					.lineLimit(1)
 
 				if case .environment(let environment) = mode {
-					Text("/")
+					// The same › as every other path in the app, such as lpm.json › envSchema.
+					Text("›")
 						.font(.system(size: 13))
 						.foregroundStyle(VaultPalette.textFaint)
+						.accessibilityHidden(true)
 					Text(VaultProject.displayName(for: environment))
 						.font(.system(size: 13))
 						.foregroundStyle(VaultPalette.textTertiary)

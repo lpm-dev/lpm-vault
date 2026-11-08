@@ -464,7 +464,7 @@ extension SheetInteractionTests {
 			for expected in [
 				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add the vault field to lpm.json",
 				"Create lpm.json if it's missing, and keep any fields it has.",
-				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Close",
+				"Optional Task Environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Close",
 			] {
 				#expect(text.contains(expected), "missing \(expected)")
 			}
@@ -636,7 +636,7 @@ extension SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example").environment(\.colorScheme, .light), size: NSSize(width: 600, height: 780), keepsRequestedSize: true, usesHostingView: true)
 		defer { host.window.close() }
 		#expect(try await !host.text().contains("Copy example"))
-		try await host.click("Optional task environments")
+		try await host.click("Optional Task Environments")
 		try await host.settle()
 		try await host.click("Copy example")
 		let copied = try #require(store.clipboard.pasteboard.string(forType: .string))

@@ -456,10 +456,12 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 8) {
 				Text(singleEnvironment == nil ? "VALUES" : "VALUE").vaultSectionLabel()
 				Spacer(minLength: 4)
-				// Beside the values it acts on, so its reach reads plainly.
-				revealAllControl(cards: cards)
-				if singleEnvironment == nil, environments.count > 1 {
-					sameValueMenu(draft, cards: cards)
+				// The values' own controls, together at the trailing edge.
+				HStack(spacing: 2) {
+					revealAllControl(cards: cards)
+					if singleEnvironment == nil, environments.count > 1 {
+						sameValueMenu(draft, cards: cards)
+					}
 				}
 			}
 			let sameValues = sameValueEnvironments(draft, cards: cards)

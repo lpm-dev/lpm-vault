@@ -513,7 +513,7 @@ struct PlatformsView: View {
 					Image(systemName: "chevron.right")
 						.font(.system(size: 9, weight: .semibold))
 						.rotationEffect(.degrees(showsRevocationSteps ? 90 : 0))
-					Text("How to remove LPM Vault's access")
+					Text("How to Remove LPM Vault's Access")
 						.font(.system(size: 12, weight: .medium))
 				}
 				.foregroundStyle(VaultPalette.textSecondary)

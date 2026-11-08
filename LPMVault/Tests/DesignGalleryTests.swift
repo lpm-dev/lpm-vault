@@ -234,9 +234,9 @@ extension SheetInteractionTests {
 			// The project card shows beside a row the pointer rests on, which a test can't do, so it's drawn alone, from the same store.
 			let card = try await self.host(
 				VaultProjectHoverCard(store: store, project: try #require(store.projects.first { $0.id == Self.projectID }))
-					.background(VaultPalette.control)
+					.background(VaultPalette.popover)
 					.clipShape(RoundedRectangle(cornerRadius: 10))
-					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.popoverBorder, lineWidth: 1) }
 					.padding(24)
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
 					.background(VaultPalette.sidebar),
@@ -297,7 +297,7 @@ extension SheetInteractionTests {
 			try await save(host, "09-settings", dark: dark)
 
 			try await host.click("Account menu")
-			#expect(try await host.waitForText("Manage account on lpm.dev"))
+			#expect(try await host.waitForText("Manage Account on lpm.dev"))
 			try await save(host, "19-account-menu", dark: dark)
 		}
 

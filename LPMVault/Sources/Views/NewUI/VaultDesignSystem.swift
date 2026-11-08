@@ -12,6 +12,9 @@ enum VaultPalette {
 	/// A group of settings or a tile on the content.
 	static let card = adaptive(light: 0xF8F8FA, dark: 0x222225)
 	static let control = adaptive(light: 0xFFFFFF, dark: 0x242428)
+	/// A popover's or menu's card: a step above the content in dark, where no shadow shows depth.
+	static let popover = adaptive(light: 0xFFFFFF, dark: 0x2A2A2F)
+	static let popoverBorder = adaptive(light: 0xDCDBE2, dark: 0x414148)
 	static let controlHover = adaptive(light: 0xF1F1F4, dark: 0x2D2D32)
 	static let inspector = adaptive(light: 0xF8F8FA, dark: 0x19191B)
 
@@ -69,7 +72,7 @@ enum VaultPalette {
 	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
 	static let rowSelected = adaptive(light: 0xF1F0FD, dark: 0x27263B)
-	static let rowHover = adaptive(light: 0xF8F8FA, dark: 0x212124)
+	static let rowHover = adaptive(light: 0xF2F2F6, dark: 0x232328)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
 	/// A band that starts a section inside a list, set off from the rows on both sides.
@@ -124,8 +127,9 @@ enum VaultPalette {
 		environmentColors[index % environmentColors.count]
 	}
 
-	// Purple, nearest the accent, comes late, so a second environment never reads as part of a selection.
-	private static let environmentColors = [0x2FA6C0, 0x3D84F2, 0xD6579A, 0xA97C52, 0x8D6BEA, 0x8B909A].map { Color(hex: $0) }
+	// Purple, nearest the accent, comes late, so a second environment never reads as part of a selection;
+	// teal, nearest the Public chip, comes after the three most projects have, so Public never reads as an environment.
+	private static let environmentColors = [0x3D84F2, 0xD6579A, 0xA97C52, 0x2FA6C0, 0x8D6BEA, 0x8B909A].map { Color(hex: $0) }
 }
 
 enum VaultMetrics {
