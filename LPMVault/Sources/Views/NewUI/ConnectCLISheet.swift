@@ -347,7 +347,7 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(alignment: .center, spacing: 8) {
 				step(number, "Use it from the terminal")
-				Text("in the linked project folder · \(VaultProject.displayName(for: guidance.environment))")
+				Text("\(status == .noFolder ? "once the project folder is linked" : "in the linked project folder") · \(VaultProject.displayName(for: guidance.environment))")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -362,7 +362,13 @@ struct ConnectCLISheet: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
-			if let warning = guidance.warning {
+			// Until a folder is linked there's no lpm.json to check, so the commands wait on step 1, which says so quietly.
+			if status == .noFolder {
+				Label("Choose the project folder first, so LPM Vault can check lpm.json's environments for these.", systemImage: "info.circle")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			} else if let warning = guidance.warning {
 				VaultInlineWarning(text: warning)
 			}
 			let more = guidance.commands.count - 1
@@ -408,7 +414,8 @@ struct ConnectCLISheet: View {
 			}
 			.help(folder.isEmpty ? "" : Self.configURL(folder).path)
 		} actions: {
-			VaultBarButton(title: "Done", filled: status != .noFolder, height: 30) { dismiss() }
+			// Nothing is connected yet without a folder, so the sheet only closes.
+			VaultBarButton(title: status == .noFolder ? "Close" : "Done", filled: status != .noFolder, height: 30) { dismiss() }
 				.keyboardShortcut(.defaultAction)
 		}
 	}

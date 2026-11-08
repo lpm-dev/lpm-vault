@@ -104,13 +104,13 @@ struct ProjectEnvSchemaRuleTests {
 	func availability() throws {
 		let secret = try rule(#"{"secret":true,"format":"url"}"#)
 		let key = Rule.Context(key: "KEY")
-		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "not for secret keys"))
-		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "needs Integer or Port format"))
+		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "Not for secret keys"))
+		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "Needs Integer or Port format"))
 		#expect(secret.availability(of: .protocols, in: key).isAvailable)
-		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "not for public keys"))
+		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "Not for public keys"))
 		#expect(Rule().availability(of: .secret, in: .init(key: "MODE", comparedBy: ["X"])) == .init(isAvailable: false, hint: "X compares its value"))
-		#expect(Rule().availability(of: .client, in: key) == .init(isAvailable: false, hint: "needs a public prefix"))
-		#expect(Rule().availability(of: .requiredWhen, in: .init(key: "KEY", declaredKeys: ["KEY"])) == .init(isAvailable: false, hint: "no other keys"))
+		#expect(Rule().availability(of: .client, in: key) == .init(isAvailable: false, hint: "Needs a public prefix"))
+		#expect(Rule().availability(of: .requiredWhen, in: .init(key: "KEY", declaredKeys: ["KEY"])) == .init(isAvailable: false, hint: "No other keys"))
 	}
 
 	@Test("conflicts the LPM CLI rejects block their row and offer fixes")

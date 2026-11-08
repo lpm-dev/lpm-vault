@@ -463,7 +463,7 @@ extension SheetInteractionTests {
 
 			for expected in [
 				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
-				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Done",
+				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Close",
 			] {
 				#expect(text.contains(expected), "missing \(expected)")
 			}
@@ -480,7 +480,8 @@ extension SheetInteractionTests {
 				named: "connect-cli-staging.png"
 			)
 			#expect(text.contains("--env=staging"))
-			#expect(text.contains("In the linked project folder"))
+			#expect(text.contains("once the project folder is linked"), "Without a folder, the commands say they wait on step 1")
+			#expect(text.contains("Choose the project folder first"))
 		}
 
 		@Test("the title bar's Connect CLI button offers to connect the project to the LPM CLI")
@@ -680,7 +681,7 @@ extension SheetInteractionTests {
 		defer { store.lock() }
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example", showsTaskExample: true).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 620), keepsRequestedSize: true, usesHostingView: true)
 		defer { host.window.close() }
-		#expect(try await host.waitForText("Done", footer: 70))
+		#expect(try await host.waitForText("Close", footer: 70), "Without a folder nothing is connected yet, so the sheet only closes")
 		#expect(try await host.waitForText("Docs", footer: 70))
 		try await host.click("Copy example")
 		#expect(store.clipboard.pasteboard.string(forType: .string)?.contains("tasks") == true)

@@ -581,7 +581,7 @@ struct VaultContentView: View {
 			GeometryReader { geometry in
 				let layout = VaultTableColumnLayout(columns: [.key, .value, .actions],
 					available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.environment.requested,
-					keyWidth: VaultTableColumnLayout.keyWidth(for: derived.environmentKeys, publicKeys: shownPublicKeys, marks: 1))
+					keyWidth: VaultTableColumnLayout.keyWidth(for: derived.environmentKeys, publicKeys: shownPublicKeys, marks: 0))
 				let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -1419,8 +1419,8 @@ private struct VaultEnvironmentRow: View {
 			}
 			if isFound && !compact { ValueSearchFoundBadge() }
 			Spacer(minLength: 0)
-			// Drift is between environments, so a single environment's table doesn't mark it.
-			VaultKeyStatusMarks(invalid: problem != nil)
+			// No marks beside the key: with one value per row, the value's cell says what's wrong
+			// in words, and drift is between environments.
 		}
 	}
 }

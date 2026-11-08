@@ -159,14 +159,17 @@ struct VaultSchemaEditorFooter: View {
 					}
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
-					} else {
+					} else if changes > 0 {
+						// Only once there's a change, so it never reads as available when nothing is.
 						reviewButton(blocker: blocker)
 					}
 				}
 			}
+			// As tall as the page's status bar beside it, so their top lines meet.
+			.frame(minHeight: VaultMetrics.statusBar - 10)
 		}
 		.padding(.horizontal, 14)
-		.padding(.vertical, 10)
+		.padding(.vertical, 5)
 		.background(VaultPalette.headerRow)
 		// ⌘S opens the review while the panel is open, after a failed save too, where the review saves again.
 		.background(VaultSchemaShortcuts(review: openReview))

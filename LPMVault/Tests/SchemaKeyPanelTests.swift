@@ -324,7 +324,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try await host.click("Add Rule")
 			let menu = try await host.popoverWindow()
-			// CI storage is the menu's last row, past its first screenful.
+			// CI storage is the menu's last row, past its first screenful where the window is short.
 			try host.scrollToEnd(in: menu)
 			try await host.click("CI storage", in: menu)
 			#expect(try await host.waitUntil { !menu.isVisible })

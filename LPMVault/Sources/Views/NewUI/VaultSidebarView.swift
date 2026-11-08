@@ -220,6 +220,8 @@ struct VaultSidebarView: View {
 			.vaultPointingHand()
 			.accessibilityLabel("Create env project")
 		}
+		// One height whether or not the lpm.dev import shows, so the list below never shifts.
+		.frame(height: 24)
 		.padding(.leading, 16)
 		.padding(.trailing, 6)
 		.padding(.top, 4)

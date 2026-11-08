@@ -181,11 +181,11 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Scrolls `targetWindow`'s first scroll view to its end, as a person
-	/// scrolls a long menu down to its last rows.
+	/// scrolls a long menu down to its last rows; a menu showing whole has none.
 	func scrollToEnd(in targetWindow: NSWindow) throws {
 		let content = try #require(targetWindow.contentView)
 		content.layoutSubtreeIfNeeded()
-		try scrollToEnd(try #require(Self.firstScrollView(in: content), "The window has a scroll view"))
+		if let scrollView = Self.firstScrollView(in: content) { try scrollToEnd(scrollView) }
 	}
 
 	private func scrollToEnd(_ scrollView: NSScrollView) throws {

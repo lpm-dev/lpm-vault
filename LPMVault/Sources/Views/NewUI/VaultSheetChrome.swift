@@ -155,7 +155,8 @@ struct VaultInlineWarning: View {
 		.font(.system(size: 11.5))
 		.padding(.horizontal, 10)
 		.padding(.vertical, 7)
-		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.orangeTint))
+		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.cautionFill))
+		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.cautionEdge, lineWidth: 1) }
 		.accessibilityElement(children: .combine)
 	}
 }

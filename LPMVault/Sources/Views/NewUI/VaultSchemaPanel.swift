@@ -1527,7 +1527,8 @@ private struct VaultSchemaKeyEditor: View {
 		.buttonStyle(VaultPressStyle())
 		.disabled(!canEdit)
 		.accessibilityLabel("Add Rule")
-		.vaultPopover(isPresented: $addingRule, arrowEdge: .bottom) {
+		// Beside the button, where the menu has the window's whole height and shows every rule at once.
+		.vaultPopover(isPresented: $addingRule, arrowEdge: .leading) {
 			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, in: context)) }) { field in
 				addingRule = false
 				add(field)
@@ -2320,8 +2321,9 @@ private struct VaultAddRuleMenu: View {
 	let onAdd: (ProjectEnvSchemaRule.Field) -> Void
 
 	var body: some View {
-		// One column, as a menu reads: it scrolls past its height, with cues at either end.
-		VaultMenuList(rows: rows, width: 320, label: "Add Rule", onChoose: onAdd)
+		// One column, as a menu reads, tall enough to show every rule beside its button;
+		// a window too short for that scrolls it, with cues at either end.
+		VaultMenuList(rows: rows, width: 320, maximumHeight: 640, label: "Add Rule", onChoose: onAdd)
 	}
 
 	/// Each section's rules, the first carrying its section's label; a rule

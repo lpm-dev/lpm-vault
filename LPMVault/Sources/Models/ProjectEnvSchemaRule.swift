@@ -484,23 +484,23 @@ extension ProjectEnvSchemaRule {
 		case .requiredIn: .init(isAvailable: true, hint: "scopes")
 		case .requiredWhen:
 			context.declaredKeys?.contains(where: { $0 != context.key }) == false
-				? .init(isAvailable: false, hint: "no other keys") : .init(isAvailable: true, hint: "another key")
+				? .init(isAvailable: false, hint: "No other keys") : .init(isAvailable: true, hint: "another key")
 		case .empty: .init(isAvailable: true, hint: "unset / allow / reject")
 		case .format: .init(isAvailable: true, hint: "URL, port, email…")
 		case .bounds:
-			format?.allowsBounds == true ? .init(isAvailable: true, hint: "inclusive bounds") : .init(isAvailable: false, hint: "needs Integer or Port format")
+			format?.allowsBounds == true ? .init(isAvailable: true, hint: "inclusive bounds") : .init(isAvailable: false, hint: "Needs Integer or Port format")
 		case .length: .init(isAvailable: true, hint: "chars")
 		case .protocols:
-			format == .url ? .init(isAvailable: true, hint: "URL schemes") : .init(isAvailable: false, hint: "needs URL format")
+			format == .url ? .init(isAvailable: true, hint: "URL schemes") : .init(isAvailable: false, hint: "Needs URL format")
 		case .pattern: .init(isAvailable: true, hint: "regular expression")
-		case .allowedValues: secret ? .init(isAvailable: false, hint: "not for secret keys") : .init(isAvailable: true, hint: "enum")
-		case .defaultValue: secret ? .init(isAvailable: false, hint: "not for secret keys") : .init(isAvailable: true, hint: "value")
-		case .defaultsIn: secret ? .init(isAvailable: false, hint: "not for secret keys") : .init(isAvailable: true, hint: "per scope")
+		case .allowedValues: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "enum")
+		case .defaultValue: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "value")
+		case .defaultsIn: secret ? .init(isAvailable: false, hint: "Not for secret keys") : .init(isAvailable: true, hint: "per scope")
 		case .secret:
-			if context.publicPrefix != nil { .init(isAvailable: false, hint: "not for public keys") }
+			if context.publicPrefix != nil { .init(isAvailable: false, hint: "Not for public keys") }
 			else if let source = context.comparedBy.first { .init(isAvailable: false, hint: "\(source) compares its value") }
 			else { .init(isAvailable: true, hint: "hidden in CLI output") }
-		case .client: context.publicPrefix != nil ? .init(isAvailable: false, hint: "from the name") : .init(isAvailable: false, hint: "needs a public prefix")
+		case .client: context.publicPrefix != nil ? .init(isAvailable: false, hint: "Set by its name") : .init(isAvailable: false, hint: "Needs a public prefix")
 		case .ci: .init(isAvailable: true, hint: "secret / variable")
 		}
 	}

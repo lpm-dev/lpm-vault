@@ -55,6 +55,9 @@ enum VaultPalette {
 	static let greenTint = adaptive(light: 0xE4F7E8, dark: 0x1F3326)
 	static let greenTintText = adaptive(light: 0x1A7F37, dark: 0x75DB94)
 	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x392C1B)
+	/// A caution's band inside a sheet: quieter than `orangeTint`, edged so it holds its shape.
+	static let cautionFill = adaptive(light: 0xFFF7EC, dark: 0x2A2319)
+	static let cautionEdge = adaptive(light: 0xF2D9B3, dark: 0x4A3A22)
 	static let orangeTintText = adaptive(light: 0xA05A12, dark: 0xFFC06A)
 	static let redTint = adaptive(light: 0xFFEBE9, dark: 0x3B2325)
 	static let neutralTint = adaptive(light: 0xEEEDF2, dark: 0x2C2C30)
@@ -137,7 +140,7 @@ enum VaultMetrics {
 	static let tableHeader: CGFloat = 34
 	static let matrixRow: CGFloat = 36
 	static let fileRow: CGFloat = 36
-	static let statusBar: CGFloat = 30
+	static let statusBar: CGFloat = 36
 	static let keyColumn: CGFloat = 270
 	/// The space after a scroll view's content, so its end scrolls clear of a pinned footer's line.
 	static let scrollEndPadding: CGFloat = 32
@@ -1145,8 +1148,9 @@ struct VaultValueText: View {
 	var fails = false
 
 	var body: some View {
-		// A URL too long for its cell gives up its path first, then the middle of
-		// what follows its scheme; never the scheme, which can be what a rule checks.
+		// A URL too long for its cell gives up its path first, then the end of its
+		// host: never the scheme, which can be what a rule checks, nor the host's
+		// start, which is where environments' hosts tend to differ.
 		if !masked, let separator = Self.schemeSeparator(in: text) {
 			let scheme = String(text[..<separator.upperBound])
 			let origin = Self.origin(of: text)
@@ -1155,7 +1159,7 @@ struct VaultValueText: View {
 				if let origin { styled(origin + "/…", truncation: .tail).fixedSize() }
 				HStack(spacing: 0) {
 					styled(scheme, truncation: .tail).fixedSize()
-					styled(String((origin ?? text).dropFirst(scheme.count)), truncation: .middle)
+					styled(String((origin ?? text).dropFirst(scheme.count)), truncation: .tail)
 				}
 			}
 		} else {

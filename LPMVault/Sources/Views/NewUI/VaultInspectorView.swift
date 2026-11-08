@@ -313,18 +313,10 @@ private struct VaultKeyEditor: View {
 	/// the first line, with closing last; the name, renamed in place with the
 	/// pencil beside it; then where its values are kept.
 	private func header(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?, saved: [String], cards: [String]) -> some View {
-		let allRevealed = store.canUseLocalSecrets
-			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
-		return VStack(alignment: .leading, spacing: 0) {
+		VStack(alignment: .leading, spacing: 0) {
 			HStack(spacing: 4) {
 				Text("KEY").vaultSectionLabel()
 				Spacer(minLength: 4)
-				VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values", compact: true) {
-					toggleRevealAll(allRevealed)
-				}
-				.disabled(!store.canUseLocalSecrets)
-				.opacity(store.canUseLocalSecrets ? 1 : 0.45)
-				.hidden(isPublic)
 				deleteControl(saved: saved)
 				Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14).padding(.horizontal, 2)
 				VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", compact: true, action: onClose)
@@ -382,6 +374,19 @@ private struct VaultKeyEditor: View {
 					focus = .name
 				}
 			}
+		}
+	}
+
+	@ViewBuilder
+	private func revealAllControl(cards: [String]) -> some View {
+		let allRevealed = store.canUseLocalSecrets
+			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
+		if !isPublic, cards.count > 1 {
+			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values", compact: true) {
+				toggleRevealAll(allRevealed)
+			}
+			.disabled(!store.canUseLocalSecrets)
+			.opacity(store.canUseLocalSecrets ? 1 : 0.45)
 		}
 	}
 
@@ -450,6 +455,8 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 8) {
 				Text(singleEnvironment == nil ? "VALUES" : "VALUE").vaultSectionLabel()
 				Spacer(minLength: 4)
+				// Beside the values it acts on, so its reach reads plainly.
+				revealAllControl(cards: cards)
 				if singleEnvironment == nil, environments.count > 1 {
 					sameValueMenu(draft, cards: cards)
 				}
@@ -989,18 +996,20 @@ private struct VaultKeyEditor: View {
 				}
 				.layoutPriority(-1)
 				Spacer(minLength: 0)
-				// Revert shows only once there's an edit to undo, so it never reads as available when nothing is.
-				if changes > 0 {
+				// Revert and Save show only once there's an edit, so neither reads as available when nothing is.
+				if changes > 0 || isSaving {
 					VaultBarButton(title: "Revert", disabled: isSaving, height: 28) {
 						edit { $0.revert() }
 					}
+					VaultBarButton(title: isSaving ? "Saving…" : "Save", shortcut: "⌘S", filled: true, disabled: !canSave, height: 28, action: save)
+						.keyboardShortcut("s", modifiers: .command)
 				}
-				VaultBarButton(title: isSaving ? "Saving…" : "Save", shortcut: "⌘S", filled: true, disabled: !canSave, height: 28, action: save)
-					.keyboardShortcut("s", modifiers: .command)
 			}
+			// The content's status bar is as tall, so the two panes' bottom lines meet.
+			.frame(minHeight: VaultMetrics.statusBar - 8)
 		}
 		.padding(.horizontal, 16)
-		.padding(.vertical, 12)
+		.padding(.vertical, 4)
 	}
 
 	// MARK: - State

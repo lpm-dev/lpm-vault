@@ -175,10 +175,10 @@ struct VaultMenuList<ID: Hashable>: View {
 					.lineLimit(1)
 				Spacer(minLength: 4)
 				if let detail = row.detail {
-					// A row that can't be chosen says what it needs, so its reason reads plainly.
+					// The same strength on every row, undimmed: a row that can't be chosen says what it needs.
 					Text(detail)
-						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: row.isEnabled ? 11 : 11.5))
-						.foregroundStyle(row.isEnabled ? VaultPalette.textTertiary : VaultPalette.textSecondary)
+						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
 						.lineLimit(1)
 				}
 			}
@@ -189,7 +189,9 @@ struct VaultMenuList<ID: Hashable>: View {
 		}
 		// Draws the row as given, without the plain style's dimming of a disabled row's reason.
 		.buttonStyle(VaultMenuRowStyle())
-		// The arrow keys move the tint, so a row needs no focus ring of its own.
+		// The menu owns the keyboard, as a menu does: the arrow keys move the tint and Tab
+		// doesn't stop on each row, so a row needs no focus ring of its own.
+		.focusable(false)
 		.focusEffectDisabled()
 		.disabled(!row.isEnabled)
 		.onHover { inside in
