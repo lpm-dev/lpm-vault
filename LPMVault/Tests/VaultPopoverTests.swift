@@ -186,6 +186,21 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { !popover.isVisible }, "The popover's window is gone with its own")
 		}
 
+		@Test("a row that can't be chosen says so to VoiceOver, as it looks, and a press does nothing")
+		func unavailableRow() async throws {
+			let chosen = ChosenMenuRow()
+			let host = SheetTestHost(MenuFixture(chosen: chosen), size: NSSize(width: 320, height: 260), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.click("Choose")
+			let menu = try await host.popoverWindow()
+			let unavailable = try await host.waitForElement(saying: "Unavailable", in: menu)
+			#expect(!unavailable.isEnabledNow, "It's announced as dimmed")
+			#expect(try await host.waitForElement(saying: "Second", in: menu).isEnabledNow)
+			unavailable.press()
+			try await host.settle()
+			#expect(chosen.id == nil && menu.isVisible, "Pressing it chooses nothing and keeps the menu open")
+		}
+
 		@Test("a menu's arrow keys and Return choose a row, however quickly they're pressed")
 		func keyboardChoice() async throws {
 			let chosen = ChosenMenuRow()
@@ -214,6 +229,7 @@ private struct MenuFixture: View {
 	var body: some View {
 		VaultBarMenu(accessibilityLabel: "Choose", rows: [
 			VaultMenuList<Int>.Row(id: 1, title: "First"), .init(id: 2, title: "Second"), .init(id: 3, title: "Third"),
+			.init(id: 4, title: "Unavailable", detail: "Needs a reason", isEnabled: false),
 		], onChoose: { chosen.id = $0 }) {
 			Text("Choose")
 		}

@@ -121,18 +121,41 @@ private struct VaultPopoverAnchor<Content: View>: NSViewRepresentable {
 			presenter.close()
 			return
 		}
-		// The popover's window isn't under this view, so the view's environment goes with it;
-		// the closing action is set inside it, where the whole environment doesn't replace it.
+		// The popover's window isn't under this view, so what its content reads of the view's environment goes with it.
 		presenter.show(AnyView(
 			content()
 				.environment(\.vaultPopoverDismiss, VaultPopoverDismissAction(presenter: presenter))
 				.environment(\.vaultPopoverRoom, presenter.room())
-				.environment(\.self, context.environment)
+				.modifier(VaultPopoverInheritedEnvironment(environment: context.environment))
 		))
 	}
 
 	static func dismantleNSView(_ view: NSView, coordinator: VaultPopoverPresenter) {
 		coordinator.close()
+	}
+}
+
+/// What a popover's content reads of the environment of the view it's shown
+/// for. Not the whole environment: handed over whole, it kept every control in
+/// the popover enabled, whatever a `.disabled` there said, so a menu row that
+/// looked unavailable could still be chosen with VoiceOver.
+private struct VaultPopoverInheritedEnvironment: ViewModifier {
+	let environment: EnvironmentValues
+
+	func body(content: Content) -> some View {
+		content
+			.environment(\.colorScheme, environment.colorScheme)
+			.environment(\.locale, environment.locale)
+			.environment(\.calendar, environment.calendar)
+			.environment(\.timeZone, environment.timeZone)
+			.environment(\.layoutDirection, environment.layoutDirection)
+			.environment(\.dynamicTypeSize, environment.dynamicTypeSize)
+			.environment(\.vaultClock, environment.vaultClock)
+			.environment(\.vaultContentObscured, environment.vaultContentObscured)
+			.environment(\.vaultCopyFeedbackTimer, environment.vaultCopyFeedbackTimer)
+			.environment(\.vaultImportUndoTimer, environment.vaultImportUndoTimer)
+			.environment(\.vaultEnvFileChooser, environment.vaultEnvFileChooser)
+			.environment(\.vaultSchemaKeysSuspended, environment.vaultSchemaKeysSuspended)
 	}
 }
 
