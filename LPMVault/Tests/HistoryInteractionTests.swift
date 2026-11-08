@@ -75,7 +75,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try await openHistory(host)
 			let text = try await host.text()
-			for expected in ["TODAY", "Set 2 keys", "2 changes kept on this Mac since", "Source, All sources, 2"] {
+			for expected in ["TODAY", "Set 2 keys", "2 changes kept on this Mac since", "Source, All Sources, 2"] {
 				#expect(text.contains(expected), "Missing \(expected)")
 			}
 

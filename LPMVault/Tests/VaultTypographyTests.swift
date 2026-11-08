@@ -18,7 +18,7 @@ struct VaultTypographyTests {
 		"VaultInspectorView.swift": 1,
 		"EnvFileImportReviewSheet.swift": 1,
 		"EnvImportSource.swift": 2,
-		"ConnectCLISheet.swift": 4,
+		"ConnectCLISheet.swift": 6,
 		"VaultValueCharacterWarning.swift": 1,
 		"VaultProjectSettingsView.swift": 1,
 		"VaultSettingsSections.swift": 1,

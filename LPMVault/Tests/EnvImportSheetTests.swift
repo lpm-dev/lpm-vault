@@ -427,9 +427,11 @@ private struct ImportWorkspace {
 		return host
 	}
 
-	/// Clicks Import in the header and returns the sheet it opens.
+	/// Chooses Import from the header's More menu and returns the sheet it opens.
 	func openImport(in host: SheetTestHost<ImportWorkspaceRoot>) async throws -> NSWindow {
-		try await host.click("Import variables into .env")
+		try await host.click("More actions")
+		let menu = try await host.popoverWindow()
+		try await host.click("Import into .env…", in: menu)
 		return try await sheet(of: host)
 	}
 

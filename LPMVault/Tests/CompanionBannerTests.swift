@@ -236,7 +236,9 @@ extension SheetInteractionTests {
 			load.signal()
 			let newKey = try await host.waitForElement(saying: "New Key")
 			#expect(!newKey.isEnabledNow, "New key is disabled")
-			let importer = try await host.waitForElement(saying: "Import variables into")
+			try await host.click("More actions")
+			let menu = try await host.popoverWindow()
+			let importer = try await host.waitForElement(saying: "Import into .env…", in: menu)
 			#expect(!importer.isEnabledNow, "Import is disabled")
 		}
 

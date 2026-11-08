@@ -271,9 +271,10 @@ struct VaultContentView: View {
 		.fixedSize()
 	}
 
-	/// Raw text's hint goes first, then Import and Export move into a menu,
-	/// then Reveal and Copy All lose their names, so a row never mixes named
-	/// buttons with bare icons that do as much.
+	/// Raw text's hint goes first, then Reveal and Copy All lose their names,
+	/// so a row never mixes named buttons with bare icons that do as much.
+	/// Import and Export, done now and then, stay in the More menu at every
+	/// width, so the row keeps one shape with the inspector open or closed.
 	private func valueRow(_ derived: VaultContentDerivation) -> some View {
 		ViewThatFits(in: .horizontal) {
 			if showsRawText {
@@ -281,15 +282,9 @@ struct VaultContentView: View {
 					viewControls
 					hint("One KEY=value per line · select and ⌘C copies real values")
 					Spacer(minLength: 8)
-					valueActions(compact: false, namesTransfers: true, derived: derived)
+					valueActions(compact: false, derived: derived)
 				}
 			}
-			HStack(spacing: 6) {
-				viewControls
-				Spacer(minLength: 8)
-				valueActions(compact: false, namesTransfers: true, derived: derived)
-			}
-			// Reveal and Copy All keep their names longest; Import and Export go into a menu first.
 			HStack(spacing: 6) {
 				viewControls
 				Spacer(minLength: 8)
@@ -414,7 +409,7 @@ struct VaultContentView: View {
 
 	/// Reveal acts on the keys in view; copying, importing, and exporting act on
 	/// the selected environment, which their help names.
-	private func valueActions(compact: Bool, namesTransfers: Bool = false, derived: VaultContentDerivation) -> some View {
+	private func valueActions(compact: Bool, derived: VaultContentDerivation) -> some View {
 		let environmentName = VaultProject.displayName(for: selectedEnvironment)
 		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy All")
 		let copyHelp = isCopyingAll
@@ -423,8 +418,6 @@ struct VaultContentView: View {
 		let copyLabel = isCopyingAll
 			? "Copying all \(environmentName) values"
 			: (isCopiedAll ? "Copied all \(environmentName) values" : "Copy all \(environmentName) values")
-		let importName = "Import variables into \(environmentName)"
-		let exportName = "Export \(environmentName)"
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
@@ -459,28 +452,7 @@ struct VaultContentView: View {
 					action: { onEditRaw(rawEditOrder) }
 				)
 			}
-			if namesTransfers {
-				VaultOutlineButton(
-					systemImage: "tray.and.arrow.down",
-					title: "Import",
-					help: importName,
-					label: importName,
-					disabled: !canEditValues,
-					borderless: true,
-					action: onImport
-				)
-				VaultOutlineButton(
-					systemImage: "tray.and.arrow.up",
-					title: "Export",
-					help: exportName,
-					label: exportName,
-					disabled: !canUseSecrets,
-					borderless: true,
-					action: onExport
-				)
-			} else {
-				transferMenu(environmentName: environmentName)
-			}
+			transferMenu(environmentName: environmentName)
 		}
 		.fixedSize()
 		// The last borderless control's label ends where the filled New Key above does; its hover fill reaches past.
@@ -518,10 +490,7 @@ struct VaultContentView: View {
 		GeometryReader { geometry in
 			// Shown values are read side by side, so their columns keep a readable width and the table scrolls instead.
 			let readsValues = derived.filteredKeys.contains(where: isShown)
-			let layout = VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
-				available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.matrix.requested,
-				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3),
-				valueMinimum: readsValues ? VaultMetrics.readableValueColumn : nil)
+			let layout = matrixLayout(derived, width: geometry.size.width, readsValues: readsValues)
 			let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 			let hidden = layout.hiddenColumns(at: matrixScrollX)
 
@@ -596,9 +565,8 @@ struct VaultContentView: View {
 			}
 			.overlay(alignment: .topTrailing) {
 				if !hidden.after.isEmpty {
-					columnStep(hidden.after, direction: .after,
-						room: roomAfterLastTitle(layout: layout, hidden: hidden.after, viewport: geometry.size.width), layout: layout)
-						.padding(.trailing, 8 + VaultMetrics.paneDividerHitWidth)
+					columnStep(hidden.after, direction: .after, room: roomAfterLastTitle(layout: layout, hidden: hidden.after), layout: layout)
+						.padding(.trailing, 8 + geometry.size.width - layout.available)
 						.frame(height: VaultMetrics.tableHeader)
 				}
 			}
@@ -618,9 +586,24 @@ struct VaultContentView: View {
 		}
 	}
 
+	/// The matrix's columns in a view `width` wide. Columns that all fit leave
+	/// the last one's resize handle its strip at the edge; when some wait past
+	/// it, those in view fill the view, so the last one shown ends at its edge.
+	private func matrixLayout(_ derived: VaultContentDerivation, width: CGFloat, readsValues: Bool) -> VaultTableColumnLayout {
+		func layout(available: CGFloat) -> VaultTableColumnLayout {
+			VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
+				available: available, requested: columnWidths.matrix.requested,
+				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3),
+				valueMinimum: readsValues ? VaultMetrics.readableValueColumn : nil)
+		}
+		let fitted = layout(available: width - VaultMetrics.paneDividerHitWidth)
+		guard columnWidths.matrix.requested.isEmpty, fitted.totalWidth > fitted.available + 0.5 else { return fitted }
+		return layout(available: width)
+	}
+
 	/// The room at the header's trailing edge past the title of the last column shown whole.
-	private func roomAfterLastTitle(layout: VaultTableColumnLayout, hidden: [VaultTableColumn], viewport: CGFloat) -> CGFloat {
-		let visibleEnd = viewport - VaultMetrics.paneDividerHitWidth
+	private func roomAfterLastTitle(layout: VaultTableColumnLayout, hidden: [VaultTableColumn]) -> CGFloat {
+		let visibleEnd = layout.available
 		guard let first = hidden.first, let index = layout.boundaries.firstIndex(where: { $0.id == first }), index > 0 else { return visibleEnd }
 		let last = layout.boundaries[index - 1]
 		guard case .environment(let environment) = last.id else { return visibleEnd - layout[.key] }
@@ -1152,7 +1135,7 @@ private struct VaultMatrixHeader: View {
 				.accessibilityElement(children: .ignore)
 				.accessibilityLabel(VaultProject.displayName(for: environment))
 				.accessibilityAddTraits(.isHeader)
-				VaultTableColumnLine(hidden: environment == environments.last)
+				VaultTableColumnLine(hidden: environment == environments.last || layout.endsAtEdge(.environment(environment), offset: pinnedOffset))
 			}
 		}
 		.frame(width: tableWidth, height: VaultMetrics.tableHeader, alignment: .leading)
@@ -1274,7 +1257,7 @@ private struct VaultMatrixRow: View {
 					}
 					.padding(.horizontal, 12)
 					.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.matrixRow)
-					VaultTableColumnLine(hidden: environment == environments.last)
+					VaultTableColumnLine(hidden: environment == environments.last || layout.endsAtEdge(.environment(environment), offset: pinnedOffset))
 				}
 			}
 			.frame(width: tableWidth, height: VaultMetrics.matrixRow, alignment: .leading)

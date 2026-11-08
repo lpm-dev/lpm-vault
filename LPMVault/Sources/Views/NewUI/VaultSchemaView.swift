@@ -420,12 +420,9 @@ struct VaultSchemaView: View {
 				// No line between the columns: the rows below have none.
 				VaultKeySortHeader(order: $sortOrder)
 					.frame(width: Self.keyWidth, height: VaultMetrics.tableHeader)
-				HStack(spacing: 8) {
-					Text("Rules").vaultColumnHeader()
-					Text("only what differs from the default")
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textFaint)
-				}
+				Text("Rules").vaultColumnHeader()
+					.help("Only what differs from the default")
+					.accessibilityHint("Only what differs from the default")
 				.padding(.horizontal, 14)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
@@ -442,15 +439,6 @@ struct VaultSchemaView: View {
 						}
 						if !listed.groups.isEmpty || canEdit {
 							groupsHeader(count: listed.groupCount)
-							if listed.groups.isEmpty {
-								Text("No groups yet. A group asks the LPM CLI for all, one or none of its keys.")
-									.font(.system(size: 12))
-									.foregroundStyle(VaultPalette.textTertiary)
-									.padding(.horizontal, 20)
-									.padding(.vertical, 12)
-									.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
-							}
 							ForEach(listed.groups, id: \.name) { group in
 								groupRow(group, state: groupState(group.name, in: saved))
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
@@ -744,21 +732,29 @@ struct VaultSchemaView: View {
 				}
 			}
 			.padding(.leading, 14)
-			.padding(.trailing, 20)
+			.padding(.trailing, Self.bandActionInset)
 		}
 		.frame(height: Self.undeclaredRowHeight)
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 	}
 
 	private static let undeclaredRowHeight: CGFloat = 36
+	/// A borderless action's trailing inset, so its title ends where the page's bordered buttons' edges do: their 20-point inset, less its own padding.
+	private static let bandActionInset: CGFloat = 20 - 9
+	private static let groupsExplanation = "Keys the LPM CLI checks together: all, one or none of a group's keys"
 
+	/// The groups' band, which says "none yet" while there are none, rather than a row of its own; what a group is, its tooltip says.
 	private func groupsHeader(count: Int) -> some View {
 		HStack(spacing: 8) {
-			Text("GROUPS · \(count)").vaultSectionLabel()
-			Text("keys the LPM CLI checks together")
-				.font(.system(size: 11))
-				.foregroundStyle(VaultPalette.textFaint)
-				.lineLimit(1)
+			Text(count == 0 ? "GROUPS" : "GROUPS · \(count)").vaultSectionLabel()
+				.help(Self.groupsExplanation)
+				.accessibilityHint(Self.groupsExplanation)
+			if count == 0 {
+				Text("none yet")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textFaint)
+					.lineLimit(1)
+			}
 			Spacer(minLength: 8)
 			if canEdit {
 				let full = count >= ProjectEnvSchemaGroup.maximumGroups
@@ -767,7 +763,9 @@ struct VaultSchemaView: View {
 					.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
-		.padding(.horizontal, 20)
+		.padding(.leading, 20)
+		// The borderless button's title ends where the bordered buttons' edges above do.
+		.padding(.trailing, Self.bandActionInset)
 		.padding(.vertical, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.vaultSectionBand()

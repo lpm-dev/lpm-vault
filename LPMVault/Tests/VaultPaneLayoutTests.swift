@@ -463,6 +463,29 @@ struct VaultTableColumnLayoutTests {
 		#expect(resized[.environment("default")] == 300, "Widths a person chose stay as they are")
 	}
 
+	@Test("a column that ends where the view does, while others wait past it, draws no line there, so no empty strip shows")
+	func columnAtTheEdge() {
+		let environments = ["default", "production", "staging"].map(VaultTableColumn.environment)
+		let layout = VaultTableColumnLayout(columns: [.key] + environments, available: 718, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(layout.endsAtEdge(environments[1], offset: 0))
+		#expect(!layout.endsAtEdge(environments[0], offset: 0))
+		let next = layout.offset(showing: environments[2], from: 0)
+		#expect(layout.endsAtEdge(environments[2], offset: next) && !layout.endsAtEdge(environments[1], offset: next))
+		#expect(!layout.endsAtEdge(environments[1], offset: 40), "Partway, the line shows where the column ends")
+	}
+
+	@Test("the step control names the nearest column out of view where it fits, and counts them where it doesn't, saying what it shows to VoiceOver")
+	func stepControlContent() {
+		typealias Step = VaultColumnStepButton
+		#expect(Step.content(nearest: ".env.staging", count: 1, room: 200) == .named(".env.staging"))
+		#expect(Step.content(nearest: ".env.staging", count: 2, room: 70) == .counted(2))
+		#expect(Step.Content.counted(1).text == "+1 env" && Step.Content.counted(2).text == "+2 envs")
+		#expect(Step.accessibilityLabel(.named(".env.staging"), nearest: ".env.staging") == "Show .env.staging")
+		#expect(Step.accessibilityLabel(.counted(2), nearest: ".env.staging") == "+2 envs: show .env.staging",
+			"Its name holds the words it shows")
+	}
+
 	@Test("stepping to a column out of view brings it whole into view from a column's edge, and back")
 	func steppingColumns() {
 		let environments = ["default", "production", "staging", "preview", "test"].map(VaultTableColumn.environment)

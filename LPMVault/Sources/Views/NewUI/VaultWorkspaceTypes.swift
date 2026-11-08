@@ -23,7 +23,7 @@ enum VaultWorkspaceMode: Equatable {
 }
 
 enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
-  case all = "All keys"
+  case all = "All Keys"
   case drift = "Drift"
   case missing = "Missing"
   /// Keys whose values fail their lpm.json rules.
@@ -163,6 +163,13 @@ struct VaultTableColumnLayout {
 
   /// The farthest the table scrolls sideways.
   var maximumOffset: CGFloat { max(0, totalWidth - available) }
+
+  /// Whether `column` ends at the view's trailing edge while the table is
+  /// scrolled `offset` sideways, where the line after it would sit against the pane's.
+  func endsAtEdge(_ column: VaultTableColumn, offset: CGFloat) -> Bool {
+    guard let boundary = boundaries.first(where: { $0.id == column }) else { return false }
+    return abs(boundary.position - (offset + available)) < 0.5
+  }
 
   /// The columns past the pinned key column, in order, that aren't whole in
   /// view while the table is scrolled `offset` sideways: those under the key

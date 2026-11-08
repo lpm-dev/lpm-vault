@@ -83,10 +83,11 @@ struct VaultProjectSettingsView: View {
 	/// the title row starts and stands as every page's does.
 	private var header: some View {
 		HStack(spacing: 12) {
-			HStack(spacing: 8) {
+			// The way back reads as a step on the path, lighter than the page it leads from, on the title's baseline.
+			HStack(alignment: .firstTextBaseline, spacing: 7) {
 				VaultBackTitle(title: "All variables", action: onBack)
 				Image(systemName: "chevron.right")
-					.font(.system(size: 12, weight: .semibold))
+					.font(.system(size: 10, weight: .semibold))
 					.foregroundStyle(VaultPalette.textFaint)
 					.accessibilityHidden(true)
 				Text("Project Settings")
@@ -420,9 +421,8 @@ private struct VaultBackTitle: View {
 	var body: some View {
 		Button(action: action) {
 			Text(title)
-				.font(.system(size: 20, weight: .semibold))
-				.tracking(-0.3)
-				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
+				.font(.system(size: 15))
+				.foregroundStyle(hovering ? VaultPalette.accentForeground : VaultPalette.textSecondary)
 				.lineLimit(1)
 				.contentShape(Rectangle())
 				.vaultHoverAnimation(hovering)

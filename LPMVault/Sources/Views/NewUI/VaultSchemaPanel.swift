@@ -1012,16 +1012,29 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 
+	/// Labeled above, with where it shows below, so neither goes once something is typed.
 	private var descriptionField: some View {
-		TextField("Description — shown in CLI errors and .env.example", text: textBinding(\.description, field: "description"), axis: .vertical)
-			.textFieldStyle(.plain)
-			.font(.system(size: 12))
-			.lineLimit(1...4)
-			.padding(.horizontal, 9)
-			.padding(.vertical, 8)
-			.vaultInputBox()
-			.disabled(!canEdit)
-			.accessibilityLabel("Description")
+		VStack(alignment: .leading, spacing: 6) {
+			Text("Description")
+				.font(.system(size: 12, weight: .semibold))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.accessibilityHidden(true)
+			TextField("Description", text: textBinding(\.description, field: "description"),
+				prompt: Text("Add a description").foregroundStyle(VaultPalette.placeholder), axis: .vertical)
+				.textFieldStyle(.plain)
+				.font(.system(size: 12))
+				.lineLimit(1...4)
+				.padding(.horizontal, 9)
+				.padding(.vertical, 8)
+				.vaultInputBox()
+				.disabled(!canEdit)
+				.accessibilityLabel("Description")
+				.accessibilityHint("Shown in CLI errors and .env.example")
+			Text("Shown in CLI errors and .env.example")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
+		}
 	}
 
 	private func notice(symbol: String, text: String, tint: Color = VaultPalette.accentText) -> some View {
@@ -1875,10 +1888,13 @@ struct VaultSchemaStoredValues: View {
 		VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 8) {
 				Text("STORED VALUES").vaultSectionLabel()
-				Text(removed ? "after saving" : (draft == nil ? "checked against these rules" : "with your draft"))
-					.font(.system(size: 11))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineLimit(1)
+				// Said only when the check isn't of the rules as saved; the heading says the rest.
+				if removed || draft != nil {
+					Text(removed ? "after saving" : "with your draft")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
+				}
 			}
 			if key.isEmpty {
 				Text("Name the key to check the values stored under it.")
@@ -2312,9 +2328,9 @@ private struct VaultAddRuleMenu: View {
 	let onAdd: (ProjectEnvSchemaRule.Field) -> Void
 
 	var body: some View {
-		// One column, as a menu reads, tall enough to show every rule beside its button;
-		// a window too short for that scrolls it, with cues at either end.
-		VaultMenuList(rows: rows, width: 320, maximumHeight: 640, label: "Add Rule", onChoose: onAdd)
+		// Two columns, split at section starts, so every rule shows at once and the menu can open
+		// level with its button; a window too short for that scrolls it, with cues at either end.
+		VaultMenuList(rows: rows, width: 500, columns: 2, maximumHeight: 640, label: "Add Rule", onChoose: onAdd)
 	}
 
 	/// Each section's rules, the first carrying its section's label; a rule

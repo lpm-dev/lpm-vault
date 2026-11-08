@@ -150,7 +150,7 @@ struct VaultSchemaEditorFooter: View {
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.help("⌘Z undoes the last change")
 					} else {
-						Text("No changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
+						Text("No unsaved changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 					}
 					Spacer(minLength: 4)
 					if let discard {

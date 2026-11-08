@@ -111,13 +111,13 @@ struct VaultHistoryView: View {
 	private var environmentMenu: some View {
 		let current = history.filter.environment
 		let environments = history.timeline?.environments ?? []
-		let rows: [VaultMenuList<String?>.Row] = [.init(id: nil, title: "All environments", isChecked: current == nil)]
+		let rows: [VaultMenuList<String?>.Row] = [.init(id: nil, title: "All Environments", isChecked: current == nil)]
 			+ environments.enumerated().map { index, environment in
 				.init(id: environment.name, title: environment.name, detail: environment.deletedAt == nil ? nil : "deleted",
 					separated: index == 0, isChecked: current == environment.name)
 			}
-		return VaultBarMenu(accessibilityLabel: "Environment, \(current ?? "All environments")", rows: rows, onChoose: setEnvironment) {
-			Text(current ?? "All environments")
+		return VaultBarMenu(accessibilityLabel: "Environment, \(current ?? "All Environments")", rows: rows, onChoose: setEnvironment) {
+			Text(current ?? "All Environments")
 				.font(.system(size: 12.5, weight: .medium))
 		}
 	}
@@ -125,11 +125,11 @@ struct VaultHistoryView: View {
 	/// The sources a change can come from, each with how many changes it made.
 	private var sourceMenu: some View {
 		let selected = VaultHistoryText.sources.first { $0.0 == history.filter.source }?.1 ?? "All"
-		let title = history.filter.source == nil ? "All sources" : selected
+		let title = history.filter.source == nil ? "All Sources" : selected
 		let selectedCount = count(history.filter.source)
 		let rows = VaultHistoryText.sources.enumerated().map { index, entry in
 			VaultMenuList<VaultLocalHistory.Source?>.Row(
-				id: entry.0, title: entry.0 == nil ? "All sources" : entry.1, detail: count(entry.0).map { "\($0)" },
+				id: entry.0, title: entry.0 == nil ? "All Sources" : entry.1, detail: count(entry.0).map { "\($0)" },
 				detailIsShortcut: true, separated: index == 1, isChecked: history.filter.source == entry.0)
 		}
 		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")", rows: rows) { source in

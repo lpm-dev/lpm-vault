@@ -27,14 +27,14 @@ enum VaultPalette {
 	static let textFaint = adaptive(light: 0x6C6C74, dark: 0xFFFFFF, darkOpacity: 0.48)
 	/// A control that's off: plainly fainter than any working control's text, in both appearances.
 	static let disabledText = adaptive(light: 0xA3A3AB, dark: 0xFFFFFF, darkOpacity: 0.36)
-	/// An empty field's prompt: lighter than any text that could be typed there, and still 3:1 against the field.
-	static let placeholder = adaptive(light: 0x8B8B94, dark: 0xFFFFFF, darkOpacity: 0.42)
+	/// An empty field's prompt: gray where typed text is near black, and 4.5:1 on every surface a field sits on, as text it is.
+	static let placeholder = textFaint
 	static let masked = textFaint
 
 	static let border = adaptive(light: 0xDCDBE2, dark: 0x3A3A3F)
 	/// A text field's edge: 3:1 against the field and what's around it, as a
 	/// control's boundary needs, where cards and tables keep the quieter `border`.
-	static let inputBorder = adaptive(light: 0x8E8E99, dark: 0x73737D)
+	static let inputBorder = adaptive(light: 0x8E8E99, dark: 0x6E6E78)
 	static let divider = adaptive(light: 0xEAE9EF, dark: 0x343439)
 	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x252528)
 
@@ -581,7 +581,7 @@ struct VaultBarButton: View {
 	@State private var hovering = false
 
 	private var foreground: Color {
-		if disabled { return VaultPalette.disabledText }
+		if disabled { return filled ? .white.opacity(0.75) : VaultPalette.disabledText }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
 		if active { return VaultPalette.selectedText }
@@ -589,8 +589,8 @@ struct VaultBarButton: View {
 	}
 
 	private var background: Color {
-		// Off, even a filled button is only outlined, so it never passes for a working one.
-		if disabled { return .clear }
+		// Off, a filled button keeps its color, faded, so it stays the default and never passes for a working one.
+		if disabled { return filled ? (destructive ? VaultPalette.destructiveFill : VaultPalette.accent).opacity(0.4) : .clear }
 		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
 		if active { return VaultPalette.selectedFill }
@@ -599,7 +599,7 @@ struct VaultBarButton: View {
 	}
 
 	private var border: Color {
-		if filled && !disabled { return .clear }
+		if filled { return .clear }
 		if active { return VaultPalette.selectedBorder }
 		if disabled && !borderless { return VaultPalette.divider }
 		return borderless ? .clear : VaultPalette.border
@@ -617,9 +617,13 @@ struct VaultBarButton: View {
 					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : (borderless ? .regular : .medium)))
 				}
 				if let shortcut {
+					// A default button's shortcut shows once it works, in the room it keeps, so turning on doesn't move it.
+					let hidden = filled && disabled
 					Text(shortcut)
 						.font(VaultTypography.tabular(10.5))
 						.foregroundStyle(filled && !disabled ? .white.opacity(0.75) : VaultPalette.textFaint)
+						.opacity(hidden ? 0 : 1)
+						.accessibilityHidden(hidden)
 				}
 			}
 			.foregroundStyle(foreground)
@@ -1091,6 +1095,7 @@ struct VaultSelectionBar: View {
 struct VaultInitialsAvatar: View {
 	let initials: String
 	var size: CGFloat = 26
+	/// An organization's: a rounded square in the accent's tint, where a person's is a neutral circle.
 	var square = false
 
 	/// The first letter or digit of `name`, uppercased: one letter reads at
@@ -1102,11 +1107,11 @@ struct VaultInitialsAvatar: View {
 	var body: some View {
 		Text(initials)
 			.font(.system(size: size * 0.45, weight: .semibold))
-			.foregroundStyle(VaultPalette.avatarNeutralForeground)
+			.foregroundStyle(square ? VaultPalette.accentText : VaultPalette.avatarNeutralForeground)
 			.frame(width: size, height: size)
 			.background {
 				if square {
-					RoundedRectangle(cornerRadius: size * 0.28).fill(VaultPalette.avatarNeutral)
+					RoundedRectangle(cornerRadius: size * 0.28).fill(VaultPalette.accentTint)
 				} else {
 					Circle().fill(VaultPalette.avatarNeutral)
 				}

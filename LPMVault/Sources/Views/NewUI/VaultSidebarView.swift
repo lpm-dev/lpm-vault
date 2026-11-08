@@ -827,9 +827,10 @@ struct VaultAccountSwitcher: View {
 					.lineLimit(1)
 				Spacer(minLength: 4)
 				if selected {
+					// Checked as every app menu checks its rows.
 					Image(systemName: "checkmark")
 						.font(.system(size: 10, weight: .bold))
-						.foregroundStyle(VaultPalette.accentForeground)
+						.foregroundStyle(VaultPalette.textPrimary)
 						.accessibilityHidden(true)
 				}
 			}

@@ -193,6 +193,21 @@ extension SheetInteractionTests {
 			}}
 			"""#
 
+		@Test("with no groups, the groups band says none yet, rather than a row of its own, and the selected key's description is labeled above it")
+		func noGroupsAndDescriptionLabel() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			#expect(try await host.waitForText("none yet", exactly: true))
+			#expect(try await !host.text().contains("No groups yet"))
+			try await host.click("RETRY_COUNT")
+			#expect(try await host.waitUntil { host.textField(placeholder: "Add a description") != nil },
+				"The description's prompt is short; its label and where it shows stay outside it")
+			let field = try #require(host.textField(placeholder: "Add a description"))
+			#expect(field.accessibilityLabel() == "Description")
+			let element = AccessibilityTree.elements(in: host.window).first { $0.label == "Description" && $0.isInteractive }
+			#expect(element?.help == "Shown in CLI errors and .env.example", "VoiceOver hears where it shows: \(String(describing: element))")
+		}
+
 		@Test("selecting a key opens its rules for editing; an edit marks the row and saving writes lpm.json")
 		func editAndSave() async throws {
 			let (store, host, folder) = try await workspace()
@@ -322,10 +337,15 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
+			let button = try await host.waitForElement(saying: "Add Rule")
 			try await host.click("Add Rule")
 			let menu = try await host.popoverWindow()
-			// CI storage is the menu's last row, past its first screenful where the window is short.
-			try host.scrollToEnd(in: menu)
+			// Two columns, so every rule shows at once, CI storage, the last, too, and the menu starts level with its button.
+			let storage = try await host.waitForElement(saying: "CI storage", in: menu)
+			#expect(menu.frame.contains(CGPoint(x: storage.frame.midX, y: storage.frame.midY)), "Shown without scrolling")
+			#expect(menu.frame.height < 380, "Half a one-column menu's height: \(menu.frame.height)")
+			#expect(abs(menu.frame.maxY - (button.frame.maxY + VaultPopoverPresenter.besideLift)) < 1,
+				"Level with the button: menu \(menu.frame), button \(button.frame)")
 			try await host.click("CI storage", in: menu)
 			#expect(try await host.waitUntil { !menu.isVisible })
 			#expect(try await host.waitForText("variable"))
@@ -357,7 +377,8 @@ extension SheetInteractionTests {
 			try host.pressWhileEditing("\r", code: 36)
 			#expect(try await host.waitUntil { store.projects.first?.environments["default"]?["RETRIES"] == "7" })
 			#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRIES""#))
-			#expect(try await host.waitForText("checked against these rules"))
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil })
+			#expect(try await host.waitForTextToDisappear("with your draft"), "Saved, the values are checked against the rules as they are")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
 		}
 

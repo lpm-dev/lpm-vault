@@ -147,23 +147,22 @@ struct ConnectCLISheet: View {
 	}
 
 	private var vaultIDSection: some View {
-		// One line: the ID is in the JSON below too, so it needs no box of its own.
-		HStack(alignment: .firstTextBaseline, spacing: 8) {
-			Text("Vault ID")
-				.font(.system(size: 12, weight: .medium))
-				.foregroundStyle(VaultPalette.textSecondary)
-			Text(projectId)
-				.font(VaultTypography.tabular(12.5, .medium))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.lineLimit(1)
-				.truncationMode(.middle)
-				.textSelection(.enabled)
-				.layoutPriority(1)
+		// A labeled value, with what it is under it: the ID is in the JSON below too, so it needs no box of its own.
+		VStack(alignment: .leading, spacing: 3) {
+			HStack(alignment: .firstTextBaseline, spacing: 8) {
+				Text("Vault ID")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
+				Text(projectId)
+					.font(VaultTypography.code(12.5))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+					.textSelection(.enabled)
+			}
 			Text("Identifies this project. Safe to commit.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
-			Spacer(minLength: 0)
 		}
 	}
 
@@ -347,7 +346,7 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(alignment: .center, spacing: 8) {
 				step(number, "Use it from the terminal")
-				Text("\(status == .noFolder ? "once the project folder is linked" : "in the linked project folder") · \(VaultProject.displayName(for: guidance.environment))")
+				Text(status == .noFolder ? "Runs once the folder is linked" : "Runs in the linked folder")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -367,7 +366,10 @@ struct ConnectCLISheet: View {
 				VaultInlineWarning(text: warning)
 			}
 			// The commands' caption, under them as step 2's is under its JSON, before the disclosure that opens more.
-			Text("An explicit --env overrides a script's own environment.")
+			// The flag in code type, as in the commands above it.
+			(Text("These use \(VaultProject.displayName(for: guidance.environment)). An explicit ")
+				+ Text("--env").font(VaultTypography.code(11)).foregroundStyle(VaultPalette.codeText)
+				+ Text(" overrides a script's own environment."))
 				.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
 			let more = guidance.commands.count - 1

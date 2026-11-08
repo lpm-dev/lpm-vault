@@ -111,6 +111,10 @@ struct VaultAppearanceTests {
 			(VaultPalette.textFaint, VaultPalette.content),
 			(VaultPalette.textFaint, VaultPalette.inspector),
 			(VaultPalette.textFaint, VaultPalette.card),
+			(VaultPalette.placeholder, VaultPalette.control),
+			(VaultPalette.placeholder, VaultPalette.content),
+			(VaultPalette.placeholder, VaultPalette.inspector),
+			(VaultPalette.placeholder, VaultPalette.sidebar),
 			(VaultPalette.textTertiary, VaultPalette.card),
 			(VaultPalette.textSecondary, VaultPalette.inspector),
 			(VaultPalette.selectedText, VaultPalette.selectedFill),
@@ -318,13 +322,47 @@ extension SheetInteractionTests {
 				expectedText: ["LPM Vault is Locked", "Unlock"])
 		}
 
+		@Test("a default button that's off keeps its accent, faded, so it never reads as the Cancel beside it", arguments: [ColorScheme.light, .dark])
+		func disabledDefaultButton(scheme: ColorScheme) async throws {
+			let buttons = HStack(spacing: 12) {
+				VaultBarButton(title: "Cancel") {}
+				VaultBarButton(title: "Add Key", shortcut: "↩", filled: true, disabled: true) {}
+			}
+			.padding(20)
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+			.background(VaultPalette.content)
+			let host = SheetTestHost(buttons, size: NSSize(width: 280, height: 72), keepsRequestedSize: true)
+			defer { host.window.close() }
+			host.view.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+			try await host.settle()
+			let add = try await host.labelFrame("Add Key")
+			let cancel = try await host.labelFrame("Cancel")
+			let image = try host.snapshot(host.view)
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+				space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			func color(at point: CGPoint) -> (red: Int, green: Int, blue: Int) {
+				let pixel = (Int((host.view.bounds.height - point.y) * scale) * image.width + Int(point.x * scale)) * 4
+				return (Int(pixels[pixel]), Int(pixels[pixel + 1]), Int(pixels[pixel + 2]))
+			}
+			// Inside each button's padding, clear of its title and of its edge.
+			let addFill = color(at: CGPoint(x: add.minX + 4, y: add.midY))
+			let cancelFill = color(at: CGPoint(x: cancel.minX + 4, y: cancel.midY))
+			#expect(addFill.blue - max(addFill.red, addFill.green) > 20, "Add Key is tinted with the accent: \(addFill)")
+			#expect(abs(addFill.blue - cancelFill.blue) + abs(addFill.red - cancelFill.red) > 30, "Add Key \(addFill), Cancel \(cancelFill)")
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.texts.contains { $0.contains("↩") } },
+				"Its shortcut waits until it's on")
+		}
+
 		/// A stroked capsule drawn into a bitmap had short vertical marks at its
 		/// round ends, beyond the curve, where the page should show.
 		@Test("filter chips draw nothing past their round ends", arguments: [ColorScheme.light, .dark], [true, false])
 		func chipEndsFollowTheirCurve(scheme: ColorScheme, selected: Bool) async throws {
 			let chipHeight: CGFloat = 26, inset: CGFloat = 10
 			let page = Color(nsColor: .init(srgbRed: 1, green: 1, blue: 1, alpha: 1))
-			let view = VaultFilterChip(title: "All keys", trailing: "12", selected: selected) {}
+			let view = VaultFilterChip(title: "All Keys", trailing: "12", selected: selected) {}
 				.padding(inset)
 				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 				.background(page)

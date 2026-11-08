@@ -21,7 +21,7 @@ extension SheetInteractionTests {
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
 				("Show inspector", .button), ("Project Settings", .button), ("New Key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
-				("Import variables into .env", .button), ("Export .env", .button),
+				("More actions", .button),
 			]
 			let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
 			for (name, role) in expected {
@@ -80,7 +80,7 @@ extension SheetInteractionTests {
 			let project = try #require(fixture.store.projects.first { $0.id == "header" })
 			let card = SheetTestHost(VaultProjectHoverCard(store: fixture.store, project: project), size: NSSize(width: 300, height: 260))
 			defer { card.window.close() }
-			#expect(try await card.waitForText("1 key fails lpm.json"))
+			#expect(try await card.waitForText("1 key fails its rules"))
 			#expect(try await !card.text().contains("invalid"), "Not again as invalid keys")
 		}
 
@@ -96,23 +96,22 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Delete Locally"))
 		}
 
-		@Test("Import and Export show their names where there's room, and go into a More menu where there isn't, rather than becoming bare icons")
+		@Test("Import and Export sit in the More menu at every width, so the row keeps one shape whether the inspector is open or not")
 		func importExportLabels() async throws {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
-			let wide = try await workspace(fixture.store, width: 1400)
-			for name in ["Import variables into .env", "Export .env"] {
-				let drawn = try await wide.drawnFrame(saying: name)
-				#expect(drawn.width > 30, "\(name) shows its name: \(drawn)")
+			for width in [CGFloat(1400), 1040] {
+				let host = try await workspace(fixture.store, width: width)
+				defer { host.window.close() }
+				let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
+				#expect(!elements.contains { $0.says("Import variables into .env") || $0.says("Export .env") }, "At \(width), Import and Export are in the menu")
+				#expect(elements.contains { $0.role == .button && $0.label == "More actions" }, "At \(width)")
 			}
-			wide.window.close()
 
 			let narrow = try await workspace(fixture.store, width: 1040)
 			defer { narrow.window.close() }
 			try await narrow.click("Show inspector")
 			#expect(try await narrow.waitForText("Hide inspector", exactly: true))
-			let elements = AccessibilityTree.visibleElements(in: narrow.window, of: narrow.view)
-			#expect(!elements.contains { $0.says("Import variables into .env") }, "Import isn't a bare icon")
 			try await narrow.click("More actions")
 			let menu = try await narrow.popoverWindow()
 			#expect(try await narrow.waitForText("Import into .env…", in: menu))
@@ -200,7 +199,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
 			defer { host.window.close() }
-			#expect(try await host.waitUntil { selected(in: host) == ["All keys"] })
+			#expect(try await host.waitUntil { selected(in: host) == ["All Keys"] })
 			try #require(chip("Drift, 1", in: host)).press()
 			#expect(try await host.waitUntil { selected(in: host) == ["Drift, 1"] })
 			_ = try await host.clickSidebarEnvironment(".env")
@@ -273,7 +272,7 @@ extension SheetInteractionTests {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox && $0.says("Reveal all values") }
 		}
 
-		private static let chips: Set<String> = ["All keys", "Drift, 1", "Missing, 1", "Invalid, 1"]
+		private static let chips: Set<String> = ["All Keys", "Drift, 1", "Missing, 1", "Invalid, 1"]
 
 		private func chip<V: View>(_ name: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .button && $0.label == name }

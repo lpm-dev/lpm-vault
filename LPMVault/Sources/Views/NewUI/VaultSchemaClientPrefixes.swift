@@ -97,7 +97,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 			} label: {
 				HStack(spacing: 6) {
 					Image(systemName: showsFrameworks ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
-					Text("Framework prefixes, always public").font(.system(size: 11.5))
+					Text("Framework Prefixes, Always Public").font(.system(size: 11.5))
 					Spacer(minLength: 8)
 					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(VaultTypography.tabular(11)).foregroundStyle(VaultPalette.textTertiary)
 				}

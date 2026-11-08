@@ -482,7 +482,9 @@ extension SheetInteractionTests {
 				named: "connect-cli-staging.png"
 			)
 			#expect(text.contains("--env=staging"))
-			#expect(text.contains("once the project folder is linked"), "Without a folder, the commands say they wait on step 1")
+			#expect(text.contains("Runs once the folder is linked"), "Without a folder, the commands say they wait on step 1")
+			#expect(text.contains("These use .env.staging. An explicit --env overrides a script's own environment."),
+				"The commands' caption names the environment they use")
 			#expect(!text.contains("Choose the project folder first"), "And say it once")
 		}
 

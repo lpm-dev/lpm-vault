@@ -13,6 +13,8 @@ struct VaultProjectHoverCardTests {
 		#expect(Card.schemaLine(state: nil, check: nil, hasFolder: true).text == "lpm.json not read yet")
 		#expect(Card.schemaLine(state: .noFolder, check: nil, hasFolder: true).text == "No project folder on this Mac")
 		#expect(Card.schemaLine(state: .unreadable(.init(location: "lpm.json", reason: "Not JSON")), check: nil, hasFolder: true).text == "lpm.json can't be read")
+		#expect(Card.failingLine(1).text == "1 key fails its rules" && Card.failingLine(3).text == "3 keys fail their rules")
+		#expect(Card.failingLine(2).symbol == VaultSmartView.invalid.symbol, "Marked as failing keys are everywhere else")
 	}
 
 	@Test("counts say what they count: keys that differ, are missing, or fail their rules")

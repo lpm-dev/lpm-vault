@@ -105,8 +105,14 @@ struct VaultProjectHoverCard: View {
 			guard let check, !check.environments.isEmpty else { return .init(symbol: symbol, text: "Values not checked yet") }
 			return failing == 0
 				? .init(symbol: symbol, text: "Values pass lpm.json")
-				: .init(symbol: symbol, text: failing == 1 ? "1 key fails lpm.json" : "\(failing) keys fail lpm.json", tint: VaultPalette.problemMark)
+				: failingLine(failing)
 		}
+	}
+
+	/// Keys whose stored values fail their rules, marked as the matrix marks them.
+	static func failingLine(_ count: Int) -> Line {
+		.init(symbol: VaultSmartView.invalid.symbol, text: count == 1 ? "1 key fails its rules" : "\(count) keys fail their rules",
+			tint: VaultSmartView.invalid.tint)
 	}
 
 	private var changed: Line {
