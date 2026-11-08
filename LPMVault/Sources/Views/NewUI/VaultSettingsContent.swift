@@ -17,12 +17,12 @@ struct VaultSettingsContent: View {
 			if category == .platforms {
 				PlatformsView(store: store, showsHeader: false)
 			} else {
-				ScrollView {
+				VaultSettingsScroller {
 					VStack(alignment: .leading, spacing: 22) {
 						sections
 					}
 					.frame(maxWidth: VaultMetrics.formWidth, alignment: .leading)
-					.padding(.horizontal, 28)
+					.padding(.horizontal, VaultSettingsOverlay.contentInset)
 					.padding(.vertical, 24)
 					.frame(maxWidth: .infinity, alignment: .leading)
 				}
@@ -101,6 +101,7 @@ struct VaultSettingsContent: View {
 						showLogoutConfirmation = true
 					}
 				}
+				.vaultSettingsAnchor(.account)
 			}
 			serverSettings
 		} else {
@@ -131,6 +132,7 @@ struct VaultSettingsContent: View {
 							.fixedSize(horizontal: false, vertical: true)
 					}
 				}
+				.vaultSettingsAnchor(.account)
 			}
 			serverSettings
 		}
@@ -157,6 +159,7 @@ struct VaultSettingsContent: View {
 				}
 				#endif
 			}
+			.vaultSettingsAnchor(.registryServer)
 		}
 	}
 

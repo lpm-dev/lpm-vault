@@ -7,8 +7,8 @@ struct VaultGeneralSettingsSection: View {
 	var body: some View {
 		@Bindable var quitSettings = quitSettings
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Quit shortcut", detail: quitSettings.selection.explanation) {
-				VaultSegmentedPicker(title: "Quit shortcut", options: VaultQuitShortcut.allCases.map { ($0, $0.title) },
+			VaultSettingsRow(.quitShortcut, detail: quitSettings.selection.explanation) {
+				VaultSegmentedPicker(title: VaultSettingsEntry.quitShortcut.title, options: VaultQuitShortcut.allCases.map { ($0, $0.title) },
 					selection: $quitSettings.selection, segmentWidth: VaultSettingsLayout.segment)
 					.accessibilityHint(quitSettings.selection.explanation)
 			}
@@ -25,7 +25,7 @@ struct VaultAppearanceSettingsSection: View {
 	var body: some View {
 		@Bindable var appearanceSettings = appearanceSettings
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
+			VaultSettingsRow(.theme, detail: Self.themeExplanation) {
 				VaultSegmentedPicker(title: "Appearance", options: VaultAppearance.allCases.map { ($0, $0.title) },
 					selection: $appearanceSettings.selection, segmentWidth: VaultSettingsLayout.segment)
 					.accessibilityHint(Self.themeExplanation)
@@ -42,26 +42,24 @@ struct VaultUpdateSettingsSection: View {
 	var body: some View {
 		@Bindable var updates = updateChecker
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Installed version", detail: updates.buildInfo.displayVersion, detailIsSelectable: true) {
+			VaultSettingsRow(.installedVersion, detail: updates.buildInfo.displayVersion, detailIsSelectable: true) {
 				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates, height: 28) {
 					updates.checkForUpdates()
 				}
 			}
 			VaultHairline()
-			VaultSettingsRow(title: "Check automatically",
+			VaultSettingsRow(.automaticChecks,
 				detail: updates.canChangeAutomaticUpdates ? "Looks for a new version in the background and offers it in the title bar."
 					: "This build doesn’t update itself.") {
-				VaultSettingsSwitch(title: "Check automatically", isOn: $updates.automaticallyChecks,
-					disabled: !updates.canChangeAutomaticUpdates)
+				VaultSettingsSwitch(.automaticChecks, isOn: $updates.automaticallyChecks, disabled: !updates.canChangeAutomaticUpdates)
 			}
-			VaultSettingsRow(title: "Download and install in the background",
-				detail: "Installs the next time LPM Vault quits, without asking first.") {
-				VaultSettingsSwitch(title: "Download and install in the background", isOn: $updates.automaticallyDownloads,
+			VaultSettingsRow(.backgroundInstall, detail: "Installs the next time LPM Vault quits, without asking first.") {
+				VaultSettingsSwitch(.backgroundInstall, isOn: $updates.automaticallyDownloads,
 					disabled: !updates.canChangeAutomaticUpdates || !updates.automaticallyChecks)
 			}
 			VaultHairline()
-			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
-				VaultSegmentedPicker(title: "Update channel", options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
+			VaultSettingsRow(.updateChannel, detail: updates.channelDescription) {
+				VaultSegmentedPicker(title: VaultSettingsEntry.updateChannel.title, options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
 					selection: $updates.channel, segmentWidth: VaultSettingsLayout.segment)
 					.disabled(!updates.canChangeChannel)
 				.accessibilityHint(updates.channelDescription)
@@ -101,7 +99,7 @@ struct VaultLPMHomeSettingsSection: View {
 	var body: some View {
 		VaultSettingsRows {
 			// A path in the code font, as a project's folder is, and what it is in the system font.
-			VaultSettingsRow(
+			VaultSettingsRow(.lpmHome,
 				titleText: Text(store.lpmHome.displayPath).font(VaultTypography.code(12.5, .medium))
 					+ Text(store.lpmHome.isDefault ? "  (default)" : "").font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary),
 				detail: Self.explanation, detailIsSelectable: false
@@ -244,21 +242,26 @@ struct VaultSettingsRows<Content: View>: View {
 	}
 }
 
-/// A setting's name and explanation, with its control on the trailing side.
-/// A detail that's a value, such as the version, can be selected and copied.
+/// A setting's name and explanation, with its control on the trailing side,
+/// named as Settings' search names it, which brings it here. A detail that's a
+/// value, such as the version, can be selected and copied.
 struct VaultSettingsRow<Control: View>: View {
+	let entry: VaultSettingsEntry
 	let title: Text
 	let detail: String
 	var detailIsSelectable = false
 	@ViewBuilder let control: Control
 
-	init(title: String, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
-		self.init(titleText: Text(title).font(.system(size: 13, weight: .semibold)), detail: detail,
+	init(_ entry: VaultSettingsEntry, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+		self.init(entry, titleText: Text(entry.title).font(.system(size: 13, weight: .semibold)), detail: detail,
 			detailIsSelectable: detailIsSelectable, control: control)
 	}
 
 	/// A title drawn its own way, such as a path in the code font.
-	init(titleText: Text, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+	init(_ entry: VaultSettingsEntry, titleText: Text, detail: String, detailIsSelectable: Bool = false,
+		@ViewBuilder control: () -> Control)
+	{
+		self.entry = entry
 		title = titleText
 		self.detail = detail
 		self.detailIsSelectable = detailIsSelectable
@@ -286,6 +289,7 @@ struct VaultSettingsRow<Control: View>: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			control
 		}
+		.vaultSettingsAnchor(entry)
 	}
 }
 
@@ -314,6 +318,13 @@ struct VaultSettingsMenu<Value: Hashable>: View {
 	}
 }
 
+extension VaultSettingsMenu {
+	/// The menu for `entry`'s choices, named as its row is.
+	init(_ entry: VaultSettingsEntry, options: [(value: Value, label: String)], selection: Binding<Value>) {
+		self.init(title: entry.title, options: options, selection: selection)
+	}
+}
+
 /// A setting that's on or off, as a switch on its row's trailing side.
 struct VaultSettingsSwitch: View {
 	let title: String
@@ -328,10 +339,21 @@ struct VaultSettingsSwitch: View {
 	}
 }
 
+extension VaultSettingsSwitch {
+	/// The switch for `entry`, named as its row is.
+	init(_ entry: VaultSettingsEntry, isOn: Binding<Bool>, disabled: Bool = false) {
+		self.init(title: entry.title, isOn: isOn, disabled: disabled)
+	}
+}
+
 /// What LPM Vault always does, said plainly rather than offered as a switch
 /// that would only weaken it.
 struct VaultSettingsFact: View {
-	let text: String
+	let entry: VaultSettingsEntry
+
+	init(_ entry: VaultSettingsEntry) {
+		self.entry = entry
+	}
 
 	var body: some View {
 		HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -340,12 +362,13 @@ struct VaultSettingsFact: View {
 				.foregroundStyle(VaultPalette.greenTintText)
 				.frame(width: 12)
 				.accessibilityHidden(true)
-			Text(text)
+			Text(entry.title)
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textSecondary)
 				.fixedSize(horizontal: false, vertical: true)
 				.frame(maxWidth: .infinity, alignment: .leading)
 		}
 		.accessibilityElement(children: .combine)
+		.vaultSettingsAnchor(entry)
 	}
 }

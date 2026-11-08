@@ -308,6 +308,18 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText(text))
 				try await save(host, name, dark: dark)
 			}
+			store.showSettings(.general)
+			try host.typeText("screen", placeholder: "Search")
+			#expect(try await host.waitForText("SECURITY", exactly: true))
+			try host.press(.down)
+			try host.press(.down)
+			let capture = VaultSettingsEntry.hideFromCapture.title
+			#expect(try await host.waitUntil {
+				store.shownSettingsCategory == .security
+					&& AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says(capture) && $0.isOn != nil }
+			})
+			try await save(host, "27-settings-search", dark: dark)
+			try host.press(.escape)
 			store.closeAccountPage()
 			_ = try await host.waitUntil { !store.isShowingAccountPage }
 

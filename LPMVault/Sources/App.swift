@@ -271,11 +271,12 @@ struct LPMVaultApp: App {
 				.keyboardShortcut("i", modifiers: [.command, .shift])
 				.disabled(!store.isUnlocked || store.selectedProject == nil)
 
-				Button("Find Secrets") {
-					NotificationCenter.default.post(name: .findSecrets, object: nil)
+				let find = VaultFindTarget(showingSettings: store.isShowingAccountPage)
+				Button(find.title) {
+					NotificationCenter.default.post(name: find.notification, object: nil)
 				}
 				.keyboardShortcut("f", modifiers: .command)
-				.disabled(!store.isUnlocked || store.selectedProject == nil)
+				.disabled(!store.isUnlocked || (find == .secrets && store.selectedProject == nil))
 
 				Button("Find Value…") {
 					NotificationCenter.default.post(name: .findValue, object: nil)
@@ -327,10 +328,36 @@ struct LPMVaultApp: App {
 
 }
 
+/// What ⌘F searches: Settings while it shows, rather than the projects hidden
+/// under it, and otherwise the projects and their keys.
+enum VaultFindTarget: Equatable {
+	case secrets
+	case settings
+
+	init(showingSettings: Bool) {
+		self = showingSettings ? .settings : .secrets
+	}
+
+	var title: String {
+		switch self {
+		case .secrets: "Find Secrets"
+		case .settings: "Find in Settings"
+		}
+	}
+
+	var notification: Notification.Name {
+		switch self {
+		case .secrets: .findSecrets
+		case .settings: .findSettings
+		}
+	}
+}
+
 extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
 	static let importVariables = Notification.Name("dev.lpm.vault.import-variables")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
+	static let findSettings = Notification.Name("dev.lpm.vault.find-settings")
 	static let findValue = Notification.Name("dev.lpm.vault.find-value")
 	static let findReusedValues = Notification.Name("dev.lpm.vault.find-reused-values")
 	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")

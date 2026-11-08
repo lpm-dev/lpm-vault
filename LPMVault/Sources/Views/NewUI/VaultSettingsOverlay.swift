@@ -1,14 +1,16 @@
 import SwiftUI
 
 /// Settings and Platforms over the workspace, which stays as it was under a
-/// dimmed backdrop: a menu of Settings' parts on the leading side, the part
-/// chosen beside it, and a header naming it. Esc, the close button or a click
-/// on the backdrop closes it.
+/// dimmed backdrop: a menu of Settings' parts on the leading side, with a
+/// search above it, the part chosen beside it, and a header naming it. Esc
+/// clears a search, then closes it, as the close button or a click on the
+/// backdrop does.
 struct VaultSettingsOverlay: View {
 	@Bindable var store: VaultStore
 	let category: VaultSettingsCategory
 
-	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+	@State private var search = VaultSettingsSearch()
+	@FocusState private var searchFocused: Bool
 	// Optional, as a page that shows none of them, such as Platforms, can be shown without them.
 	@Environment(VaultAppearanceSettings.self) private var appearance: VaultAppearanceSettings?
 	@Environment(VaultQuitSettings.self) private var quit: VaultQuitSettings?
@@ -20,9 +22,12 @@ struct VaultSettingsOverlay: View {
 
 	/// How far the panel stays from the title bar, the window's bottom and its sides.
 	static let margin: CGFloat = 40
-	/// The widest the panel grows in a large window.
-	static let maximumWidth: CGFloat = 1100
 	static let menuWidth: CGFloat = 200
+	/// The space between a page's column of cards and the panel's sides.
+	static let contentInset: CGFloat = 28
+	/// The widest the panel grows in a large window: the menu, its hairline and
+	/// a page's widest column of cards, so no empty strip runs beside them.
+	static let maximumWidth: CGFloat = menuWidth + 1 + contentInset + VaultMetrics.formWidth + contentInset
 	static let headerHeight: CGFloat = 58
 
 	var body: some View {
@@ -38,12 +43,40 @@ struct VaultSettingsOverlay: View {
 			}
 			.frame(width: geometry.size.width, height: geometry.size.height)
 		}
-		// Esc closes it wherever focus is in the window, unless a sheet, such as a backup's, is over it.
-		.background(VaultMenuKeys { key in
-			guard key == .close else { return false }
-			store.closeAccountPage()
+		// Its keys work wherever focus is in the window, unless a sheet, such as a backup's, is over it.
+		.background(VaultMenuKeys { handle($0) })
+		.onReceive(NotificationCenter.default.publisher(for: .findSettings)) { _ in searchFocused = true }
+	}
+
+	/// Esc clears a search before it closes Settings. From the search field,
+	/// the arrows show the result above or below, and Return the one shown or the best.
+	private func handle(_ key: VaultMenuKeys.Key) -> Bool {
+		switch key {
+		case .close:
+			if search.query.isEmpty {
+				store.closeAccountPage()
+			} else {
+				search.clear()
+			}
 			return true
-		})
+		case .up, .down:
+			guard searchFocused, search.isSearching else { return false }
+			if let entry = search.result(movingBy: key == .down ? 1 : -1) { show(entry) }
+			return true
+		case .open:
+			guard searchFocused, search.isSearching, let entry = search.resultForReturn else { return false }
+			show(entry)
+			return true
+		case .left, .right:
+			return false
+		}
+	}
+
+	/// Opens `entry`'s page, which brings it into view and tints it a moment.
+	private func show(_ entry: VaultSettingsEntry) {
+		if store.shownSettingsCategory != entry.category { store.showSettings(entry.category) }
+		search.choose(entry)
+		AccessibilityNotification.Announcement("\(entry.title), in \(entry.category.title)").post()
 	}
 
 	/// Where the panel sits in a window `size` big, from its top-left: clear
@@ -64,6 +97,7 @@ struct VaultSettingsOverlay: View {
 				VaultHairline(axis: .vertical)
 				VaultSettingsContent(store: store, category: category)
 					.id(category)
+					.environment(\.vaultSettingsHighlight, search.highlight)
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
@@ -110,10 +144,16 @@ struct VaultSettingsOverlay: View {
 
 	private var menu: some View {
 		VStack(alignment: .leading, spacing: 1) {
-			ForEach(VaultSettingsCategory.allCases) { item in
-				VaultSettingsMenuRow(category: item, selected: item == category) { store.showSettings(item) }
+			VaultSettingsSearchField(search: search, focused: $searchFocused)
+				.padding(.bottom, 10)
+			if search.isSearching {
+				VaultSettingsSearchResults(search: search, show: show)
+			} else {
+				ForEach(VaultSettingsCategory.allCases) { item in
+					VaultSettingsMenuRow(category: item, selected: item == category) { store.showSettings(item) }
+				}
+				Spacer(minLength: 12)
 			}
-			Spacer(minLength: 12)
 			VStack(alignment: .leading, spacing: 2) {
 				Text("LPM Vault")
 				Text(VaultBuildInfo().displayVersion)

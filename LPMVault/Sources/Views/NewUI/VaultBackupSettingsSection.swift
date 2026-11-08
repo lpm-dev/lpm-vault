@@ -23,7 +23,9 @@ struct VaultBackupSettingsSection: View {
 			VaultHairline()
 			HStack(spacing: 8) {
 				VaultBarButton(systemImage: "tray.and.arrow.up", title: "Export Backup…", disabled: !store.canUseLocalSecrets, height: 28, action: exportBackup)
+					.vaultSettingsAnchor(.exportBackup, outset: CGSize(width: 4, height: 4))
 				VaultBarButton(systemImage: "tray.and.arrow.down", title: "Restore from Backup…", disabled: !store.canUseLocalSecrets, height: 28, action: restoreBackup)
+					.vaultSettingsAnchor(.restoreBackup, outset: CGSize(width: 4, height: 4))
 				Spacer(minLength: 12)
 				Text(Self.lastBackupText(store.lastBackup))
 					.font(.system(size: 11.5))

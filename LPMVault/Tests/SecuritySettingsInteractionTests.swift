@@ -42,14 +42,14 @@ extension SheetInteractionTests {
 			return Fixture(store: store, biometric: biometric, defaults: defaults, folder: folder)
 		}
 
-		private func overlay(_ fixture: Fixture, _ category: VaultSettingsCategory, updates: UpdateChecker = UpdateChecker())
-			async throws -> SheetTestHost<some View>
+		private func overlay(_ fixture: Fixture, _ category: VaultSettingsCategory, updates: UpdateChecker = UpdateChecker(),
+			size: NSSize = NSSize(width: 1040, height: 760)) async throws -> SheetTestHost<some View>
 		{
 			let host = SheetTestHost(VaultSettingsOverlay(store: fixture.store, category: category)
 				.environment(updates)
 				.environment(VaultAppearanceSettings(defaults: fixture.defaults))
 				.environment(VaultQuitSettings(defaults: fixture.defaults)),
-				size: NSSize(width: 1040, height: 760), keepsRequestedSize: true)
+				size: size, keepsRequestedSize: true)
 			try await host.settle()
 			return host
 		}
@@ -89,6 +89,22 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("SCREEN", exactly: true))
 			let capture = try await host.waitForElement(saying: "Hide from screenshots and screen sharing")
 			#expect(capture.isOn == true)
+		}
+
+		@Test("in a wide window, Settings is only as wide as its cards: they reach its trailing side, with no empty strip beside them")
+		func panelFitsItsCards() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let size = NSSize(width: 1400, height: 800)
+			let host = try await overlay(fixture, .security, size: size)
+			defer { host.window.close() }
+			let panel = VaultSettingsOverlay.panelFrame(in: size)
+			let control = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: "Lock after"), in: host.view)
+			let controlEnd = control.maxX * host.view.bounds.width
+			let cardPadding: CGFloat = 16
+			#expect(abs(controlEnd - (panel.maxX - VaultSettingsOverlay.contentInset - cardPadding)) < 1,
+				"The card's control ends at \(controlEnd), in a panel ending at \(panel.maxX)")
+			#expect(panel.width < size.width - 2 * VaultSettingsOverlay.margin, "Narrower than the window allows, as the cards are")
 		}
 
 		@Test("a lock time chosen from its menu is saved and applies, and Restore Defaults puts the page back")

@@ -9,14 +9,13 @@ struct VaultLockingSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Lock after",
+			VaultSettingsRow(.lockAfter,
 				detail: "Locks LPM Vault when it’s had no input this long. The title bar counts down the last 30 seconds.") {
-				VaultSettingsMenu(title: "Lock after", options: VaultLockInterval.allCases.map { ($0, $0.title) },
-					selection: $settings.lockAfter)
+				VaultSettingsMenu(.lockAfter, options: VaultLockInterval.allCases.map { ($0, $0.title) }, selection: $settings.lockAfter)
 			}
 			VaultHairline()
-			VaultSettingsFact(text: "Locks when your Mac sleeps, its screen locks or you close the window")
-			VaultSettingsFact(text: "Hides values while another app is in front")
+			VaultSettingsFact(.lockOnSleep)
+			VaultSettingsFact(.hideInBackground)
 			Text("Locking only forgets what was unlocked: your values stay in the Keychain, and unlocking asks for Touch ID or your password again.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
@@ -31,18 +30,15 @@ struct VaultValueSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Ask again to show or copy a value",
+			VaultSettingsRow(.valueApproval,
 				detail: "Asks for Touch ID or your Mac password once the last approval is this old, even while LPM Vault is unlocked. Unlocking counts as an approval.") {
-				VaultSettingsMenu(title: "Ask again to show or copy a value",
-					options: VaultValueApproval.allCases.map { ($0, $0.title) }, selection: $settings.valueApproval)
+				VaultSettingsMenu(.valueApproval, options: VaultValueApproval.allCases.map { ($0, $0.title) }, selection: $settings.valueApproval)
 			}
-			VaultSettingsRow(title: "Hide shown values again",
-				detail: "Masks values you revealed once they’ve been shown this long.") {
-				VaultSettingsMenu(title: "Hide shown values again",
-					options: VaultRehideInterval.allCases.map { ($0, $0.title) }, selection: $settings.rehide)
+			VaultSettingsRow(.rehideValues, detail: "Masks values you revealed once they’ve been shown this long.") {
+				VaultSettingsMenu(.rehideValues, options: VaultRehideInterval.allCases.map { ($0, $0.title) }, selection: $settings.rehide)
 			}
 			VaultHairline()
-			VaultSettingsFact(text: "Publishing and backups ask for Touch ID or your password every time, however recently you unlocked")
+			VaultSettingsFact(.sensitiveActions)
 		}
 	}
 }
@@ -53,13 +49,12 @@ struct VaultClipboardSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Clear copied values after",
+			VaultSettingsRow(.clipboardClear,
 				detail: "Clears a copied value from the clipboard after this long, unless you’ve copied something else since.") {
-				VaultSettingsMenu(title: "Clear copied values after",
-					options: VaultClipboardClear.allCases.map { ($0, $0.title) }, selection: $settings.clipboardClear)
+				VaultSettingsMenu(.clipboardClear, options: VaultClipboardClear.allCases.map { ($0, $0.title) }, selection: $settings.clipboardClear)
 			}
 			VaultHairline()
-			VaultSettingsFact(text: "Copies stay on this Mac: Universal Clipboard and clipboard history apps skip them")
+			VaultSettingsFact(.clipboardStaysLocal)
 		}
 	}
 }
@@ -70,9 +65,9 @@ struct VaultCaptureSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Hide from screenshots and screen sharing",
+			VaultSettingsRow(.hideFromCapture,
 				detail: "LPM Vault’s windows show up blank in screenshots, recordings and shared screens. Turn this off to capture them.") {
-				VaultSettingsSwitch(title: "Hide from screenshots and screen sharing", isOn: $settings.hidesFromCapture)
+				VaultSettingsSwitch(.hideFromCapture, isOn: $settings.hidesFromCapture)
 			}
 		}
 	}
@@ -89,9 +84,9 @@ struct VaultHistoryDefaultsSettingsSection: View {
 	var body: some View {
 		@Bindable var settings = store.settings
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Keep local history for new projects",
+			VaultSettingsRow(.newProjectHistory,
 				detail: "New and imported projects keep an encrypted record of value changes on this Mac. Each project’s own setting is in its Project Settings.") {
-				VaultSettingsSwitch(title: "Keep local history for new projects", isOn: $settings.newProjectsKeepHistory)
+				VaultSettingsSwitch(.newProjectHistory, isOn: $settings.newProjectsKeepHistory)
 			}
 			if usageRead {
 				VaultHairline()
@@ -134,7 +129,7 @@ struct VaultCLIStatusSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(titleText: title, detail: detail) {
+			VaultSettingsRow(.cliStatus, titleText: title, detail: detail) {
 				HStack(spacing: 8) {
 					if checking { ProgressView().controlSize(.small) }
 					if status == .notFound {
@@ -182,9 +177,9 @@ struct VaultCLIApprovalSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Ask before the CLI reads a new project",
+			VaultSettingsRow(.cliApproval,
 				detail: "New and imported projects ask for Touch ID or your Mac password each time the LPM CLI reads their values. Each project’s own setting is in its Project Settings.") {
-				VaultSettingsSwitch(title: "Ask before the CLI reads a new project", isOn: $settings.newProjectsAskBeforeCLIReads)
+				VaultSettingsSwitch(.cliApproval, isOn: $settings.newProjectsAskBeforeCLIReads)
 			}
 		}
 	}
@@ -198,9 +193,8 @@ struct VaultBackupReminderSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Remind me to back up every month",
-				detail: "The sidebar reminds you a month after your last backup.") {
-				VaultSettingsSwitch(title: "Remind me to back up every month", isOn: $settings.remindsToBackUp)
+			VaultSettingsRow(.backupReminder, detail: "The sidebar reminds you a month after your last backup.") {
+				VaultSettingsSwitch(.backupReminder, isOn: $settings.remindsToBackUp)
 			}
 		}
 	}
@@ -256,20 +250,20 @@ struct VaultAboutLinksSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: "Release notes", detail: "What changed in each version.") {
+			VaultSettingsRow(.releaseNotes, detail: "What changed in each version.") {
 				VaultBarButton(title: "Open", height: 28) { open(VaultAboutLinks.releaseNotes) }
 					.accessibilityLabel("Open release notes")
 			}
-			VaultSettingsRow(title: "Documentation", detail: "Using LPM Vault with the LPM CLI.") {
+			VaultSettingsRow(.documentation, detail: "Using LPM Vault with the LPM CLI.") {
 				VaultBarButton(title: "Open", height: 28) { open(VaultAboutLinks.documentation) }
 					.accessibilityLabel("Open documentation")
 			}
-			VaultSettingsRow(title: "Send feedback",
+			VaultSettingsRow(.feedback,
 				detail: "Opens a GitHub issue that says which LPM Vault and macOS you use, never your values.") {
 				VaultBarButton(title: "Write…", height: 28) { open(VaultAboutLinks.feedback(build: build)) }
 					.accessibilityHint("Opens a new GitHub issue for your feedback")
 			}
-			VaultSettingsRow(title: "Acknowledgements", detail: "The open-source software LPM Vault includes, and its licenses.") {
+			VaultSettingsRow(.acknowledgements, detail: "The open-source software LPM Vault includes, and its licenses.") {
 				VaultBarButton(title: "Show", height: 28) { showAcknowledgements() }
 					.accessibilityLabel("Show acknowledgements")
 			}
