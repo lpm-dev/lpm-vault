@@ -8,7 +8,7 @@ extension SheetInteractionTests {
 	@Suite("Account settings presentation")
 	@MainActor
 	struct SettingsPagePresentationTests {
-		@Test("the signed-out Settings page offers local server selection only in debug builds, with the app's settings below")
+		@Test("signed out, Account & Sync offers signing in above the server, local server selection only in debug builds, and the menu the app's other settings")
 		func signedOutSettingsOfferLocalServerSelection() async throws {
 			let store = VaultStore(
 				keychainService: MockKeychainService(),
@@ -17,18 +17,20 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.appEnvironment = .production
-			let host = SheetTestHost(VaultSettingsPage(store: store).environment(VaultAppearanceSettings())
+			let host = SheetTestHost(VaultSettingsOverlay(store: store, category: .account).environment(VaultAppearanceSettings())
 				.environment(UpdateChecker()).environment(VaultQuitSettings()).environment(\.colorScheme, .light),
-				size: NSSize(width: 700, height: 1000), keepsRequestedSize: true)
+				size: NSSize(width: 900, height: 1000), keepsRequestedSize: true)
 			defer { host.window.close() }
 			try await host.settle()
 			let labels = try await host.text()
 			#expect(labels.contains("Not logged in"))
-			for section in ["GENERAL", "APPEARANCE", "UPDATES"] {
-				#expect(AccessibilityTree.elements(in: host.window).contains { $0.says(section, options: .caseInsensitive) }, "\(section) is on the page")
+			for category in ["General", "Appearance", "Updates"] {
+				#expect(AccessibilityTree.elements(in: host.window).contains { $0.role == .button && $0.says(category) }, "\(category) is in the menu")
 			}
 			#expect(!labels.contains("Open Settings"))
-			let lines = AccessibilityTree.lines(in: host.view)
+			// The content, beside the menu, whose rows would otherwise join its lines.
+			let contentStart = (VaultSettingsOverlay.inset(for: 900) + VaultSettingsOverlay.menuWidth + 2) / 900
+			let lines = AccessibilityTree.lines(in: host.view, region: CGRect(x: contentStart, y: 0, width: 1 - contentStart, height: 1))
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 			let signIn = try #require(lines.first { $0.text.contains("Sign In with Browser") })
 			let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
@@ -50,8 +52,8 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.currentUser = LPMUser(id: "u1", username: "tolga", name: nil, email: "tolga@example.com", avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
-			let host = SheetTestHost(VaultSettingsPage(store: store).environment(VaultAppearanceSettings())
-				.environment(UpdateChecker()).environment(VaultQuitSettings()), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
+			let host = SheetTestHost(VaultSettingsOverlay(store: store, category: .account).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()).environment(VaultQuitSettings()), size: NSSize(width: 900, height: 700), keepsRequestedSize: true)
 			defer { host.window.close() }
 			try host.scrollToEnd()
 			try await host.click("Sign Out")

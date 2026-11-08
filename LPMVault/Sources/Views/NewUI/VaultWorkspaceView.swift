@@ -319,16 +319,16 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
-			if !isObscured, !store.isShowingAccountPage, let warning = store.lastSyncWarnings.first {
+			if !isObscured, let warning = store.lastSyncWarnings.first {
 				metadataWarningBanner(warning)
 			}
 			if let refreshError = store.localStateRefreshError {
 				localStateRefreshBanner(refreshError)
 			}
-			if !isObscured, !store.isShowingAccountPage, let project, let pause = store.syncPauses[project.id] {
+			if !isObscured, let project, let pause = store.syncPauses[project.id] {
 				syncPausedBanner(project, pause)
 			}
-			if !isObscured, !store.isShowingAccountPage, let project {
+			if !isObscured, let project {
 				companionBanners(for: project)
 			}
 
@@ -367,15 +367,7 @@ struct VaultWorkspaceView: View {
 					}
 
 					Group {
-						if store.accountPage == .settings {
-							VaultSettingsPage(store: store)
-								.frame(maxWidth: .infinity, maxHeight: .infinity)
-								.background(VaultPalette.content)
-						} else if store.accountPage == .platforms {
-							PlatformsView(store: store)
-								.frame(maxWidth: .infinity, maxHeight: .infinity)
-								.background(VaultPalette.content)
-						} else if let project, mode == .projectSettings {
+						if let project, mode == .projectSettings {
 							VaultProjectSettingsView(
 								store: store,
 								project: project,
@@ -477,9 +469,7 @@ struct VaultWorkspaceView: View {
 					}
 					.frame(width: budget.content, height: geometry.size.height)
 					.overlay(alignment: .bottom) {
-						if !store.isShowingAccountPage {
-							VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
-						}
+						VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
 					}
 					.clipped()
 					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
@@ -652,8 +642,22 @@ struct VaultWorkspaceView: View {
 		return store.publishDestinations[project.id] ?? []
 	}
 
+	/// The workspace, with Settings over it while Settings shows. Under the
+	/// overlay the workspace stays as it was, out of the pointer's reach and VoiceOver's.
+	private var workspaceWithSettings: some View {
+		ZStack {
+			workspaceLayout
+				.accessibilityHidden(store.isShowingAccountPage)
+			if let category = store.shownSettingsCategory {
+				VaultSettingsOverlay(store: store, category: category)
+					.transition(.opacity)
+			}
+		}
+		.animation(reduceMotion ? nil : VaultMotion.quick, value: store.isShowingAccountPage)
+	}
+
 	private var workspaceSheets: some View {
-		workspaceLayout
+		workspaceWithSettings
 		.sheet(item: $importRequest) { request in
 			EnvImportSheet(store: store, projectID: request.projectID, environment: request.environment, file: request.file)
 				.vaultPrivacyProtected(isObscured)

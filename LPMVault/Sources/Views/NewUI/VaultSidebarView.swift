@@ -292,7 +292,7 @@ struct VaultSidebarView: View {
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
 		} ?? "CLI approval policy can't be read"
-		let selected = !store.isShowingAccountPage && store.selectedProjectId == project.id
+		let selected = store.selectedProjectId == project.id
 			&& (mode == .matrix || mode == .projectSettings)
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
@@ -412,7 +412,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func schemaRow(_ project: VaultProject) -> some View {
-		let selected = !store.isShowingAccountPage && mode == .schema
+		let selected = mode == .schema
 		let state = store.keyDescriptions[project.id]?.schema
 		let count = state?.overview?.rules.count
 		let unreadable = if case .unreadable? = state { true } else { false }
@@ -455,7 +455,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func historyRow(_ project: VaultProject) -> some View {
-		let selected = !store.isShowingAccountPage && mode == .history
+		let selected = mode == .history
 		let history = store.history
 		let showsThisProject = history.projectID == project.id
 		// What's known of every project: why its last change wasn't recorded,
@@ -499,7 +499,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
-		let selected = !store.isShowingAccountPage && mode == .environment(environment)
+		let selected = mode == .environment(environment)
 		let target = VaultEnvironmentTarget(projectId: project.id, environment: environment)
 		return VaultSidebarHoverReader { hovered in Button {
 			store.openProject(id: project.id)
@@ -784,7 +784,7 @@ struct VaultAccountSwitcher: View {
 				}
 			} else {
 				menuRow("Sign In…", systemImage: "person.crop.circle", choice: .signIn) {
-					store.showSettings()
+					store.showSettings(.account)
 					isPresented = false
 				}
 			}

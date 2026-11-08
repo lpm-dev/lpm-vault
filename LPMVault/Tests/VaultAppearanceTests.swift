@@ -309,10 +309,12 @@ extension SheetInteractionTests {
 			try await render(VaultGeneralSettingsSection().environment(VaultQuitSettings(defaults: defaults)),
 				size: CGSize(width: 520, height: 120), scheme: scheme, name: "settings-general-\(suffix)",
 				expectedText: ["Quit shortcut", "Direct", "Double press", "Hold"])
-			try await render(VaultSettingsPage(store: store).environment(settings).environment(UpdateChecker())
-				.environment(VaultQuitSettings(defaults: defaults)),
-				size: CGSize(width: 700, height: 900), scheme: scheme, name: "settings-\(suffix)",
-				expectedText: ["Settings", "SERVER", "GENERAL", "Quit shortcut", "APPEARANCE", "Theme", "UPDATES", "Installed version"])
+			for (category, text) in [(VaultSettingsCategory.general, "Quit shortcut"), (.appearance, "Theme"), (.account, "SERVER"), (.updates, "Installed version")] {
+				try await render(VaultSettingsOverlay(store: store, category: category).environment(settings).environment(UpdateChecker())
+					.environment(VaultQuitSettings(defaults: defaults)),
+					size: CGSize(width: 1040, height: 700), scheme: scheme, name: "settings-\(category.rawValue)-\(suffix)",
+					expectedText: ["Settings", category.title, text, "General", "Appearance", "Account & Sync", "Platforms", "Updates"])
+			}
 			try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
 				size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
 				expectedText: ["New Key", "Key", "Value", "Environments", "Cancel"])

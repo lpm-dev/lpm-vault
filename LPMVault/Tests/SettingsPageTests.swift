@@ -13,11 +13,27 @@ struct SettingsPageStoreTests {
 		return store
 	}
 
-	@Test("Settings opens on the page in the window, in place of a project")
+	@Test("Settings opens over the window's workspace")
 	func showsPage() {
 		let store = makeStore()
 		store.showSettings()
 		#expect(store.accountPage == .settings && store.isShowingAccountPage)
+	}
+
+	@Test("Settings opens where it was left; Platforms is its own page, and closing leaves the workspace's project as it was")
+	func categories() {
+		let store = makeStore()
+		#expect(store.shownSettingsCategory == nil)
+		store.showSettings()
+		#expect(store.shownSettingsCategory == .general, "First, General")
+		store.showSettings(.cli)
+		#expect(store.accountPage == .settings && store.shownSettingsCategory == .cli)
+		store.showSettings(.platforms)
+		#expect(store.accountPage == .platforms && store.shownSettingsCategory == .platforms)
+		store.closeAccountPage()
+		#expect(store.shownSettingsCategory == nil && !store.isShowingAccountPage)
+		store.showSettings()
+		#expect(store.shownSettingsCategory == .cli, "Where it was left, as Platforms is a page of its own")
 	}
 
 	@Test("⌘, while locked unlocks first, then shows Settings")
@@ -136,7 +152,7 @@ extension SheetInteractionTests {
 			#expect(store.isLoggedIn, "Signing out waits for the confirmation")
 		}
 
-		@Test("signed out, the menu offers the local vault and Sign In, which opens Settings, where signing in is")
+		@Test("signed out, the menu offers the local vault and Sign In, which opens Settings at Account & Sync, where signing in is")
 		func signedOut() async throws {
 			let store = store(signedIn: false)
 			let host = menu(store)
@@ -144,7 +160,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Personal vault"))
 			#expect(try await !host.text().contains("ORGANIZATIONS"))
 			try await host.click("Sign In…")
-			#expect(try await host.waitUntil { store.accountPage == .settings })
+			#expect(try await host.waitUntil { store.shownSettingsCategory == .account })
 		}
 	}
 }

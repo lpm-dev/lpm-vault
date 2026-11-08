@@ -94,6 +94,8 @@ enum VaultPalette {
 	static let switchOffBorder = adaptive(light: 0xBEBDC6, dark: 0x4A4A50)
 	/// Darkens a control while it's pressed, over whatever fill it has.
 	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
+	/// What dims the window behind an overlay, such as Settings.
+	static let scrim = adaptive(light: 0x1C1C1E, dark: 0x000000, lightOpacity: 0.32, darkOpacity: 0.5)
 
 	static let avatarNeutral = adaptive(light: 0xE2E1EA, dark: 0x2E2E33)
 	static let avatarNeutralForeground = adaptive(light: 0x55546A, dark: 0xFFFFFF, darkOpacity: 0.7)

@@ -1420,9 +1420,21 @@ final class VaultStore {
       clearKeyDescriptions()
     }
   }
-  /// The account page shown instead of a project, if any.
+  /// The account page the Settings overlay shows over the workspace, if any.
   var accountPage: AccountPage?
   var isShowingAccountPage: Bool { accountPage != nil }
+  /// The part of Settings shown while `accountPage` is `.settings`, kept
+  /// while Settings is closed, so it opens where it was left.
+  var settingsCategory: VaultSettingsCategory = .general
+
+  /// The part of the Settings overlay shown, or nil while it's closed.
+  var shownSettingsCategory: VaultSettingsCategory? {
+    switch accountPage {
+    case .platforms?: .platforms
+    case .settings?: settingsCategory
+    case nil: nil
+    }
+  }
 
   // Sync state
   var isSyncing: Bool = false
@@ -1802,6 +1814,19 @@ final class VaultStore {
 
   func showSettings() {
     accountPage = .settings
+    resetAutoLock()
+  }
+
+  /// Shows Settings at `category`; Platforms is its own page.
+  func showSettings(_ category: VaultSettingsCategory) {
+    guard category != .platforms else { return showPlatforms() }
+    settingsCategory = category
+    showSettings()
+  }
+
+  /// Closes the Settings overlay, leaving the workspace as it was under it.
+  func closeAccountPage() {
+    accountPage = nil
     resetAutoLock()
   }
 

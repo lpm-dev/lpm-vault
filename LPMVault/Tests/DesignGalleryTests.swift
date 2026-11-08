@@ -291,10 +291,14 @@ extension SheetInteractionTests {
 			_ = try await host.waitUntil { host.window.sheets.isEmpty }
 
 			store.showPlatforms()
+			#expect(try await host.waitForText("Close Settings"))
 			try await save(host, "08-platforms", dark: dark)
 
-			store.showSettings()
+			store.showSettings(.account)
+			#expect(try await host.waitForText("SERVER"))
 			try await save(host, "09-settings", dark: dark)
+			store.closeAccountPage()
+			_ = try await host.waitUntil { !store.isShowingAccountPage }
 
 			try await host.click("Account menu")
 			#expect(try await host.waitForText("Manage Account on lpm.dev"))

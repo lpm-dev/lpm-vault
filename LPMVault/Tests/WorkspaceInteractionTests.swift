@@ -62,12 +62,13 @@ extension SheetInteractionTests {
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
 				#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "160 points" })
+				// Settings shows over the table, which stays as it was under it.
 				store.showSettings()
-				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				#expect(try await host.waitForText("Close Settings"))
 				store.openProject(id: "workspace")
-				try await host.settle()
-				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(restored.accessibilityValue() as? String == "160 points")
+				#expect(try await host.waitUntil {
+					resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" }?.accessibilityValue() as? String == "160 points"
+				})
 				let gate = DispatchSemaphore(value: 0)
 				defer { gate.signal() }
 				store.selectedProjectId = nil
@@ -904,8 +905,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("All variables"))
 		}
 
-		@Test("settings removes project and environment selection while retaining navigation context", arguments: [false, true])
-		func settingsHasNoProjectSelection(environmentSelected: Bool) async throws {
+		@Test("Settings shows over the workspace, which keeps its project and environment, and closing it returns to them as they were", arguments: [false, true])
+		func settingsOverTheWorkspace(environmentSelected: Bool) async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
 			let host = try await workspace(store)
@@ -918,12 +919,14 @@ extension SheetInteractionTests {
 			}
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
 			store.showSettings()
-			try await host.settle()
-			#expect(try !host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
+			#expect(try await host.waitForText("Close Settings"))
 			#expect(store.selectedProjectId == "workspace")
-			store.openProject(id: "workspace")
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says("Workspace") },
+				"Under Settings, the workspace is out of VoiceOver's reach")
+			try await host.click("Close Settings")
+			#expect(try await host.waitUntil { !store.isShowingAccountPage })
 			try await host.settle()
-			#expect(!store.isShowingAccountPage)
+			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY), "The row is selected as it was")
 		}
 
 		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {

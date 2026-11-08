@@ -3,6 +3,8 @@ import SwiftUI
 /// The platform accounts LPM Vault publishes to, and connecting new ones.
 struct PlatformsView: View {
 	@Bindable var store: VaultStore
+	/// Its own title row; the Settings overlay's header names it instead.
+	var showsHeader = true
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var pendingDisconnect: PlatformConnection?
 	@State private var connectingCoolify = false
@@ -18,19 +20,25 @@ struct PlatformsView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			header
-
-			VaultHairline()
+			if showsHeader {
+				header
+				VaultHairline()
+			}
 
 			ScrollView {
 				VStack(alignment: .leading, spacing: 20) {
+					if !showsHeader {
+						Text(Self.tokensNote)
+							.font(.system(size: 12))
+							.foregroundStyle(VaultPalette.textTertiary)
+					}
 					if let notice = platforms.notice { noticeBanner(notice) }
 					connectedSection
 					addPlatformSection
 					revocationSection
 				}
-				.padding(.horizontal, 20)
-				.padding(.top, 18)
+				.padding(.horizontal, showsHeader ? 20 : 28)
+				.padding(.top, showsHeader ? 18 : 24)
 				.padding(.bottom, 20)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
@@ -85,12 +93,14 @@ struct PlatformsView: View {
 		}
 	}
 
+	private static let tokensNote = "Tokens stay in this Mac's Keychain"
+
 	private var header: some View {
 		HStack(alignment: .firstTextBaseline, spacing: 12) {
 			Text("Platforms")
 				.vaultPageTitle()
 				.accessibilityAddTraits(.isHeader)
-			Text("Tokens stay in this Mac's Keychain")
+			Text(Self.tokensNote)
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.lineLimit(1)

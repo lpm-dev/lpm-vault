@@ -149,12 +149,7 @@ struct VaultTitleBarView: View {
 				.foregroundStyle(VaultPalette.textPrimary)
 				.fixedSize()
 
-			if let page = accountPageName {
-				Text("— \(page)")
-					.font(.system(size: 13))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineLimit(1)
-			} else if let project {
+			if let project {
 				Text("— \(project.name)")
 					.font(.system(size: 13))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -212,7 +207,7 @@ struct VaultTitleBarView: View {
 					switch choice {
 					case .pull: onPull()
 					case .push: onPush()
-					case .signIn: store.showSettings()
+					case .signIn: store.showSettings(.account)
 					}
 				}
 			}
@@ -259,7 +254,7 @@ struct VaultTitleBarView: View {
 
 	@ViewBuilder
 	private var publishControl: some View {
-		if let project, !store.isShowingAccountPage {
+		if let project {
 			let hasSaved = !(store.publishDestinations[project.id] ?? []).isEmpty
 			VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…", borderless: true, active: showsPublishMenu.wrappedValue) {
 				if hasSaved {
@@ -271,15 +266,6 @@ struct VaultTitleBarView: View {
 			.anchorPreference(key: VaultPublishButtonAnchor.self, value: .bounds) { $0 }
 			.help(hasSaved ? "Publish to a saved destination or a new one" : "Publish an environment to a platform")
 			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
-		}
-	}
-
-	/// The app-level page the window shows, which the title names instead of the project.
-	private var accountPageName: String? {
-		switch store.accountPage {
-		case .settings?: "Settings"
-		case .platforms?: "Platforms"
-		case nil: nil
 		}
 	}
 

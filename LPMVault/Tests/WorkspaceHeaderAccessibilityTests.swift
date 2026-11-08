@@ -84,6 +84,32 @@ extension SheetInteractionTests {
 			#expect(try await !card.text().contains("invalid"), "Not again as invalid keys")
 		}
 
+		@Test("Settings' menu shows each part and the header names it; Esc or a click on the dimmed workspace closes it")
+		func settingsOverlay() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			fixture.store.showSettings(.general)
+			#expect(try await host.waitForText("Quit shortcut"))
+			try await host.click("Appearance")
+			#expect(try await host.waitForText("Theme"))
+			#expect(fixture.store.shownSettingsCategory == .appearance)
+			let menuRow = try await host.waitForElement(saying: "Appearance")
+			#expect(menuRow.isSelected, "The menu marks the part shown")
+			#expect(AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Appearance") }.count == 2,
+				"The menu row, and the header naming it")
+
+			try host.key("\u{1b}", code: 53, in: host.window)
+			#expect(try await host.waitUntil { !fixture.store.isShowingAccountPage }, "Esc closes Settings")
+
+			fixture.store.showSettings()
+			#expect(try await host.waitForText("Theme"), "It opens where it was left")
+			// The dimmed workspace beside the panel, which sits 120 points in from the window's sides.
+			try NativeTestClick.send(to: host.window, at: NSPoint(x: 40, y: host.window.contentLayoutRect.midY))
+			#expect(try await host.waitUntil { !fixture.store.isShowingAccountPage }, "A click beside it closes Settings")
+		}
+
 		@Test("the header's Settings button opens the project's settings")
 		func settingsButton() async throws {
 			let fixture = try makeFixture()
@@ -131,8 +157,11 @@ extension SheetInteractionTests {
 			}
 			try await host.click("Settings")
 			#expect(try await host.waitUntil { fixture.store.accountPage == .settings })
+			// Over the workspace, Settings' own menu goes on to Platforms.
 			try await host.click("Platforms")
 			#expect(try await host.waitUntil { fixture.store.accountPage == .platforms })
+			try await host.click("Close Settings")
+			#expect(try await host.waitUntil { !fixture.store.isShowingAccountPage })
 			try await host.click("Account menu")
 			#expect(try await host.waitForText("Sign In…"))
 		}
