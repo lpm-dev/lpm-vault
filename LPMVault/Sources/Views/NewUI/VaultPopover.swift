@@ -14,6 +14,26 @@ extension View {
 		background(VaultPopoverAnchor(isPresented: isPresented, edge: arrowEdge, content: content))
 	}
 
+	/// Shows `content` beside this view once the pointer has rested on it for
+	/// `delay`, as a tooltip or a hover card does: it never takes the keyboard
+	/// or the pointer, and goes as the pointer leaves or anything is clicked.
+	func vaultHoverPopover<Content: View>(
+		delay: Duration = .milliseconds(600), arrowEdge: Edge, enabled: Bool = true, @ViewBuilder content: @escaping () -> Content
+	) -> some View {
+		modifier(VaultHoverPopover(delay: delay, edge: arrowEdge, enabled: enabled, popover: content))
+	}
+
+	/// A short tooltip in the app's popover, for a control that shows only an icon.
+	func vaultTooltip(_ text: String, arrowEdge: Edge = .top) -> some View {
+		vaultHoverPopover(delay: .milliseconds(450), arrowEdge: arrowEdge) {
+			Text(text)
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textPrimary)
+				.padding(.horizontal, 9)
+				.padding(.vertical, 5)
+		}
+	}
+
 	/// Shows `content` for `item` while it isn't nil, as SwiftUI's `popover(item:)` does.
 	func vaultPopover<Item: Identifiable, Content: View>(
 		item: Binding<Item?>, arrowEdge: Edge = .bottom, @ViewBuilder content: @escaping (Item) -> Content
@@ -46,10 +66,44 @@ extension EnvironmentValues {
 	@Entry var vaultPopoverRoom: CGFloat = .infinity
 }
 
+private struct VaultHoverPopover<PopoverContent: View>: ViewModifier {
+	let delay: Duration
+	let edge: Edge
+	let enabled: Bool
+	let popover: () -> PopoverContent
+
+	@State private var shows = false
+	@State private var pending: Task<Void, Never>?
+
+	func body(content: Content) -> some View {
+		content
+			.onHover { inside in
+				pending?.cancel()
+				pending = nil
+				guard inside, enabled else {
+					shows = false
+					return
+				}
+				pending = Task { @MainActor in
+					try? await Task.sleep(for: delay)
+					if !Task.isCancelled { shows = true }
+				}
+			}
+			.onChange(of: enabled) { _, enabled in if !enabled { shows = false } }
+			.onDisappear {
+				pending?.cancel()
+				shows = false
+			}
+			.background(VaultPopoverAnchor(isPresented: $shows, edge: edge, passive: true, content: popover))
+	}
+}
+
 /// Sits behind the view a popover is shown for, so the popover knows where it is.
 private struct VaultPopoverAnchor<Content: View>: NSViewRepresentable {
 	@Binding var isPresented: Bool
 	let edge: Edge
+	/// Shown without taking the keyboard or the pointer, as a tooltip is.
+	var passive = false
 	let content: () -> Content
 
 	func makeCoordinator() -> VaultPopoverPresenter { VaultPopoverPresenter() }
@@ -60,6 +114,7 @@ private struct VaultPopoverAnchor<Content: View>: NSViewRepresentable {
 		let presenter = context.coordinator
 		presenter.anchor = view
 		presenter.edge = edge
+		presenter.passive = passive
 		let binding = $isPresented
 		presenter.onDismiss = { binding.wrappedValue = false }
 		guard isPresented else {
@@ -89,12 +144,14 @@ private final class VaultPopoverAnchorView: NSView {
 /// system's does, for whatever looks for one.
 final class VaultPopoverPanel: NSPanel {
 	var onCancel: () -> Void = {}
+	/// Shown without taking the keyboard, as a tooltip or hover card is.
+	var isPassive = false
 	/// Set as the popover starts to close, while it may still be fading out.
 	private(set) var isClosing = false
 
 	func beginClosing() { isClosing = true }
 
-	override var canBecomeKey: Bool { true }
+	override var canBecomeKey: Bool { !isPassive }
 	override var canBecomeMain: Bool { false }
 
 	override func cancelOperation(_ sender: Any?) {
@@ -107,6 +164,8 @@ final class VaultPopoverPanel: NSPanel {
 final class VaultPopoverPresenter: NSObject {
 	weak var anchor: NSView?
 	var edge: Edge = .bottom
+	/// Shown without taking the keyboard or the pointer, and gone at any click.
+	var passive = false
 	var onDismiss: () -> Void = {}
 
 	private var panel: VaultPopoverPanel?
@@ -139,11 +198,14 @@ final class VaultPopoverPresenter: NSObject {
 		panel.appearance = parent.effectiveAppearance
 		panel.contentView = hosting
 		panel.onCancel = { [weak self] in self?.dismiss() }
+		panel.isPassive = passive
+		// A passive one lets the pointer through, so it never covers what it describes.
+		panel.ignoresMouseEvents = passive
 		self.panel = panel
 		self.hosting = hosting
 		resize(to: hosting.fittingSize)
 		parent.addChildWindow(panel, ordered: .above)
-		panel.makeKey()
+		if !passive { panel.makeKey() }
 		if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
 			panel.alphaValue = 0
 			NSAnimationContext.runAnimationGroup { context in
@@ -231,6 +293,11 @@ final class VaultPopoverPresenter: NSObject {
 	/// a click on the view it's shown for is left to that view, which toggles it.
 	private func closeIfOutside(_ event: NSEvent) {
 		guard let panel else { return }
+		// A tooltip or hover card goes at any click, on the view it's for too.
+		if passive {
+			dismiss()
+			return
+		}
 		// A click in a popover shown from this one, such as a menu, is inside it.
 		var window = event.window
 		while let current = window {

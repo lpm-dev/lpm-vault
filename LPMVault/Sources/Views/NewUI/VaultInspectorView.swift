@@ -644,12 +644,12 @@ private struct VaultKeyEditor: View {
 		let displayName = VaultProject.displayName(for: environment)
 		let canCopy = store.canUseLocalSecrets
 		return HStack(spacing: 0) {
-			VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy \(displayName) value") {
+			VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy \(displayName) value", quiet: true) {
 				copy(environment, as: .value)
 			}
 			.disabled(!canCopy)
 			.opacity(canCopy ? 1 : 0.45)
-			VaultRowIconButton(systemImage: "ellipsis", help: "More for the \(displayName) value", active: menuShowing) {
+			VaultRowIconButton(systemImage: "ellipsis", help: "More for the \(displayName) value", active: menuShowing, quiet: true) {
 				moreMenuEnvironment = moreMenuEnvironment == environment ? nil : environment
 			}
 			.vaultPopover(isPresented: Binding(
@@ -701,7 +701,7 @@ private struct VaultKeyEditor: View {
 	private func valueActionRows(canCopy: Bool, canGenerate: Bool, search: Bool?) -> [VaultMenuList<ValueAction>.Row] {
 		var rows = VaultCopyFormat.allCases.enumerated().map { index, format in
 			VaultMenuList<ValueAction>.Row(id: .copy(format), title: format.shortTitle, detail: format.includesValue ? nil : "name only",
-				isEnabled: canCopy, section: index == 0 ? "COPY AS" : nil)
+				isEnabled: canCopy, section: index == 0 ? "COPY AS" : nil, code: format != .value)
 		}
 		rows.append(.init(id: .generate, title: "Generate Value…", isEnabled: canGenerate, separated: true))
 		if let search {

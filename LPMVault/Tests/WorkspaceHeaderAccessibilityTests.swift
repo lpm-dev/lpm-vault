@@ -97,6 +97,23 @@ extension SheetInteractionTests {
 			#expect(try await narrow.waitUntil { narrow.window.sheets.first != nil }, "Import opens its sheet from the menu")
 		}
 
+		@Test("the sidebar's footer names its icon pages, which open their pages, and the vault it shows, which opens the account menu")
+		func sidebarFooter() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			for name in ["Platforms", "Settings"] {
+				#expect(try await host.waitForElement(saying: name).role == .button, "\(name) is a named button, not a bare icon")
+			}
+			try await host.click("Settings")
+			#expect(try await host.waitUntil { fixture.store.accountPage == .settings })
+			try await host.click("Platforms")
+			#expect(try await host.waitUntil { fixture.store.accountPage == .platforms })
+			try await host.click("Account menu")
+			#expect(try await host.waitForText("Sign In…"))
+		}
+
 		@Test("the inspector toggle says whether it shows or hides the inspector")
 		func inspectorToggle() async throws {
 			let fixture = try makeFixture()
@@ -163,9 +180,13 @@ extension SheetInteractionTests {
 			try #require(chip("Drift, 1", in: host)).press()
 			#expect(try await host.waitUntil { selected(in: host) == ["Drift, 1"] })
 			_ = try await host.clickSidebarEnvironment(".env")
-			#expect(try await host.waitUntil { selected(in: host) == ["Table"] })
-			try #require(chip("Raw Text", in: host)).press()
-			#expect(try await host.waitUntil { selected(in: host) == ["Raw Text"] })
+			// One environment's view is a mode, so it's segments, as every mode switch in the app is, not chips.
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .radioButton }.compactMap(\.texts.first) == ["Table", "Raw Text"]
+			})
+			#expect(selected(in: host).isEmpty, "No filter chip shows in one environment's view")
+			try await host.click("Raw Text")
+			#expect(try await host.waitForText("One KEY=value per line"))
 		}
 
 		@Test("the sync status is one control, the size it's drawn, and opens its menu in the app's popover")
@@ -228,7 +249,7 @@ extension SheetInteractionTests {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox && $0.says("Reveal all values") }
 		}
 
-		private static let chips: Set<String> = ["All keys", "Drift, 1", "Missing, 1", "Invalid, 1", "Table", "Raw Text"]
+		private static let chips: Set<String> = ["All keys", "Drift, 1", "Missing, 1", "Invalid, 1"]
 
 		private func chip<V: View>(_ name: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .button && $0.label == name }
@@ -279,7 +300,7 @@ extension SheetInteractionTests {
 			await store.refreshCliAccess()
 			let defaults = try #require(UserDefaults(suiteName: "workspace-header-accessibility"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
-				.environment(VaultAppearanceSettings(defaults: defaults))
+				.environment(VaultAppearanceSettings(defaults: defaults)).environment(VaultQuitSettings(defaults: defaults))
 				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer)
 				.defaultAppStorage(defaults),
 				size: NSSize(width: width, height: 800), keepsRequestedSize: true, usesHostingView: true)

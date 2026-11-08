@@ -750,6 +750,9 @@ struct VaultRowIconButton: View {
 	var resting = false
 	/// Drawn as if hovered, as while the menu or popover it opens is showing.
 	var active = false
+	/// Drawn fainter until the pointer reaches it, for a control that's always
+	/// there beside a more important one, as Copy and More beside a value's eye.
+	var quiet = false
 	let action: () -> Void
 
 	@State private var hovering = false
@@ -758,7 +761,7 @@ struct VaultRowIconButton: View {
 		let lit = (hovering || active) && !disabled
 		Button(action: action) {
 			VaultRowIconGlyph(systemImage: systemImage, compact: compact, resting: resting && !active, hovering: hovering)
-				.foregroundStyle(lit ? (destructive ? VaultPalette.redText : VaultPalette.textPrimary) : VaultPalette.textTertiary)
+				.foregroundStyle(lit ? (destructive ? VaultPalette.redText : VaultPalette.textPrimary) : (quiet ? VaultPalette.textFaint : VaultPalette.textTertiary))
 				.opacity(disabled ? 0.45 : 1)
 				.frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
 				.background {

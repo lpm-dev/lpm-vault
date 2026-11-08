@@ -285,9 +285,9 @@ extension SheetInteractionTests {
 			let host = try await fixture.workspace()
 			defer { host.window.close() }
 			try await host.click("Account menu")
-			#expect(try await host.waitForText("VAULTS"))
+			#expect(try await host.waitForText("Sign In…"))
 			try NativeTestClick.send(to: host.window, at: NSPoint(x: 700, y: 120))
-			#expect(try await host.waitForTextToDisappear("VAULTS"))
+			#expect(try await host.waitForTextToDisappear("Sign In…"))
 			#expect(fixture.store.isUnlocked && fixture.store.selectedProjectId == WorkspaceFixture.projectID)
 		}
 
@@ -343,7 +343,7 @@ extension SheetInteractionTests {
 				NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: host.window)
 			case .accountMenu:
 				try await host.click("Account menu")
-				#expect(try await host.waitForText("VAULTS"))
+				#expect(try await host.waitForText("Sign In…"))
 			case .page:
 				try await host.click("Project Settings")
 			case .environment:
@@ -361,10 +361,10 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try await fixture.openPublishMenu(in: host)
 			try await host.click("Account menu")
-			#expect(try await host.waitForText("VAULTS"))
+			#expect(try await host.waitForText("Sign In…"))
 			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"))
 			try await host.click(trigger)
-			#expect(try await host.waitForTextToDisappear("VAULTS"))
+			#expect(try await host.waitForTextToDisappear("Sign In…"))
 			if trigger == "Publish…" {
 				#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
 			} else {

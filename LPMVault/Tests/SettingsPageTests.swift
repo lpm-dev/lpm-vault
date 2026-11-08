@@ -55,15 +55,6 @@ struct SettingsPageStoreTests {
 		#expect(store.accountManagementURL?.path == "/dashboard/settings")
 		#expect(store.accountManagementURL?.host == AppEnvironment.production.baseURL.host)
 	}
-
-	@Test("a vault row says what kind of vault it is, and an organization's the person's role, when lpm.dev sends one")
-	func vaultDetails() {
-		#expect(VaultAccountSwitcher.personalDetail(signedIn: true, projects: 6) == "Personal · 6 projects")
-		#expect(VaultAccountSwitcher.personalDetail(signedIn: false, projects: nil) == "Local only")
-		#expect(VaultAccountSwitcher.organizationDetail(role: "owner", projects: 1) == "Organization · Owner · 1 project")
-		#expect(VaultAccountSwitcher.organizationDetail(role: nil, projects: nil) == "Organization")
-		#expect(VaultAccountSwitcher.organizationDetail(role: "  ", projects: nil) == "Organization")
-	}
 }
 
 extension SheetInteractionTests {
@@ -81,48 +72,57 @@ extension SheetInteractionTests {
 			return store
 		}
 
-		private func menu(_ store: VaultStore, isPresented: Binding<Bool> = .constant(true)) -> SheetTestHost<some View> {
-			SheetTestHost(VaultAccountSwitcher(store: store, isPresented: isPresented).frame(width: 264),
-				size: NSSize(width: 264, height: 420), keepsRequestedSize: true, usesHostingView: true)
+		private func menu(_ store: VaultStore, isPresented: Binding<Bool> = .constant(true), onSignOut: @escaping () -> Void = {}) -> SheetTestHost<some View> {
+			SheetTestHost(VaultAccountSwitcher(store: store, isPresented: isPresented, onSignOut: onSignOut).frame(width: 264),
+				size: NSSize(width: 264, height: 320), keepsRequestedSize: true, usesHostingView: true)
 		}
 
-		@Test("the menu starts with who's signed in and their account, then the vaults, then Settings and Platforms, then Lock")
+		@Test("the menu lists the person's own vault, then their organizations', then the account on lpm.dev and signing out")
 		func signedInLayout() async throws {
 			let store = store(signedIn: true)
 			let host = menu(store)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("Tolga Ergin"))
-			#expect(try await host.waitForText("tolga@example.com"))
-			let manage = try await host.waitForElement(saying: "Manage account")
-			#expect(manage.role == .button && manage.help == "Manage your account on lpm.dev")
-			#expect(try await host.waitForText("Personal · 0 projects"))
-			#expect(try await host.waitForText("Organization · Owner"))
+			#expect(try await host.waitForText("Manage account on lpm.dev"))
 			let order = host.lines().map(\.text)
-			let positions = ["Tolga Ergin", "VAULTS", "Personal vault", "Acme", "Settings…", "Platforms", "Lock vault"].map { name in
+			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Manage account on lpm.dev", "Sign Out…"].map { name in
 				order.firstIndex { $0.contains(name) }
 			}
 			#expect(positions.allSatisfy { $0 != nil } && positions == positions.sorted { ($0 ?? 0) < ($1 ?? 0) }, "\(order)")
-			#expect(!order.contains { $0 == "Account" }, "The identity header replaces the Account row")
+			let personal = try await host.waitForElement(saying: "tolga")
+			#expect(personal.isSelected, "The open vault is the checked one")
 		}
 
-		@Test("Settings… opens the Settings page in the window and closes the menu")
-		func settingsOpensPage() async throws {
+		@Test("choosing an organization opens its vault and closes the menu")
+		func choosesOrganization() async throws {
 			let store = store(signedIn: true)
 			var shown = true
 			let host = menu(store, isPresented: Binding(get: { shown }, set: { shown = $0 }))
 			defer { host.window.close() }
-			try await host.click("Settings…")
-			#expect(try await host.waitUntil { store.accountPage == .settings })
+			try await host.click("Acme")
+			#expect(try await host.waitUntil { store.selectedAccount == .org("acme") })
 			#expect(!shown)
 		}
 
-		@Test("signed out, the menu says so and Sign In opens Settings, where signing in is")
+		@Test("Sign Out… closes the menu and asks the workspace to confirm, signing out nothing yet")
+		func signOutAsks() async throws {
+			let store = store(signedIn: true)
+			var shown = true
+			var asked = 0
+			let host = menu(store, isPresented: Binding(get: { shown }, set: { shown = $0 }), onSignOut: { asked += 1 })
+			defer { host.window.close() }
+			try await host.click("Sign Out…")
+			#expect(try await host.waitUntil { asked == 1 })
+			#expect(!shown)
+			#expect(store.isLoggedIn, "Signing out waits for the confirmation")
+		}
+
+		@Test("signed out, the menu offers the local vault and Sign In, which opens Settings, where signing in is")
 		func signedOut() async throws {
 			let store = store(signedIn: false)
 			let host = menu(store)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("Not signed in"))
-			#expect(try await host.waitForText("Local only · 0 projects"))
+			#expect(try await host.waitForText("Personal vault"))
+			#expect(try await !host.text().contains("ORGANIZATIONS"))
 			try await host.click("Sign In…")
 			#expect(try await host.waitUntil { store.accountPage == .settings })
 		}

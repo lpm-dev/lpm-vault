@@ -250,7 +250,7 @@ extension SheetInteractionTests {
 			store.projects = projects
 			store.isUnlocked = true
 			store.currentUser = LPMUser(id: "lpm_user_1", username: "avery", name: "Avery Chen", email: "avery@acme.io",
-				avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+				avatarUrl: nil, plan: nil, createdAt: nil, orgs: [LPMOrg(id: "org_1", slug: "acme", name: "Acme Inc", avatarUrl: nil, role: "owner")])
 			store.openProject(id: Self.projectID)
 			defer { store.lock() }
 			// Loading reads every project's CLI approval, as unlocking does.
@@ -281,6 +281,24 @@ extension SheetInteractionTests {
 
 			store.showSettings()
 			try await save(host, "09-settings", dark: dark)
+
+			try await host.click("Account menu")
+			#expect(try await host.waitForText("Manage account on lpm.dev"))
+			try await save(host, "19-account-menu", dark: dark)
+
+			// The project card shows beside a row the pointer rests on, which a test can't do, so it's drawn alone.
+			let card = try await self.host(
+				VaultProjectHoverCard(store: store, project: try #require(store.projects.first { $0.id == Self.projectID }))
+					.background(VaultPalette.control)
+					.clipShape(RoundedRectangle(cornerRadius: 10))
+					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+					.padding(24)
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.background(VaultPalette.sidebar),
+				store: store, dark: dark, size: NSSize(width: 340, height: 300))
+			defer { card.window.close() }
+			try await card.settle()
+			try await save(card, "20-project-card", dark: dark)
 		}
 
 		@Test("lock screen, empty vault, and the smallest window", arguments: [false, true])

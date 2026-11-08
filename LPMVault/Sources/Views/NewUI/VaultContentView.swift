@@ -307,7 +307,8 @@ struct VaultContentView: View {
 
 	private var viewControls: some View { viewControls(compact: false) }
 
-	/// The filter or view chips; compact ones show a filter's symbol and count without its title.
+	/// The filter chips, whose compact ones show a filter's symbol and count without its title, or
+	/// the view's segments: chips always filter, and segments always switch a mode, as elsewhere.
 	@ViewBuilder
 	private func viewControls(compact: Bool) -> some View {
 		if case .matrix = mode {
@@ -337,11 +338,8 @@ struct VaultContentView: View {
 				}
 			}
 		} else {
-			ForEach(VaultEnvironmentViewMode.allCases) { candidate in
-				VaultFilterChip(title: candidate.rawValue, selected: environmentViewMode == candidate) {
-					environmentViewMode = candidate
-				}
-			}
+			VaultSegmentedPicker(title: "View", options: VaultEnvironmentViewMode.allCases.map { ($0, $0.rawValue) },
+				selection: $environmentViewMode)
 		}
 	}
 

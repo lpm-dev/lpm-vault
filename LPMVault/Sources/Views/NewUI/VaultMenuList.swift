@@ -50,6 +50,8 @@ struct VaultMenuList<ID: Hashable>: View {
 		var systemImage: String?
 		/// Draws the title in red, for a row that deletes or removes.
 		var destructive = false
+		/// Sets the title in the code font, for a row that names exact text, such as a format.
+		var code = false
 	}
 
 	let rows: [Row]
@@ -170,7 +172,7 @@ struct VaultMenuList<ID: Hashable>: View {
 						.accessibilityHidden(true)
 				}
 				Text(row.title)
-					.font(.system(size: 12.5))
+					.font(row.code ? VaultTypography.code(12) : .system(size: 12.5))
 					.foregroundStyle(!row.isEnabled ? VaultPalette.textFaint : (row.destructive ? VaultPalette.redText : VaultPalette.textPrimary))
 					.lineLimit(1)
 				Spacer(minLength: 4)

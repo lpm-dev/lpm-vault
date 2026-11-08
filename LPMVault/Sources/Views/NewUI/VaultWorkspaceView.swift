@@ -17,6 +17,8 @@ struct VaultWorkspaceView: View {
 	@State private var schemaSelection: VaultSchemaSelection?
 	/// The project whose schema draft the review sheet shows.
 	@State private var schemaReview: SchemaReviewTarget?
+	/// Whether signing out, asked from the account menu, waits for confirmation.
+	@State private var confirmsSignOut = false
 	@State private var schemaPanelSession = UUID()
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
@@ -583,7 +585,8 @@ struct VaultWorkspaceView: View {
 
 					VaultAccountSwitcher(
 						store: store,
-						isPresented: shows(.account)
+						isPresented: shows(.account),
+						onSignOut: { confirmsSignOut = true }
 					)
 					.frame(width: VaultPaneBudget.clamp(
 						sidebarWidth,
@@ -591,7 +594,8 @@ struct VaultWorkspaceView: View {
 						maximum: VaultMetrics.sidebarMaximum
 					) - 16)
 					.padding(.leading, 8)
-					.padding(.bottom, 56)
+					// Just above the sidebar's footer, which opens it.
+					.padding(.bottom, 52)
 					.transition(.opacity.combined(with: .offset(y: 6)))
 				}
 			}
@@ -688,6 +692,7 @@ struct VaultWorkspaceView: View {
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
 		}
+		.vaultConfirmation(isPresented: $confirmsSignOut) { .signOut(store) }
 		.sheet(item: $schemaReview) { target in
 			if let project = store.projects.first(where: { $0.id == target.projectID }) {
 				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project))

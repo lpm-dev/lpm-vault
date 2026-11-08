@@ -56,7 +56,7 @@ struct ConnectCLISheet: View {
 
 	/// Tall enough for what's open, so nothing needs scrolling: the task example and the other commands add their own room.
 	private var preferredHeight: CGFloat {
-		min(600 + (showsTaskExample ? 120 : 0) + (showsAllCommands ? 68 : 0), availableHeight)
+		min(640 + (showsTaskExample ? 120 : 0) + (showsAllCommands ? 68 : 0), availableHeight)
 	}
 
 	private var configJSON: String {
@@ -81,8 +81,9 @@ struct ConnectCLISheet: View {
 				}
 				.padding(.horizontal, 24)
 				.padding(.top, 18)
-				.padding(.bottom, 18)
-			}.frame(maxHeight: 680)
+				// Room after the last step, so nothing sits half under the footer's line.
+				.padding(.bottom, 24)
+			}.frame(maxHeight: 720)
 			footer
 		}
 		.frame(width: 600)

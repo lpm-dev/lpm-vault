@@ -709,6 +709,17 @@ final class VaultLocalHistory {
 		}
 	}
 
+	/// When the project's values last changed, by its newest history entry;
+	/// nil while its history is off, empty or can't be read.
+	func lastChange(of projectID: String) async -> Date? {
+		await collectOutcomes()
+		guard case .success(let overview) = await actions.overview(projectID, HistoryEngine.Filter(limit: 1)),
+			overview.state.history != "off",
+			case .entry(let entry)? = overview.timeline?.rows.first
+		else { return nil }
+		return VaultHistoryText.date(entry.time)
+	}
+
 	/// Where a key's change sits in an entry, by the environment's and the
 	/// key's names in it.
 	func side(entry: String, environment: String, key: String, side: String) -> Side? {

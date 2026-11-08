@@ -301,8 +301,8 @@ private struct VaultSchemaPrefixField: View {
 					.frame(height: 28)
 					.vaultInputField(focused: entryFocused, invalid: issue != nil)
 					.accessibilityLabel("New client prefix")
-					// The popover opens to add a prefix, so typing starts here.
-					.onAppear { entryFocused = true }
+					// The popover opens to add a prefix, so typing starts here, once its window has the keyboard.
+					.task { entryFocused = true }
 				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }
 			}
 			if availability != .checking, let reason = availability.reason {

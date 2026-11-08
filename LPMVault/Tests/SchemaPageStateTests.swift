@@ -411,8 +411,8 @@ extension SheetInteractionTests {
 		func accountSwitcherTakesKeys() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Personal vault")
-			#expect(try await host.waitForText("Lock vault"))
+			try await host.click("Account menu")
+			#expect(try await host.waitForText("Sign In…"))
 			try host.press(.down)
 			try await host.settle()
 			#expect(!host.hasField(placeholder: "KEY_NAME"), "↓ didn't select a row under the switcher")
