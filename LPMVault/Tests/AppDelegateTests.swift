@@ -71,6 +71,24 @@ struct AppDelegateTests {
 		#expect(lockCount == 1)
 	}
 
+	@Test("switching users, sleeping, locking the screen and starting the screen saver each lock the vault")
+	func lockingNotifications() {
+		let delegate = AppDelegate()
+		var lockCount = 0
+		delegate.lockVault = { lockCount += 1 }
+		let workspace = NotificationCenter()
+		let system = NotificationCenter()
+		delegate.observeSecurityNotifications(workspace: workspace, system: system)
+		for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+			workspace.post(name: name, object: nil)
+		}
+		#expect(lockCount == 3)
+		system.post(name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+		#expect(lockCount == 4, "Locking the screen locks the vault, before the displays sleep")
+		system.post(name: Notification.Name("com.apple.screensaver.didstart"), object: nil)
+		#expect(lockCount == 5)
+	}
+
 	@Test("security state changes before wiring are applied when the lock handler arrives")
 	func earlySecurityStateChangeIsNotLost() {
 		let delegate = AppDelegate()

@@ -12,36 +12,42 @@ enum AccountPage: Hashable, Sendable {
 /// Platforms is one, shown as `AccountPage.platforms`.
 enum VaultSettingsCategory: String, CaseIterable, Identifiable, Sendable {
 	case general
+	case security
 	case appearance
 	case account
 	case cli
 	case platforms
 	case backup
 	case updates
+	case about
 
 	var id: String { rawValue }
 
 	var title: String {
 		switch self {
 		case .general: "General"
+		case .security: "Security"
 		case .appearance: "Appearance"
 		case .account: "Account & Sync"
 		case .cli: "CLI"
 		case .platforms: "Platforms"
 		case .backup: "Backup & Restore"
 		case .updates: "Updates"
+		case .about: "About"
 		}
 	}
 
 	var systemImage: String {
 		switch self {
 		case .general: "gearshape"
+		case .security: "lock.shield"
 		case .appearance: "circle.lefthalf.filled"
 		case .account: "person.crop.circle"
 		case .cli: "terminal"
 		case .platforms: "square.stack.3d.up"
 		case .backup: "externaldrive"
 		case .updates: "arrow.down.circle"
+		case .about: "info.circle"
 		}
 	}
 }

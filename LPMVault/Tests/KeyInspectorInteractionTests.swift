@@ -201,6 +201,64 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Hide this key in all environments"))
 		}
 
+		@Test("copying or cutting a revealed value's text goes through the guarded copy, never straight to the clipboard, and it can't be dragged out")
+		func revealedFieldCopy() async throws {
+			let clipboard = GeneralPasteboardBackup()
+			defer { clipboard.restore() }
+			let (store, _) = makeStore(["default": ["TOKEN": "s3cret-token"], "staging": ["TOKEN": "stg"]])
+			defer { store.lock() }
+			let copies = CopiedRequests()
+			let host = SheetTestHost(KeyInspectorFixture(store: store, onCopy: { request in
+				copies.requests.append(request)
+				if copies.succeeds { request.onCopied?() }
+			}), size: NSSize(width: 300, height: 700))
+			defer { host.window.close() }
+			try await host.click("Reveal this key in all environments")
+			var found: NSTextField?
+			#expect(try await host.waitUntil {
+				found = Self.field(in: host.view) { !($0 is NSSecureTextField) && $0.stringValue == "s3cret-token" }
+				return found != nil
+			})
+			let field = try #require(found)
+			#expect(host.window.makeFirstResponder(field))
+			let editor = try #require(field.currentEditor() as? NSTextView)
+
+			editor.setSelectedRange(NSRange(location: 0, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.copy(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { copies.requests.map(\.selection) == ["s3cret"] })
+			#expect(copies.requests.first?.environment == "default" && copies.requests.first?.key == "TOKEN")
+
+			copies.succeeds = false
+			editor.setSelectedRange(NSRange(location: 6, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { copies.requests.map(\.selection) == ["s3cret", "-token"] })
+			#expect(editor.string == "s3cret-token", "A cut whose copy wasn't made, as when approval is declined, takes nothing out")
+
+			copies.succeeds = true
+			editor.setSelectedRange(NSRange(location: 6, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { copies.requests.count == 3 })
+			#expect(try await host.waitUntil { editor.string == "s3cret" }, "Once copied, Cut takes the text out of the field")
+
+			let click = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+				windowNumber: host.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+			let actions = Set((editor.menu(for: click)?.items ?? []).compactMap(\.action))
+			#expect(actions == [#selector(NSText.cut(_:)), #selector(NSText.copy(_:)), #selector(NSText.paste(_:)), #selector(NSText.selectAll(_:))],
+				"No Share, Look Up, Translate or Services")
+
+			editor.selectAll(nil)
+			#expect(!editor.writeSelection(to: NSPasteboard(name: .drag), types: [.string]), "Nothing drags out or goes to a Service")
+			#expect(!clipboard.changed, "The clipboard itself was never written")
+		}
+
+		private static func field(in view: NSView, where matches: (NSTextField) -> Bool) -> NSTextField? {
+			if let field = view as? NSTextField, matches(field) { return field }
+			for subview in view.subviews {
+				if let found = field(in: subview, where: matches) { return found }
+			}
+			return nil
+		}
+
 		@Test("a value's More menu opens in the app's popover: a format copies, and Generate opens the generator in its place")
 		func moreMenu() async throws {
 			let (store, _) = makeStore(["default": ["TOKEN": "old"]])
@@ -472,5 +530,34 @@ private struct KeyInspectorFixture: View {
 			)
 			.frame(width: 300, height: 640)
 		}
+	}
+}
+
+@MainActor
+private final class CopiedRequests {
+	var requests: [VaultValueCopy] = []
+	/// Whether the copy is made, as an approval allows.
+	var succeeds = true
+}
+
+/// The person's clipboard as a test found it, put back afterwards should the
+/// test write it, so a failing run doesn't leave a value there.
+@MainActor
+final class GeneralPasteboardBackup {
+	private let changeCount = NSPasteboard.general.changeCount
+	private let items: [[NSPasteboard.PasteboardType: Data]] = (NSPasteboard.general.pasteboardItems ?? []).map { item in
+		Dictionary(uniqueKeysWithValues: item.types.compactMap { type in item.data(forType: type).map { (type, $0) } })
+	}
+
+	var changed: Bool { NSPasteboard.general.changeCount != changeCount }
+
+	func restore() {
+		guard changed else { return }
+		NSPasteboard.general.clearContents()
+		NSPasteboard.general.writeObjects(items.map { entries in
+			let item = NSPasteboardItem()
+			for (type, data) in entries { item.setData(data, forType: type) }
+			return item
+		})
 	}
 }

@@ -37,6 +37,10 @@ protocol VaultUpdateDriver: AnyObject {
 	var sessionInProgress: Bool { get }
 	var hasPendingUpdate: Bool { get }
 	var availableUpdateVersion: String? { get }
+	/// Whether updates are looked for on a schedule, in the background.
+	var automaticallyChecks: Bool { get set }
+	/// Whether an update found is downloaded and installed as LPM Vault quits.
+	var automaticallyDownloads: Bool { get set }
 	var stateChanged: (() -> Void)? { get set }
 	var updateChanged: ((String?) -> Void)? { get set }
 	func start()
@@ -72,6 +76,29 @@ final class UpdateChecker {
 	private(set) var canChangeChannel = false
 	private(set) var hasPendingUpdate = false
 	private(set) var availableUpdateVersion: String?
+	/// Whether this build updates itself at all; a development build doesn't.
+	var canChangeAutomaticUpdates: Bool { driver != nil }
+	private var checksAutomatically = true
+	private var downloadsAutomatically = false
+	/// Whether updates are looked for in the background; on by default.
+	var automaticallyChecks: Bool {
+		get { checksAutomatically }
+		set {
+			guard let driver else { return }
+			driver.automaticallyChecks = newValue
+			checksAutomatically = driver.automaticallyChecks
+		}
+	}
+	/// Whether an update found is downloaded and installed as LPM Vault
+	/// quits; off by default, and only while updates are looked for.
+	var automaticallyDownloads: Bool {
+		get { checksAutomatically && downloadsAutomatically }
+		set {
+			guard let driver else { return }
+			driver.automaticallyDownloads = newValue
+			downloadsAutomatically = driver.automaticallyDownloads
+		}
+	}
 	@ObservationIgnored private let driver: (any VaultUpdateDriver)?
 	@ObservationIgnored private var started = false
 	@ObservationIgnored private let defaults: UserDefaults
@@ -95,6 +122,10 @@ final class UpdateChecker {
 			#endif
 		}
 		self.driver?.setChannel(channel)
+		if let driver = self.driver {
+			checksAutomatically = driver.automaticallyChecks
+			downloadsAutomatically = driver.automaticallyDownloads
+		}
 	}
 
 	func start() {
@@ -115,6 +146,8 @@ final class UpdateChecker {
 		guard let driver else { return }
 		canCheckForUpdates = driver.canCheckForUpdates
 		hasPendingUpdate = driver.hasPendingUpdate
+		checksAutomatically = driver.automaticallyChecks
+		downloadsAutomatically = driver.automaticallyDownloads
 		canChangeChannel = canCheckForUpdates && !driver.sessionInProgress && !hasPendingUpdate
 	}
 
@@ -208,6 +241,16 @@ final class SparkleUpdateDriver: NSObject, VaultUpdateDriver, @preconcurrency SP
 
 	var canCheckForUpdates: Bool { controller.updater.canCheckForUpdates }
 	var sessionInProgress: Bool { controller.updater.sessionInProgress }
+
+	var automaticallyChecks: Bool {
+		get { controller.updater.automaticallyChecksForUpdates }
+		set { controller.updater.automaticallyChecksForUpdates = newValue }
+	}
+
+	var automaticallyDownloads: Bool {
+		get { controller.updater.automaticallyDownloadsUpdates }
+		set { controller.updater.automaticallyDownloadsUpdates = newValue }
+	}
 
 	func start() {
 		started = true

@@ -25,7 +25,7 @@ struct PlatformsView: View {
 				VaultHairline()
 			}
 
-			ScrollView {
+			VaultSettingsScroller {
 				VStack(alignment: .leading, spacing: 20) {
 					if !showsHeader {
 						Text(Self.tokensNote + ". " + Self.connectingNote)
@@ -34,13 +34,13 @@ struct PlatformsView: View {
 							.fixedSize(horizontal: false, vertical: true)
 					}
 					if let notice = platforms.notice { noticeBanner(notice) }
-					connectedSection
-					addPlatformSection
-					revocationSection
+					connectedSection.vaultSettingsAnchor(.connectedPlatforms)
+					addPlatformSection.vaultSettingsAnchor(.addPlatform)
+					revocationSection.vaultSettingsAnchor(.revokePlatformAccess)
 				}
 				// As wide as Settings' other parts, inside the overlay.
 				.frame(maxWidth: showsHeader ? .infinity : VaultMetrics.formWidth, alignment: .leading)
-				.padding(.horizontal, showsHeader ? 20 : 28)
+				.padding(.horizontal, showsHeader ? 20 : VaultSettingsOverlay.contentInset)
 				.padding(.top, showsHeader ? 18 : 24)
 				.padding(.bottom, 20)
 				.frame(maxWidth: .infinity, alignment: .leading)

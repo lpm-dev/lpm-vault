@@ -90,6 +90,7 @@ struct VaultRawTextReviewSheet: View {
 		.onChange(of: store.selectedEnvironment) { _, environment in if environment != review.target.environment { dismiss() } }
 		.onChange(of: store.selectedAccount) { _, _ in dismiss() }
 		.onChange(of: isObscured) { _, obscured in if obscured { revealed = false } }
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealed = false }
 	}
 
 	private var applyTitle: String {
@@ -127,7 +128,9 @@ struct VaultRawTextReviewSheet: View {
 				pill("\(review.changes.unchanged.count) unchanged", VaultPalette.neutralTint, VaultPalette.textSecondary)
 			}
 			Spacer(minLength: 8)
-			Button { revealed.toggle() } label: {
+			Button {
+				if revealed { revealed = false } else { store.valueAccess.reveal { revealed = true } }
+			} label: {
 				Label(revealed ? "Hide values" : "Reveal values", systemImage: revealed ? "eye.slash" : "eye")
 					.font(.system(size: 11.5, weight: .medium))
 					.foregroundStyle(VaultPalette.textTertiary)

@@ -1178,6 +1178,7 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      startBackupReminderIfNeeded()
       schemaReviews = [:]
       invalidateLocalStateRefresh()
       keyDrafts.receive(projects)
@@ -1241,6 +1242,17 @@ final class VaultStore {
   let backupKeys: BackupKeyStore
   /// Where values are copied, and cleared from when the vault locks.
   let clipboard: ClipboardManager
+  /// LPM Vault's own settings: locking, guarding values, new projects' defaults and the backup reminder.
+  let settings: VaultSettings
+  /// The guard on revealing and copying values, which asks again and masks
+  /// again as the Security settings say.
+  @ObservationIgnored private(set) lazy var valueAccess = VaultValueAccess(
+    approval: { [settings] in settings.valueApproval },
+    rehide: { [settings] in settings.rehide },
+    confirm: { [weak self] reason in await self?.confirmSensitiveAction(reason: reason) ?? false },
+    now: autoLockNow,
+    sleep: autoLockSleep
+  )
   /// Unsaved Project Settings edits by project ID; cleared on lock and account changes.
   var projectSettingsDrafts: [String: ProjectSettingsDraft] = [:]
   /// Projects whose Project Settings are being saved.
@@ -1282,6 +1294,7 @@ final class VaultStore {
   private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:] {
     didSet {
       if rawTextDrafts.count < oldValue.count {
+        shownRawTextEdits = shownRawTextEdits.filter { rawTextDrafts[$0] != nil }
         for target in rawTextCharacterChecks.keys where rawTextDrafts[target] == nil {
           rawTextCharacterTasks.removeValue(forKey: target)?.cancel()
           rawTextCharacterChecks[target] = nil
@@ -1480,10 +1493,26 @@ final class VaultStore {
   private var lpmHomeMoveRecovery: Task<Void, Never>?
   /// Quits the app and opens it again, as using another LPM home takes.
   @ObservationIgnored var relaunch: @MainActor () -> Void = AppRelaunch.relaunch
+  /// Whether updates are looked for and installed in the background, which
+  /// the app's updater knows and a backup carries.
+  @ObservationIgnored var automaticUpdates: @MainActor () -> BackupAppSection.AutomaticUpdates? = { nil }
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
   /// The last backup this Mac exported.
   private(set) var lastBackup: VaultBackupRecord?
+  /// When LPM Vault first saw this Mac hold a project without a backup,
+  /// from which the first reminder counts.
+  private(set) var backupReminderStarted: Date?
+  /// Until when the person put the backup reminder off.
+  private(set) var backupReminderPostponedUntil: Date?
+  /// The time the backup reminder reads.
+  @ObservationIgnored var backupReminderNow: @Sendable () -> Date = { Date() }
+  /// Finds the LPM CLI the person's shell runs, for Settings.
+  @ObservationIgnored var locateCLI: @Sendable () async -> LPMCLIStatus = { await LPMCLILocator().locate() }
+  /// The LPM CLI as the shell last found it this session; nil until it's been asked.
+  private(set) var cliStatus: LPMCLIStatus?
+  /// Whether the shell is being asked for the LPM CLI now.
+  private(set) var isLocatingCLI = false
   /// Restored projects whose sync stays paused until their keys are recovered.
   private(set) var syncPauses: [String: VaultSyncPause]
   /// Whether a restore is writing, during which pauses exist before their projects.
@@ -1648,7 +1677,7 @@ final class VaultStore {
   private var exportTasks: [UUID: Task<[String], Error>] = [:]
   private var exportAuthorizations: [UUID: EnvFileExportAuthorization] = [:]
   private let localEnvImportAuthority = LocalEnvImportAuthority()
-  private let autoLockDuration: TimeInterval
+  private var autoLockDuration: TimeInterval { settings.lockAfter.seconds }
 
   /// Retains one connection pool for each exact API base URL. Production and
   /// the debug-only local server can never share a session.
@@ -2255,7 +2284,7 @@ final class VaultStore {
     autoLockNow: @escaping @Sendable () -> TimeInterval = {
       ProcessInfo.processInfo.systemUptime
     },
-    autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration,
+    settings: VaultSettings? = nil,
     schemaEditNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory,
     backupKeys: BackupKeyStore = .live(),
@@ -2264,6 +2293,9 @@ final class VaultStore {
     self.keychainService = keychainService
     self.backupKeys = backupKeys
     self.clipboard = clipboard
+    let settings = settings ?? VaultSettings(defaults: preferences)
+    self.settings = settings
+    clipboard.clearDelay = settings.clipboardClear.seconds
     self.projectIcons = ProjectIconStore(preferences: preferences, imagesDirectory: projectIconsDirectory)
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.valueSearchSource = PersistedValueSearchSource(persistence: persistence)
@@ -2295,6 +2327,8 @@ final class VaultStore {
     self.layout = layout ?? VaultLayoutPreferences()
     self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
     self.lastBackup = VaultBackupRecord(defaults: preferences)
+    self.backupReminderStarted = preferences.object(forKey: VaultBackupReminder.startedKey) as? Date
+    self.backupReminderPostponedUntil = preferences.object(forKey: VaultBackupReminder.postponedKey) as? Date
     self.syncPauses = VaultSyncPause.load(from: preferences)
     if let sharingKeypairProvider {
       self.sharingKeypairProvider = { _, _, _, _ in
@@ -2321,9 +2355,13 @@ final class VaultStore {
     self.authSessionClearer = authSessionClearer
     self.autoLockSleep = autoLockSleep
     self.autoLockNow = autoLockNow
-    self.autoLockDuration = autoLockDuration
     self.schemaEditNow = schemaEditNow
     valueSearch.store = self
+    settings.onChange = { [weak self] change in self?.settingChanged(change) }
+    valueAccess.onHide = { [weak self] in
+      self?.history.hideRevealed()
+      self?.shownRawTextEdits = []
+    }
 
     #if DEBUG
       // Local-server selection is a debug-only developer convenience.
@@ -3037,6 +3075,7 @@ final class VaultStore {
       try Task.checkCancellation()
       let policyRevision = cliAccessProjectRevisions[project.id]
       let persistence = persistence
+      let defaults = newProjectDefaults
       let commitOperation: @Sendable () async -> ImportPersistenceResult = { [weak self] in
         guard let self,
           await self.isCurrentCloudCommit(
@@ -3052,7 +3091,8 @@ final class VaultStore {
           orgSlug: orgSlug,
           version: payload.version,
           binding: binding,
-          existing: existing
+          existing: existing,
+          defaults: defaults
         )
       }
       let commit: ImportPersistenceResult
@@ -3302,7 +3342,7 @@ final class VaultStore {
 
     // Run Keychain write off main thread to prevent UI freeze
     let policyRevision = cliAccessProjectRevisions[vaultId]
-    let result = await persistence.createProject(project, orgSlug: orgSlug)
+    let result = await persistence.createProject(project, orgSlug: orgSlug, defaults: newProjectDefaults)
     switch result {
     case .success(let committed):
       guard sessionGeneration == vaultSessionGeneration, isUnlocked,
@@ -3606,8 +3646,12 @@ final class VaultStore {
       )
     ) { [weak self] persisted in
       guard let self else { return }
-      if let draft = rawTextDrafts.removeValue(forKey: VaultEnvironmentTarget(projectId: projectId, environment: oldName)) {
-        rawTextDrafts[VaultEnvironmentTarget(projectId: projectId, environment: newName)] = draft.renamed(to: newName)
+      let oldTarget = VaultEnvironmentTarget(projectId: projectId, environment: oldName)
+      let newTarget = VaultEnvironmentTarget(projectId: projectId, environment: newName)
+      let wasShown = shownRawTextEdits.contains(oldTarget)
+      if let draft = rawTextDrafts.removeValue(forKey: oldTarget) {
+        rawTextDrafts[newTarget] = draft.renamed(to: newName)
+        if wasShown { shownRawTextEdits.insert(newTarget) }
       }
       var order = orderedEnvironmentNames(for: persisted)
       if let idx = order.firstIndex(of: oldName) {
@@ -3849,6 +3893,32 @@ final class VaultStore {
     rawTextDrafts[target]
   }
 
+  /// The Raw text edits whose text shows. An edit holds every value of its
+  /// environment, so it shows as a reveal does, through the guard on values,
+  /// and hides as values are masked again, keeping the edit.
+  private(set) var shownRawTextEdits: Set<VaultEnvironmentTarget> = []
+
+  /// Edits the selected environment as Raw text, or goes back to its edit,
+  /// once the guard on values allows it.
+  func editRawText(order: [String]) {
+    guard let project = selectedProject else { return }
+    let target = VaultEnvironmentTarget(projectId: project.id, environment: selectedEnvironment)
+    valueAccess.reveal { [weak self] in
+      guard let self, self.selectedProject?.id == target.projectId, self.selectedEnvironment == target.environment,
+        self.beginRawTextEdit(order: order)
+      else { return }
+      self.shownRawTextEdits.insert(target)
+    }
+  }
+
+  /// Shows `target`'s hidden edit again, asking first when the guard says to.
+  func showRawTextEdit(_ target: VaultEnvironmentTarget) {
+    valueAccess.reveal { [weak self] in
+      guard let self, self.rawTextDrafts[target] != nil else { return }
+      self.shownRawTextEdits.insert(target)
+    }
+  }
+
   /// Edits the selected environment as Raw text, from a line for each of its
   /// keys in `order`, or goes back to the edit that's already there.
   @discardableResult
@@ -3867,6 +3937,7 @@ final class VaultStore {
   func updateRawTextDraft(_ target: VaultEnvironmentTarget, text: String) {
     guard isUnlocked, rawTextSaves[target] == nil else { return }
     rawTextDrafts[target]?.text = text
+    if shownRawTextEdits.contains(target) { valueAccess.keepShowing() }
     checkRawTextCharacters(target, after: .milliseconds(150))
   }
 
@@ -5738,6 +5809,7 @@ final class VaultStore {
       return
     }
     isUnlocked = true
+    valueAccess.noteUnlocked()
     unlockFailure = nil
     beginSelectedProjectLoadIfNeeded()
     // Locking forgot the list, and the page doesn't reopen to load it again.
@@ -6108,6 +6180,7 @@ final class VaultStore {
       if let environments = settings.environmentOrders[id] { saveEnvironmentOrder(for: id, order: environments) }
     }
     preferences.set(settings.keySort.rawValue, forKey: VaultKeySortOrder.defaultsKey)
+    if let restored = settings.preferences { self.settings.snapshot = restored.app }
   }
 
   /// Says why `project` doesn't sync while a restore left its sync paused;
@@ -6191,7 +6264,8 @@ final class VaultStore {
       quitShortcut: VaultQuitShortcut.saved(in: preferences),
       updateChannel: preferences.string(forKey: UpdateChecker.channelDefaultsKey).flatMap(VaultReleaseChannel.init(rawValue:)) ?? .stable,
       projectOrder: projectOrder,
-      environmentOrders: environmentOrders)
+      environmentOrders: environmentOrders,
+      preferences: BackupAppSection.Preferences(app: settings.snapshot, updates: automaticUpdates() ?? .standard))
   }
 
   /// Writes the environment's values to `destination`, kept out of git first
@@ -6396,6 +6470,7 @@ final class VaultStore {
     cancelLocalStateRefresh()
     localStateRefreshError = nil
     biometricService.resetCache()
+    valueAccess.reset()
     clipboard.clearClipboard()
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
@@ -6418,6 +6493,77 @@ final class VaultStore {
   /// Navigation actions are user activity too.
   private func resetAutoLock() {
     recordUserActivity()
+  }
+
+  /// How much local history this Mac keeps, for Settings; nil while locked
+  /// or when the Keychain can't say.
+  func historyUsage() async -> VaultHistoryUsage? {
+    guard isUnlocked else { return nil }
+    guard case .success(let usage?) = await persistence.historyUsage(), isUnlocked else { return nil }
+    return usage
+  }
+
+  // MARK: - Backup reminder
+
+  /// Whether the sidebar reminds the person to back up now: the setting is
+  /// on, the vault is unlocked with projects, and it's been a month.
+  var isBackupReminderDue: Bool {
+    settings.remindsToBackUp && isUnlocked && !projects.isEmpty
+      && VaultBackupReminder.isDue(
+        now: backupReminderNow(), lastBackup: lastBackup?.date, started: backupReminderStarted,
+        postponedUntil: backupReminderPostponedUntil)
+  }
+
+  /// Puts the reminder off for a week.
+  func postponeBackupReminder() {
+    let until = backupReminderNow().addingTimeInterval(VaultBackupReminder.postponement)
+    backupReminderPostponedUntil = until
+    preferences.set(until, forKey: VaultBackupReminder.postponedKey)
+  }
+
+  /// Asks the person's shell for the LPM CLI, unless it's being asked now.
+  /// The answer is kept for the session: starting a login shell runs its
+  /// startup files, too slow to repeat each time the CLI page shows.
+  func refreshCLIStatus() {
+    guard !isLocatingCLI else { return }
+    isLocatingCLI = true
+    Task {
+      cliStatus = await locateCLI()
+      isLocatingCLI = false
+    }
+  }
+
+  /// Starts the first reminder's month when this Mac holds a project and
+  /// has never been backed up, whenever the first project arrives.
+  private func startBackupReminderIfNeeded() {
+    guard backupReminderStarted == nil, lastBackup == nil, !projects.isEmpty else { return }
+    let now = backupReminderNow()
+    backupReminderStarted = now
+    preferences.set(now, forKey: VaultBackupReminder.startedKey)
+  }
+
+  /// What a project created or imported on this Mac starts with.
+  private var newProjectDefaults: NewProjectDefaults {
+    NewProjectDefaults(asksBeforeCLIReads: settings.newProjectsAskBeforeCLIReads, keepsHistory: settings.newProjectsKeepHistory)
+  }
+
+  /// Applies a setting the running app acts on as soon as it changes.
+  private func settingChanged(_ change: VaultSettings.Change) {
+    switch change {
+    case .lockAfter:
+      // A shorter time must not wait out a sleep the longer one started.
+      autoLockTask?.cancel()
+      autoLockTask = nil
+      autoLockTaskGeneration &+= 1
+      autoLockDeadline = nil
+      recordUserActivity()
+    case .clipboardClear:
+      clipboard.clearDelay = settings.clipboardClear.seconds
+    case .rehide:
+      valueAccess.rehideSettingChanged()
+    case .valueApproval, .hidesFromCapture:
+      break
+    }
   }
 
   private func scheduleAutoLock() {

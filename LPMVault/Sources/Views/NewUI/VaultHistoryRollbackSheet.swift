@@ -86,6 +86,7 @@ struct VaultHistoryRollbackSheet: View {
 		.background(VaultPalette.content)
 		.onChange(of: obscured) { _, covered in if covered { revealed = [] } }
 		.onChange(of: review.id) { _, _ in revealed = [] }
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealed = [] }
 	}
 
 	// MARK: - Header
@@ -299,7 +300,11 @@ struct VaultHistoryRollbackSheet: View {
 					help: shows ? "Hide the values of \(row.key)" : "Reveal the values of \(row.key)",
 					disabled: obscured || (row.current == nil && row.target == nil)
 				) {
-					if revealed.contains(skip) { revealed.remove(skip) } else { revealed.insert(skip) }
+					if revealed.contains(skip) {
+						revealed.remove(skip)
+					} else {
+						store.valueAccess.reveal { revealed.insert(skip) }
+					}
 				}
 				Toggle("Apply \(row.key)", isOn: Binding(
 					get: { review.applies(environment: environment, row: index) },

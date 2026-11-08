@@ -465,6 +465,37 @@ struct BackupRestoreSheet: View {
 		.accessibilityElement(children: .combine)
 	}
 
+	/// What the backup's settings replace: since version 2, LPM Vault's own as
+	/// well, which this Mac has whether or not it holds projects yet.
+	static func settingsDetail(_ settings: BackupAppSection.Settings, hasProjects: Bool) -> String {
+		guard settings.preferences != nil else {
+			let replaced = "Appearance, quit shortcut, key sort, project order and icons"
+			return hasProjects ? replaced + " — replaces this Mac’s" : replaced
+		}
+		return "Security, new-project defaults, backup reminder, automatic updates, appearance, quit shortcut, key sort, project order and icons — replaces this Mac’s"
+	}
+
+	/// Each of the backup's settings that would leave this Mac less protected,
+	/// said before the person chooses to use them.
+	@ViewBuilder
+	private func lessStrictSettings(_ settings: BackupAppSection.Settings) -> some View {
+		let lines = settings.preferences?.lessStrict(than: store.settings.snapshot, updates: store.automaticUpdates()) ?? []
+		if !lines.isEmpty {
+			VStack(alignment: .leading, spacing: 3) {
+				Label("Less strict than this Mac’s:", systemImage: "exclamationmark.triangle")
+					.font(.system(size: 11.5, weight: .semibold))
+				ForEach(lines, id: \.self) { line in
+					Text(line)
+						.font(.system(size: 11.5))
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+			.foregroundStyle(VaultPalette.orangeTintText)
+			.padding(.leading, 20)
+			.accessibilityElement(children: .combine)
+		}
+	}
+
 	private var extras: some View {
 		let destinations = (plan?.projects ?? []).reduce(0) { total, project in
 			total + (plan?.contents.app?.destinations[project.id]?.count ?? 0)
@@ -478,21 +509,21 @@ struct BackupRestoreSheet: View {
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			if plan?.contents.app?.settings != nil {
+			if let settings = plan?.contents.app?.settings {
 				Text("SETTINGS").vaultSectionLabel()
 				Toggle(isOn: $choices.applySettings) {
 					VStack(alignment: .leading, spacing: 2) {
 						Text("Use the backup’s settings")
 							.font(.system(size: 13))
 							.foregroundStyle(VaultPalette.textPrimary)
-						Text(store.projects.isEmpty
-							? "Appearance, quit shortcut, key sort, project order and icons"
-							: "Appearance, quit shortcut, key sort, project order and icons — replaces this Mac’s")
+						Text(Self.settingsDetail(settings, hasProjects: !store.projects.isEmpty))
 							.font(.system(size: 11.5))
 							.foregroundStyle(VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
 					}
 				}
 				.toggleStyle(.checkbox)
+				lessStrictSettings(settings)
 			}
 			if let review, !review.plan.contents.keys.isEmpty {
 				Text("LPM.DEV SYNC KEYS").vaultSectionLabel()
@@ -821,6 +852,10 @@ struct VaultBackupRestorePresentation: View {
 			appearance.selection = settings.appearance
 			quit.selection = settings.quitShortcut
 			updates.channel = settings.updateChannel
+			if let restored = settings.preferences?.updates {
+				updates.automaticallyChecks = restored.checks
+				updates.automaticallyDownloads = restored.downloads
+			}
 		}
 	}
 }

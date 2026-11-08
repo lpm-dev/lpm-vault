@@ -53,6 +53,8 @@ struct VaultMenuKeys: NSViewRepresentable {
 
 		private func handle(_ key: Key, inWindow windowNumber: Int) -> Bool {
 			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil else { return false }
+			// An input method composing in a field, as for Japanese or Chinese, takes these keys to choose and commit its text.
+			if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
 			return handle(key)
 		}
 	}

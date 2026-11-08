@@ -514,6 +514,15 @@ struct VaultValueCopy: Equatable, Sendable {
   let key: String
   let environment: String
   let format: VaultCopyFormat
+  /// Text selected in the value's field, copied or cut as it is, in place of a format.
+  var selection: String? = nil
+  /// Called once the copy is made, as a cut waits to take its text out until then.
+  var onCopied: (@MainActor @Sendable () -> Void)? = nil
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.projectID == rhs.projectID && lhs.key == rhs.key && lhs.environment == rhs.environment
+      && lhs.format == rhs.format && lhs.selection == rhs.selection
+  }
 }
 
 /// How long feedback stays before it clears: a copy confirmation, or the
@@ -563,6 +572,12 @@ struct VaultRawTextEditing {
   let onCopy: (String) -> Void
   /// Applies a fix the person chose to every value that holds characters that are hard to see.
   var onFixCharacters: (RustSchemaEngine.CharacterFix) -> Void = { _ in }
+  /// Whether the edit's text shows. It holds every value, so it shows as a
+  /// reveal does, through the guard on values, and hides when values are
+  /// masked again, keeping the edit.
+  var isShown = true
+  /// Shows the hidden edit again, asking first when the guard says to.
+  var onShow: () -> Void = {}
 }
 
 enum VaultRawTextFailure: Equatable {

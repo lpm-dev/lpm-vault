@@ -76,10 +76,14 @@ struct VaultContentView: View {
 	let searchText: String
 	@Binding var selectedKey: String?
 	@Binding var revealedKeys: Set<String>
+	/// What a reveal goes through, which may ask for Touch ID first.
+	let valueAccess: VaultValueAccess
 	@Binding var showsInspector: Bool
 	@Binding var columnWidths: VaultProjectTableColumnWidths
 	let isCopyingAll: Bool
 	var isCopiedAll = false
+	/// How long a copy stays on the clipboard, which the copy toast counts down from.
+	var clipboardClear = VaultClipboardClear.standard
 	var canUseSecrets = true
 	/// Whether the project's newer data lets its values change.
 	var canEditValues = true
@@ -212,7 +216,7 @@ struct VaultContentView: View {
 				ViewThatFits(in: .horizontal) {
 					HStack(spacing: 6) {
 						viewControls
-						hint("Editing · real values shown")
+						hint(rawEditing.isShown ? "Editing · real values shown" : "Editing · values hidden")
 						Spacer(minLength: 8)
 						rawEditActions(rawEditing)
 					}
@@ -762,6 +766,7 @@ struct VaultContentView: View {
 				}
 				rawCard(editing: true) {
 					VStack(spacing: 0) {
+						// Hidden, the editor stays, with its place, selection and undo, for Show Edit.
 						VaultRawTextEditor(
 							text: draft.text,
 							problems: draft.check.problems,
@@ -769,16 +774,43 @@ struct VaultContentView: View {
 							warnings: editing.characterWarnings?.pills ?? [],
 							label: "\(name) as text, editing",
 							isEditable: !editing.isSaving,
+							isConcealed: !editing.isShown,
 							onChange: editing.onChange,
 							onCopy: editing.onCopy
 						)
 						.id("\(project.id)/\(selectedEnvironment)")
+						.accessibilityHidden(!editing.isShown)
+						.overlay {
+							if !editing.isShown { rawEditHidden(editing) }
+						}
 						VaultHairline()
 						rawEditorFooter(editing)
 					}
 				}
 			}
 		}
+	}
+
+	/// In the editor's place while values are masked again: the edit holds
+	/// every value of the environment, and is kept until it's shown again.
+	private func rawEditHidden(_ editing: VaultRawTextEditing) -> some View {
+		VStack(spacing: 8) {
+			Image(systemName: "eye.slash")
+				.font(.system(size: 18))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
+			Text("This edit’s values are hidden")
+				.font(.system(size: 13, weight: .semibold))
+				.foregroundStyle(VaultPalette.textPrimary)
+			Text("Your changes are kept. Show the edit to go on.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+			VaultBarButton(systemImage: "eye", title: "Show Edit", height: 28, action: editing.onShow)
+				.padding(.top, 4)
+		}
+		.multilineTextAlignment(.center)
+		.padding(24)
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
 
 	private func rawEditorFooter(_ editing: VaultRawTextEditing) -> some View {
@@ -917,7 +949,7 @@ struct VaultContentView: View {
 					.foregroundStyle(VaultPalette.toastConfirmation)
 					.accessibilityHidden(true)
 				Text("Copied \(copiedLineCount.counted("line")) ")
-					+ Text("· clears in \(Int(VaultConstants.clipboardClearDelay))s").foregroundStyle(VaultPalette.toastSecondaryText)
+					+ Text("· clears in \(clipboardClear.countdown)").foregroundStyle(VaultPalette.toastSecondaryText)
 			}
 		} else if let rawSaved, rawSaved.receipt.projectId == project.id, rawSaved.receipt.environment == selectedEnvironment {
 			savedToast(rawSaved)
@@ -1124,13 +1156,17 @@ struct VaultContentView: View {
 		if keys.allSatisfy(revealedKeys.contains) {
 			revealedKeys.subtract(keys)
 		} else {
-			revealedKeys.formUnion(keys)
+			valueAccess.reveal { revealedKeys.formUnion(keys) }
 		}
 	}
 
 	private func toggleReveal(_ key: String) {
 		guard canUseSecrets, !publicKeys.contains(key) else { return }
-		if revealedKeys.contains(key) { revealedKeys.remove(key) } else { revealedKeys.insert(key) }
+		if revealedKeys.contains(key) {
+			revealedKeys.remove(key)
+		} else {
+			valueAccess.reveal { revealedKeys.insert(key) }
+		}
 	}
 }
 

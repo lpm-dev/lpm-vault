@@ -73,18 +73,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			return quitGate.handle(input, at: event.timestamp) ? nil : event
 		}
 
-		let workspaceCenter = NSWorkspace.shared.notificationCenter
-		for name in [
-			NSWorkspace.sessionDidResignActiveNotification,
-			NSWorkspace.willSleepNotification,
-			NSWorkspace.screensDidSleepNotification,
-		] {
-			workspaceCenter.addObserver(
-				self,
-				selector: #selector(handleSecurityNotification(_:)),
-				name: name,
-				object: nil
-			)
+		observeSecurityNotifications()
+	}
+
+	/// What locks the vault at once: switching users, the Mac sleeping and its displays sleeping.
+	static let workspaceLockNotifications: [Notification.Name] = [
+		NSWorkspace.sessionDidResignActiveNotification,
+		NSWorkspace.willSleepNotification,
+		NSWorkspace.screensDidSleepNotification,
+	]
+
+	/// What macOS tells every app as the screen locks or the screen saver
+	/// starts, which can be well before the displays sleep.
+	static let systemLockNotifications: [Notification.Name] = [
+		Notification.Name("com.apple.screenIsLocked"),
+		Notification.Name("com.apple.screensaver.didstart"),
+	]
+
+	/// Locks the vault on each of `workspaceLockNotifications` from
+	/// `workspace` and `systemLockNotifications` from `system`.
+	func observeSecurityNotifications(
+		workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
+		system: NotificationCenter = DistributedNotificationCenter.default()
+	) {
+		for name in Self.workspaceLockNotifications {
+			workspace.addObserver(self, selector: #selector(handleSecurityNotification(_:)), name: name, object: nil)
+		}
+		for name in Self.systemLockNotifications {
+			system.addObserver(self, selector: #selector(handleSecurityNotification(_:)), name: name, object: nil)
 		}
 	}
 
@@ -141,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		localEventMonitor = nil
 		quitShortcutMonitor = nil
 		NSWorkspace.shared.notificationCenter.removeObserver(self)
+		DistributedNotificationCenter.default().removeObserver(self)
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -173,6 +190,7 @@ struct LPMVaultApp: App {
 		AppDelegate.requestTermination()
 	}
 	@State private var isObscured = false
+	@State private var captureProtection = VaultCaptureProtection()
 
 	var body: some Scene {
 		// Main window — opens automatically on launch
@@ -185,6 +203,9 @@ struct LPMVaultApp: App {
 				.vaultAppearance(appearanceSettings.selection)
 				.tint(VaultPalette.accent)
 				.vaultPrivacyProtected(isObscured)
+				.onChange(of: store.settings.hidesFromCapture, initial: true) { _, hides in
+					captureProtection.setEnabled(hides)
+				}
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
 					isObscured = true
 				}
@@ -205,6 +226,11 @@ struct LPMVaultApp: App {
 					}
 					appDelegate.recordUserActivity = { [store] in
 						store.recordUserActivity()
+					}
+					// Nil for a build that doesn't update itself, which has no settings of its own to keep or compare.
+					store.automaticUpdates = { [updateChecker] in
+						guard updateChecker.canChangeAutomaticUpdates else { return nil }
+						return .init(checks: updateChecker.automaticallyChecks, downloads: updateChecker.automaticallyDownloads)
 					}
 					quitCoordinator.attach(store)
 					appDelegate.shouldTerminate = { [quitCoordinator] in quitCoordinator.shouldTerminate(sessionEnding: $0) }
@@ -247,11 +273,12 @@ struct LPMVaultApp: App {
 				.keyboardShortcut("i", modifiers: [.command, .shift])
 				.disabled(!store.isUnlocked || store.selectedProject == nil)
 
-				Button("Find Secrets") {
-					NotificationCenter.default.post(name: .findSecrets, object: nil)
+				let find = VaultFindTarget(showingSettings: store.isShowingAccountPage)
+				Button(find.title) {
+					NotificationCenter.default.post(name: find.notification, object: nil)
 				}
 				.keyboardShortcut("f", modifiers: .command)
-				.disabled(!store.isUnlocked || store.selectedProject == nil)
+				.disabled(!find.isEnabled(unlocked: store.isUnlocked, hasProject: store.selectedProject != nil))
 
 				Button("Find Value…") {
 					NotificationCenter.default.post(name: .findValue, object: nil)
@@ -303,10 +330,41 @@ struct LPMVaultApp: App {
 
 }
 
+/// What ⌘F searches: Settings while it shows, rather than the projects hidden
+/// under it, and otherwise the projects and their keys.
+enum VaultFindTarget: Equatable {
+	case secrets
+	case settings
+
+	init(showingSettings: Bool) {
+		self = showingSettings ? .settings : .secrets
+	}
+
+	var title: String {
+		switch self {
+		case .secrets: "Find Secrets"
+		case .settings: "Find in Settings"
+		}
+	}
+
+	var notification: Notification.Name {
+		switch self {
+		case .secrets: .findSecrets
+		case .settings: .findSettings
+		}
+	}
+
+	/// Settings can be searched with no project chosen; a project's secrets can't.
+	func isEnabled(unlocked: Bool, hasProject: Bool) -> Bool {
+		unlocked && (self == .settings || hasProject)
+	}
+}
+
 extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
 	static let importVariables = Notification.Name("dev.lpm.vault.import-variables")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
+	static let findSettings = Notification.Name("dev.lpm.vault.find-settings")
 	static let findValue = Notification.Name("dev.lpm.vault.find-value")
 	static let findReusedValues = Notification.Name("dev.lpm.vault.find-reused-values")
 	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")

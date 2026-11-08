@@ -17,12 +17,12 @@ struct VaultSettingsContent: View {
 			if category == .platforms {
 				PlatformsView(store: store, showsHeader: false)
 			} else {
-				ScrollView {
+				VaultSettingsScroller {
 					VStack(alignment: .leading, spacing: 22) {
 						sections
 					}
 					.frame(maxWidth: VaultMetrics.formWidth, alignment: .leading)
-					.padding(.horizontal, 28)
+					.padding(.horizontal, VaultSettingsOverlay.contentInset)
 					.padding(.vertical, 24)
 					.frame(maxWidth: .infinity, alignment: .leading)
 				}
@@ -43,20 +43,34 @@ struct VaultSettingsContent: View {
 		}
 	}
 
-	/// The category's sections. One that holds a single section shows it
-	/// without a label, which the overlay's header already gives.
+	/// The category's sections, each under its label, except a page's opening
+	/// card about what the overlay's header already names.
 	@ViewBuilder
 	private var sections: some View {
 		switch category {
-		case .general: settingsSection { VaultGeneralSettingsSection() }
+		case .general:
+			settingsSection { VaultGeneralSettingsSection() }
+			settingsSection("LOCAL HISTORY") { VaultHistoryDefaultsSettingsSection(store: store) }
+		case .security:
+			settingsSection("LOCKING") { VaultLockingSettingsSection(settings: store.settings) }
+			settingsSection("VALUES") { VaultValueSettingsSection(settings: store.settings) }
+			settingsSection("CLIPBOARD") { VaultClipboardSettingsSection(settings: store.settings) }
+			settingsSection("SCREEN") { VaultCaptureSettingsSection(settings: store.settings) }
 		case .appearance: settingsSection { VaultAppearanceSettingsSection() }
 		case .account: accountSections
-		case .cli: settingsSection("LPM HOME") { VaultLPMHomeSettingsSection(store: store) }
+		case .cli:
+			settingsSection("LPM CLI") { VaultCLIStatusSettingsSection(store: store) }
+			settingsSection("APPROVAL") { VaultCLIApprovalSettingsSection(settings: store.settings) }
+			settingsSection("LPM HOME") { VaultLPMHomeSettingsSection(store: store) }
 		case .backup:
 			settingsSection {
 				VaultBackupSettingsSection(store: store, exportBackup: { showBackupExport = true }, restoreBackup: { showBackupRestore = true })
 			}
+			settingsSection("REMINDER") { VaultBackupReminderSettingsSection(settings: store.settings) }
 		case .updates: settingsSection { VaultUpdateSettingsSection() }
+		case .about:
+			settingsSection { VaultAboutSettingsSection() }
+			settingsSection("LINKS") { VaultAboutLinksSection() }
 		case .platforms: EmptyView()
 		}
 	}
@@ -87,6 +101,7 @@ struct VaultSettingsContent: View {
 						showLogoutConfirmation = true
 					}
 				}
+				.vaultSettingsAnchor(.account)
 			}
 			serverSettings
 		} else {
@@ -117,6 +132,7 @@ struct VaultSettingsContent: View {
 							.fixedSize(horizontal: false, vertical: true)
 					}
 				}
+				.vaultSettingsAnchor(.account)
 			}
 			serverSettings
 		}
@@ -143,6 +159,7 @@ struct VaultSettingsContent: View {
 				}
 				#endif
 			}
+			.vaultSettingsAnchor(.registryServer)
 		}
 	}
 

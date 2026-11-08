@@ -91,6 +91,15 @@ struct VaultSidebarView: View {
 			.frame(maxHeight: .infinity, alignment: .top)
 			.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 
+			// Read again each hour, so a reminder comes due while the window stays open.
+			TimelineView(.periodic(from: .now, by: 3600)) { _ in
+				if store.isBackupReminderDue {
+					VaultBackupReminderCard(store: store)
+						.padding(.horizontal, 10)
+						.padding(.bottom, 10)
+				}
+			}
+
 			VaultHairline(color: VaultPalette.sidebarBorder)
 			footer
 				.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
@@ -613,6 +622,45 @@ private extension View {
 				: (hovered ? VaultPalette.sidebarHover : .clear)))
 			.vaultHoverAnimation(hovered)
 			.contentShape(Rectangle())
+	}
+}
+
+/// The monthly reminder to back up, above the sidebar's footer, with the
+/// way to it and a way to put it off for a week.
+private struct VaultBackupReminderCard: View {
+	@Bindable var store: VaultStore
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack(alignment: .firstTextBaseline, spacing: 7) {
+				Image(systemName: "externaldrive")
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.accessibilityHidden(true)
+				VStack(alignment: .leading, spacing: 2) {
+					Text("Back up your projects")
+						.font(.system(size: 12.5, weight: .semibold))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text(VaultBackupReminder.detail(lastBackup: store.lastBackup?.date, now: store.backupReminderNow()))
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+			.accessibilityElement(children: .combine)
+			HStack(spacing: 6) {
+				VaultBarButton(title: "Back Up…", height: 26) { store.showSettings(.backup) }
+				VaultBarButton(title: "Later", borderless: true, height: 26) { store.postponeBackupReminder() }
+					.help("Remind me again in a week")
+			}
+			.padding(.leading, 19)
+		}
+		.padding(10)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 9).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		.accessibilityElement(children: .contain)
+		.accessibilityLabel("Backup reminder")
 	}
 }
 

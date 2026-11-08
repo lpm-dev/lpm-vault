@@ -103,6 +103,24 @@ struct RawTextStoreTests {
 		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "1", "B": "2"])
 	}
 
+	@Test("an edit shows once the guard on values allows it; masking values again hides it, keeping it, and ending it forgets it was shown")
+	func editShowsThroughTheGuard() async throws {
+		let (store, _) = try await makeStore()
+		defer { store.lock() }
+		store.editRawText(order: ["A", "B"])
+		#expect(store.rawTextDraft(for: target()) != nil && store.shownRawTextEdits == [target()], "Nothing to ask: it shows at once")
+
+		store.valueAccess.hideRevealed()
+		#expect(store.shownRawTextEdits.isEmpty && store.rawTextDraft(for: target()) != nil)
+		store.showRawTextEdit(target())
+		#expect(store.shownRawTextEdits == [target()])
+
+		store.discardRawTextDraft(target())
+		#expect(store.shownRawTextEdits.isEmpty)
+		store.showRawTextEdit(target())
+		#expect(store.shownRawTextEdits.isEmpty, "No edit, nothing to show")
+	}
+
 	@Test("unsaved key edits keep the environment from being edited as text, which would put their keys back")
 	func waitsForKeyEdits() async throws {
 		let (store, _) = try await makeStore()
@@ -133,11 +151,13 @@ struct RawTextStoreTests {
 		let (store, _) = try await makeStore(environments: ["default": ["A": "1"], "staging": ["S": "1"]])
 		defer { store.lock() }
 		store.selectedEnvironment = "staging"
-		#expect(store.beginRawTextEdit(order: ["S"]))
+		store.editRawText(order: ["S"])
+		#expect(store.shownRawTextEdits == [target("staging")])
 		store.updateRawTextDraft(target("staging"), text: "S=2\n")
 		store.renameEnvironment(in: "p", from: "staging", to: "qa")
 		#expect(try await waitUntil { store.rawTextDraft(for: target("qa")) != nil })
 		#expect(store.rawTextDraft(for: target("staging")) == nil)
+		#expect(store.shownRawTextEdits == [target("qa")], "A shown edit stays shown under its new name")
 		#expect(store.rawTextDraft(for: target("qa"))?.text == "S=2\n")
 		#expect(store.rawTextDraft(for: target("qa"))?.target == target("qa"))
 		store.deleteEnvironment(from: "p", name: "qa")

@@ -1,25 +1,52 @@
 import SwiftUI
 
 /// Settings and Platforms over the workspace, which stays as it was under a
-/// dimmed backdrop: a menu of Settings' parts on the leading side, the part
-/// chosen beside it, and a header naming it. Esc, the close button or a click
-/// on the backdrop closes it.
+/// dimmed backdrop: a menu of Settings' parts on the leading side, with a
+/// search above it, the part chosen beside it, and a header naming it. Esc
+/// clears a search, then closes it, as the close button or a click on the
+/// backdrop does.
 struct VaultSettingsOverlay: View {
 	@Bindable var store: VaultStore
 	let category: VaultSettingsCategory
 
-	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+	@State private var search = VaultSettingsSearch()
+	@FocusState private var searchFocused: Bool
+	// Optional, as a page that shows none of them, such as Platforms, can be shown without them.
+	@Environment(VaultAppearanceSettings.self) private var appearance: VaultAppearanceSettings?
+	@Environment(VaultQuitSettings.self) private var quit: VaultQuitSettings?
+	@Environment(UpdateChecker.self) private var updates: UpdateChecker?
+
+	private var pageDefaults: VaultSettingsPageDefaults {
+		VaultSettingsPageDefaults(settings: store.settings, appearance: appearance, quit: quit, updates: updates)
+	}
 
 	/// How far the panel stays from the title bar, the window's bottom and its sides.
 	static let margin: CGFloat = 40
-	/// The widest the panel grows in a large window.
-	static let maximumWidth: CGFloat = 1100
 	static let menuWidth: CGFloat = 200
+	/// The space between a page's column of cards and the panel's sides.
+	static let contentInset: CGFloat = 28
 	static let headerHeight: CGFloat = 58
+
+	/// The width a page's scroll bar takes from it.
+	@State private var scrollBar = Self.scrollBarWidth
+
+	/// The widest the panel grows in a large window: the menu, its hairline and
+	/// a page's widest column of cards, so no empty strip runs beside them,
+	/// with `scrollBar` beside the cards when scroll bars always show.
+	static func maximumWidth(scrollBar: CGFloat) -> CGFloat {
+		menuWidth + 1 + contentInset + VaultMetrics.formWidth + contentInset + scrollBar
+	}
+
+	/// What a page's scroll bar takes from it: nothing where scroll bars show
+	/// only while scrolling, as with a trackpad, and their width where they
+	/// always show, as with a mouse or the setting that asks for it.
+	static var scrollBarWidth: CGFloat {
+		NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+	}
 
 	var body: some View {
 		GeometryReader { geometry in
-			let frame = Self.panelFrame(in: geometry.size)
+			let frame = Self.panelFrame(in: geometry.size, scrollBar: scrollBar)
 			ZStack {
 				VaultPalette.scrim
 					.overlay { VaultClickCatcher { store.closeAccountPage() } }
@@ -30,20 +57,54 @@ struct VaultSettingsOverlay: View {
 			}
 			.frame(width: geometry.size.width, height: geometry.size.height)
 		}
-		// Esc closes it wherever focus is in the window, unless a sheet, such as a backup's, is over it.
-		.background(VaultMenuKeys { key in
-			guard key == .close else { return false }
-			store.closeAccountPage()
+		// Its keys work wherever focus is in the window, unless a sheet, such as a backup's, is over it.
+		.background(VaultMenuKeys { handle($0) })
+		.onReceive(NotificationCenter.default.publisher(for: .findSettings)) { _ in searchFocused = true }
+		.onChange(of: category) { _, category in search.pageShown(category) }
+		.onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+			scrollBar = Self.scrollBarWidth
+		}
+	}
+
+	/// Esc clears a search before it closes Settings. From the search field,
+	/// the arrows show the result above or below, and Return the one shown or
+	/// the best. The arrows stay the search's there even with no result
+	/// further, so they don't move the field's caret instead.
+	private func handle(_ key: VaultMenuKeys.Key) -> Bool {
+		switch key {
+		case .close:
+			if search.query.isEmpty {
+				store.closeAccountPage()
+			} else {
+				search.clear()
+			}
 			return true
-		})
+		case .up, .down:
+			guard searchFocused, search.isSearching else { return false }
+			if let entry = search.result(movingBy: key == .down ? 1 : -1) { show(entry) }
+			return true
+		case .open:
+			guard searchFocused, search.isSearching, let entry = search.resultForReturn else { return false }
+			show(entry)
+			return true
+		case .left, .right:
+			return false
+		}
+	}
+
+	/// Opens `entry`'s page, which brings it into view and tints it a moment.
+	private func show(_ entry: VaultSettingsEntry) {
+		if store.shownSettingsCategory != entry.category { store.showSettings(entry.category) }
+		search.choose(entry)
+		AccessibilityNotification.Announcement("\(entry.title), in \(entry.category.title)").post()
 	}
 
 	/// Where the panel sits in a window `size` big, from its top-left: clear
 	/// of the title bar by the margin, as far from the bottom, centered, and no
-	/// wider than `maximumWidth`.
-	static func panelFrame(in size: CGSize) -> CGRect {
+	/// wider than `maximumWidth(scrollBar:)`.
+	static func panelFrame(in size: CGSize, scrollBar: CGFloat = 0) -> CGRect {
 		let top = VaultMetrics.titleBar + margin
-		let width = max(0, min(maximumWidth, size.width - 2 * margin))
+		let width = max(0, min(maximumWidth(scrollBar: scrollBar), size.width - 2 * margin))
 		return CGRect(x: (size.width - width) / 2, y: top, width: width, height: max(0, size.height - top - margin))
 	}
 
@@ -52,10 +113,11 @@ struct VaultSettingsOverlay: View {
 			header
 			VaultHairline()
 			HStack(spacing: 0) {
-				menu
+				VaultSettingsMenuColumn(store: store, category: category, search: search, searchFocused: $searchFocused, show: show)
 				VaultHairline(axis: .vertical)
 				VaultSettingsContent(store: store, category: category)
 					.id(category)
+					.environment(\.vaultSettingsHighlight, search.highlight)
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
@@ -85,6 +147,10 @@ struct VaultSettingsOverlay: View {
 			.font(.system(size: 15, weight: .semibold))
 			.lineLimit(1)
 			Spacer(minLength: 12)
+			if pageDefaults.hasChanges(on: category) {
+				VaultBarButton(title: "Restore Defaults", height: 28) { pageDefaults.restore(category) }
+					.help("Put this page’s settings back as LPM Vault first had them")
+			}
 			closeButton
 		}
 		.padding(.horizontal, 20)
@@ -95,13 +161,29 @@ struct VaultSettingsOverlay: View {
 	private var closeButton: some View {
 		VaultSheetCloseButton(label: "Close Settings") { store.closeAccountPage() }
 	}
+}
 
-	private var menu: some View {
+/// Settings' menu: the search above its parts, or what the search found in
+/// their place. Its own view, so what's typed updates it alone.
+private struct VaultSettingsMenuColumn: View {
+	let store: VaultStore
+	let category: VaultSettingsCategory
+	let search: VaultSettingsSearch
+	var searchFocused: FocusState<Bool>.Binding
+	let show: (VaultSettingsEntry) -> Void
+
+	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
-			ForEach(VaultSettingsCategory.allCases) { item in
-				VaultSettingsMenuRow(category: item, selected: item == category) { store.showSettings(item) }
+			VaultSettingsSearchField(search: search, focused: searchFocused)
+				.padding(.bottom, 10)
+			if search.isSearching {
+				VaultSettingsSearchResults(search: search, show: show)
+			} else {
+				ForEach(VaultSettingsCategory.allCases) { item in
+					VaultSettingsMenuRow(category: item, selected: item == category) { store.showSettings(item) }
+				}
+				Spacer(minLength: 12)
 			}
-			Spacer(minLength: 12)
 			VStack(alignment: .leading, spacing: 2) {
 				Text("LPM Vault")
 				Text(VaultBuildInfo().displayVersion)
@@ -114,9 +196,60 @@ struct VaultSettingsOverlay: View {
 		}
 		.padding(.horizontal, 10)
 		.padding(.vertical, 14)
-		.frame(width: Self.menuWidth, alignment: .leading)
+		.frame(width: VaultSettingsOverlay.menuWidth, alignment: .leading)
 		.frame(maxHeight: .infinity)
 		.background(VaultPalette.sidebar)
+		// Each new set of results is said, even with as many as the last.
+		.onChange(of: search.results) { _, _ in
+			if let announcement = search.resultsAnnouncement { AccessibilityNotification.Announcement(announcement).post() }
+		}
+	}
+}
+
+/// Which of a Settings page's settings differ from LPM Vault's defaults, and
+/// putting them back. The update channel and the LPM home are choices with
+/// consequences of their own, never defaults to restore.
+@MainActor
+struct VaultSettingsPageDefaults {
+	let settings: VaultSettings
+	var appearance: VaultAppearanceSettings?
+	var quit: VaultQuitSettings?
+	var updates: UpdateChecker?
+
+	func hasChanges(on category: VaultSettingsCategory) -> Bool {
+		let standard = VaultSettings.standard
+		switch category {
+		case .general:
+			return quit.map { $0.selection != VaultQuitShortcut.standard } == true
+				|| settings.newProjectsKeepHistory != standard.newProjectsKeepHistory
+		case .security: return settings.security != standard.security
+		case .appearance: return appearance.map { $0.selection != .system } == true
+		case .cli: return settings.newProjectsAskBeforeCLIReads != standard.newProjectsAskBeforeCLIReads
+		case .backup: return settings.remindsToBackUp != standard.remindsToBackUp
+		case .updates:
+			let automatic = BackupAppSection.AutomaticUpdates.standard
+			guard let updates, updates.canChangeAutomaticUpdates else { return false }
+			return updates.automaticallyChecks != automatic.checks || updates.automaticallyDownloads != automatic.downloads
+		case .account, .platforms, .about: return false
+		}
+	}
+
+	func restore(_ category: VaultSettingsCategory) {
+		let standard = VaultSettings.standard
+		switch category {
+		case .general:
+			quit?.selection = VaultQuitShortcut.standard
+			settings.newProjectsKeepHistory = standard.newProjectsKeepHistory
+		case .security: settings.security = standard.security
+		case .appearance: appearance?.selection = .system
+		case .cli: settings.newProjectsAskBeforeCLIReads = standard.newProjectsAskBeforeCLIReads
+		case .backup: settings.remindsToBackUp = standard.remindsToBackUp
+		case .updates:
+			let automatic = BackupAppSection.AutomaticUpdates.standard
+			updates?.automaticallyChecks = automatic.checks
+			updates?.automaticallyDownloads = automatic.downloads
+		case .account, .platforms, .about: break
+		}
 	}
 }
 

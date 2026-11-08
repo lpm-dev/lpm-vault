@@ -14,6 +14,54 @@ struct UpdateCheckerTests {
 		#expect(VaultReleaseChannel.nightly.sparkleChannels == ["nightly"])
 	}
 
+	@Test("automatic checks start on and background installs off, each changed through Sparkle")
+	func automaticUpdates() throws {
+		let defaults = try isolatedDefaults()
+		let driver = TestUpdateDriver()
+		let checker = UpdateChecker(driver: driver, defaults: defaults, buildInfo: VaultBuildInfo(info: [:]))
+		#expect(checker.canChangeAutomaticUpdates)
+		#expect(checker.automaticallyChecks)
+		#expect(!checker.automaticallyDownloads)
+
+		checker.automaticallyDownloads = true
+		#expect(driver.automaticallyDownloads)
+		#expect(checker.automaticallyDownloads)
+		checker.automaticallyChecks = false
+		#expect(!driver.automaticallyChecks)
+		#expect(!checker.automaticallyDownloads, "Nothing downloads in the background while nothing is looked for")
+
+		checker.start()
+		driver.automaticallyChecks = true
+		driver.canCheckForUpdates = false
+		#expect(checker.automaticallyChecks, "A change Sparkle makes itself shows once its state changes")
+	}
+
+	@Test("a build that doesn't update itself offers no automatic updates")
+	func noAutomaticUpdatesWithoutUpdater() throws {
+		let checker = UpdateChecker(defaults: try isolatedDefaults(), buildInfo: VaultBuildInfo(info: [:]))
+		#if DEBUG
+		#expect(!checker.canChangeAutomaticUpdates)
+		checker.automaticallyChecks = false
+		#expect(checker.automaticallyChecks)
+		#endif
+	}
+
+	@Test("Updates says when automatic updates differ from LPM Vault's, and puts them back, never the update channel")
+	func restoreDefaults() throws {
+		let defaults = try isolatedDefaults()
+		let checker = UpdateChecker(driver: TestUpdateDriver(), defaults: defaults, buildInfo: VaultBuildInfo(info: [:]))
+		checker.start()
+		let pages = VaultSettingsPageDefaults(settings: VaultSettings(defaults: defaults), updates: checker)
+		#expect(!pages.hasChanges(on: .updates))
+		checker.channel = .nightly
+		#expect(checker.channel == .nightly && !pages.hasChanges(on: .updates), "The channel isn't a default to restore")
+		checker.automaticallyDownloads = true
+		#expect(pages.hasChanges(on: .updates))
+		pages.restore(.updates)
+		#expect(checker.automaticallyChecks && !checker.automaticallyDownloads && checker.channel == .nightly)
+		#expect(!pages.hasChanges(on: .updates))
+	}
+
 	@Test("a direct nightly installation keeps its channel when a newer stable build replaces it")
 	func nightlyDefaultSurvivesStableReplacement() throws {
 		let domain = "nightly-default-\(UUID().uuidString)"
@@ -315,6 +363,8 @@ private final class TestUpdateDriver: VaultUpdateDriver {
 	var availableUpdateVersion: String? {
 		didSet { updateChanged?(availableUpdateVersion) }
 	}
+	var automaticallyChecks = true
+	var automaticallyDownloads = false
 	var stateChanged: (() -> Void)?
 	var updateChanged: ((String?) -> Void)?
 	var starts = 0

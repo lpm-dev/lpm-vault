@@ -491,6 +491,8 @@ protocol KeychainServiceProtocol: Sendable {
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome]
 	/// What local history says about the project: on, off, paused, damaged.
 	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError>
+	/// How much local history this Mac keeps, from a names-only listing.
+	func historyUsageResult() -> Result<VaultHistoryUsage?, KeychainError>
 	/// The project's history, newest first, or nil when it has none yet.
 	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError>
 	/// The history's state and timeline from one read of its records.
@@ -608,6 +610,15 @@ extension KeychainServiceProtocol {
 		}
 		return .success(values)
 	}
+}
+
+/// How much local history this Mac keeps.
+struct VaultHistoryUsage: Equatable, Sendable {
+	/// The kinds of record a project's history is made of: its head, its key and its parts.
+	static let kinds: Set<String> = ["history-head", "key", "history"]
+
+	let projects: Int
+	let records: Int
 }
 
 enum VaultCliAccess: Sendable, Equatable {
@@ -3439,6 +3450,29 @@ extension SharedKeychainStore: HistoryStorage {
 		try backend.withoutApprovalPrompts(body)
 	}
 
+	/// The projects with local history and the records it takes, read from
+	/// names alone, so no record is read and nothing asks for approval. Nil
+	/// while an interrupted change waits: finishing it reads values, so the
+	/// count leaves it to the next change, which finishes it first.
+	func historyUsage() throws -> VaultHistoryUsage? {
+		try VaultKeychainTransactionLock.withLock {
+			try backend.withoutApprovalPrompts {
+				guard try listingUnlocked()[Self.transactionMarkerAccount] == nil else { return nil }
+				var projects = Set<String>()
+				var records = 0
+				for (vaultId, names) in try companionNamesUnlocked() {
+					let described = try describedUnlocked(Array(names))
+					for case .account(let account) in described
+					where account.role == .record && account.kind.map(VaultHistoryUsage.kinds.contains) == true {
+						records += 1
+						if account.kind == "history-head" { projects.insert(vaultId) }
+					}
+				}
+				return VaultHistoryUsage(projects: projects.count, records: records)
+			}
+		}
+	}
+
 	func historyRings() throws -> [String] {
 		try companionNamesUnlocked().compactMap { vaultId, names in
 			try names.contains(HistoryRecorder.account("history-head", vaultId)) ? vaultId : nil
@@ -3580,6 +3614,10 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> {
 		withHistory(vaultId, .maintenance) { try HistoryOperations.state(store, vaultId: vaultId) }
+	}
+
+	func historyUsageResult() -> Result<VaultHistoryUsage?, KeychainError> {
+		historyResult { try store.historyUsage() }
 	}
 
 	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {

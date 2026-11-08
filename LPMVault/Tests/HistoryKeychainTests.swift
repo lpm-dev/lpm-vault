@@ -162,6 +162,15 @@ struct HistoryKeychainTests {
 		#expect(!values.contains("1"), "\(values)")
 	}
 
+	@Test("Settings counts the projects keeping history and every record it takes, and nothing once it's off")
+	func usageCountsHistoryRecords() throws {
+		let (service, backend, name) = try edited()
+		let stored = try #require(try stored(backend, service: name))
+		#expect(try service.historyUsageResult().get() == VaultHistoryUsage(projects: 1, records: 2 + stored.parts.count))
+		try service.setHistoryEnabledResult(vaultId: vaultId, enabled: false).get()
+		#expect(try service.historyUsageResult().get() == VaultHistoryUsage(projects: 0, records: 0))
+	}
+
 	@Test("turning history off deletes it and stops recording; turning it on starts again at the next change")
 	func historyOffAndOn() throws {
 		let (service, backend, name) = try edited()

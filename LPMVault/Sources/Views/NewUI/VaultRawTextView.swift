@@ -125,6 +125,9 @@ struct VaultRawTextEditor: NSViewRepresentable {
 	var warnings: [VaultEnvTextCheck.Problem] = []
 	let label: String
 	var isEditable = true
+	/// Hidden while values are masked again: not drawn, not reachable by the
+	/// pointer, the keyboard or VoiceOver, and kept as it was for when it shows.
+	var isConcealed = false
 	let onChange: (String) -> Void
 	let onCopy: (String) -> Void
 
@@ -164,7 +167,10 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		(scrollView.verticalRulerView as? VaultLineNumberGutter)?.problemLines = problemLines
 		// Starts at the empty line after the last key, ready to add one.
 		textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-		DispatchQueue.main.async { [weak textView] in textView?.window?.makeFirstResponder(textView) }
+		conceal(scrollView, textView, isConcealed)
+		if !isConcealed {
+			DispatchQueue.main.async { [weak textView] in textView?.window?.makeFirstResponder(textView) }
+		}
 		return scrollView
 	}
 
@@ -172,6 +178,11 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		let coordinator = context.coordinator
 		coordinator.parent = self
 		guard let textView = scrollView.documentView as? EditorTextView else { return }
+		if scrollView.isHidden != isConcealed {
+			if isConcealed, let window = scrollView.window, window.firstResponder === textView { window.makeFirstResponder(nil) }
+			conceal(scrollView, textView, isConcealed)
+			if !isConcealed { DispatchQueue.main.async { [weak textView] in textView?.window?.makeFirstResponder(textView) } }
+		}
 		textView.setAccessibilityLabel(label)
 		textView.isEditable = isEditable
 		if ExactText(text) != ExactText(coordinator.shownText) {
@@ -186,6 +197,14 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		if let gutter = scrollView.verticalRulerView as? VaultLineNumberGutter, gutter.problemLines != problemLines {
 			gutter.problemLines = problemLines
 		}
+	}
+
+	/// Hides the editor, or shows it again. Hidden, it's out of VoiceOver's
+	/// reach too: a hidden view's text stays in the accessibility tree on some
+	/// versions of macOS.
+	private func conceal(_ scrollView: NSScrollView, _ textView: EditorTextView, _ concealed: Bool) {
+		scrollView.isHidden = concealed
+		textView.setAccessibilityElement(!concealed)
 	}
 
 	static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {

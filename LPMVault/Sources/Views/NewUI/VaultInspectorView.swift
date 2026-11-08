@@ -196,6 +196,7 @@ private struct VaultKeyEditor: View {
 		.task(id: inspectedValues(draft, cards: cards).mapValues(ExactText.init)) {
 			await inspectCharacters(inspectedValues(draft, cards: cards))
 		}
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealedEnvironments.removeAll() }
 		.onDisappear { characterInspections = [:] }
 	}
 
@@ -626,7 +627,11 @@ private struct VaultKeyEditor: View {
 			maxLines: revealed ? 4 : 1,
 			isEnabled: !disabled,
 			concealsDots: conceals,
-			onSubmit: save
+			onSubmit: save,
+			onCopySelection: { selection, copied in
+				onCopy(VaultValueCopy(projectID: project.id, key: key, environment: environment, format: .value,
+					selection: selection, onCopied: copied))
+			}
 		)
 		.id(revealed)
 		.overlay(alignment: .leading) {
@@ -1045,7 +1050,10 @@ private struct VaultKeyEditor: View {
 	private func valueBinding(_ environment: String) -> Binding<String> {
 		Binding(
 			get: { currentValue(in: environment, draft: store.keyDrafts.draft(id)) },
-			set: { value in edit { $0.setValue(value, in: environment) } }
+			set: { value in
+				edit { $0.setValue(value, in: environment) }
+				store.valueAccess.keepShowing()
+			}
 		)
 	}
 
@@ -1103,7 +1111,8 @@ private struct VaultKeyEditor: View {
 			revealedKeys.remove(key)
 			revealedEnvironments.removeAll()
 		} else {
-			revealedKeys.insert(key)
+			let key = key
+			store.valueAccess.reveal { revealedKeys.insert(key) }
 		}
 	}
 
@@ -1116,7 +1125,7 @@ private struct VaultKeyEditor: View {
 		if revealedEnvironments.contains(environment) {
 			revealedEnvironments.remove(environment)
 		} else {
-			revealedEnvironments.insert(environment)
+			store.valueAccess.reveal { revealedEnvironments.insert(environment) }
 		}
 	}
 

@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>https://vault.lpm.dev/updates/channels.xml</string>
 	<key>SUPublicEDKey</key>

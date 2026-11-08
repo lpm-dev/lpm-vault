@@ -73,6 +73,9 @@ struct BackupExportTests {
 		fixture.defaults.set(VaultQuitShortcut.hold.rawValue, forKey: VaultQuitShortcut.defaultsKey)
 		fixture.defaults.set(VaultReleaseChannel.nightly.rawValue, forKey: UpdateChecker.channelDefaultsKey)
 		store.saveEnvironmentOrder(for: "vault-a", order: ["staging", "default"])
+		store.settings.lockAfter = .thirtyMinutes
+		store.settings.newProjectsAskBeforeCLIReads = true
+		store.automaticUpdates = { .init(checks: false, downloads: false) }
 		#expect(store.projectIcons.save(.emoji("🚀"), for: "vault-a"))
 		let destination = vercelDestination(source: "default")
 		_ = try await store.publishing.save(destination, to: "vault-a").get()
@@ -99,9 +102,13 @@ struct BackupExportTests {
 		#expect(projects["vault-hidden"]?["environments"]?["default"]?["OLD"] == .string("x"))
 
 		let app = try BackupAppSection(json: try #require(payload["app"]))
+		var carried = VaultSettings.standard
+		carried.security.lockAfter = .thirtyMinutes
+		carried.newProjectsAskBeforeCLIReads = true
 		#expect(app.settings == .init(
 			appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .nightly,
-			projectOrder: ["vault-a"], environmentOrders: ["vault-a": ["staging", "default"]]))
+			projectOrder: ["vault-a"], environmentOrders: ["vault-a": ["staging", "default"]],
+			preferences: .init(app: carried, updates: .init(checks: false, downloads: false))))
 		#expect(app.icons == ["vault-a": .choice(.emoji("🚀"))])
 		#expect(app.destinations == ["vault-a": [destination]])
 

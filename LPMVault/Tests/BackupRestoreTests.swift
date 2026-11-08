@@ -70,9 +70,15 @@ struct BackupRestoreTests {
 		let fixture = try fixture()
 		defer { fixture.tearDown() }
 		let destination = vercelDestination(source: "default")
+		let preferences = BackupAppSection.Preferences(
+			app: VaultSettings.Snapshot(
+				security: .init(lockAfter: .fifteenMinutes, valueApproval: .afterFiveMinutes, clipboardClear: .thirtySeconds,
+					rehide: .oneMinute, hidesFromCapture: false),
+				newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: true, remindsToBackUp: false),
+			updates: .init(checks: false, downloads: false))
 		let settings = BackupAppSection.Settings(
 			appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .stable,
-			projectOrder: ["synced"], environmentOrders: ["synced": ["staging", "default"]])
+			projectOrder: ["synced"], environmentOrders: ["synced": ["staging", "default"]], preferences: preferences)
 		let url = try backup([
 			project("synced", environments: ["default": ["TOKEN": "a"], "staging": [:]],
 				sync: .init(registry: "https://lpm.dev", principalId: "usr_1", scope: .personal)),
@@ -102,6 +108,8 @@ struct BackupRestoreTests {
 		#expect(fixture.store.projectIcons.savedChoices(for: ["synced"]) == ["synced": .emoji("🚀")])
 		#expect(result.settings == settings)
 		#expect(fixture.defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending")
+		#expect(fixture.store.settings.snapshot == preferences.app, "Security, new projects' defaults and the reminder come back")
+		#expect(VaultSettings(defaults: fixture.defaults).snapshot == preferences.app)
 		#expect(fixture.store.environmentOrders["synced"] == ["staging", "default"])
 
 		fixture.store.openProject(id: "synced")

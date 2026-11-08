@@ -209,35 +209,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	var body: some View {
-		valueSearchHandling
-		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
-		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
-		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
-			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
-		}
-		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
-			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
-		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
-		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
-		.task(id: schemaWatch) { await watchSchemaFolder() }
-		.task(id: iconWatch) {
-			// Redraws the selected project's icon whenever a file it can come from changes.
-			if let iconWatch { await store.projectIcons.watch(iconWatch.projectID) }
-		}
-		.onChange(of: store.selectedEnvironment) { _, environment in
-			resetCopyPresentation()
-			rawTextSaved = nil
-			exportTask?.cancel()
-			exportTask = nil
-			exportID = nil
-			mode = mode.synchronized(to: environment)
-			revealedKeys.removeAll()
-			shownMenu = nil
-		}
-		.onChange(of: mode) { _, _ in
-			revealedKeys.removeAll()
-			shownMenu = nil
-		}
+		revealHandling
 		.onChange(of: store.history.showRequest) { _, request in
 			if request != nil { mode = .history }
 		}
@@ -285,6 +257,47 @@ struct VaultWorkspaceView: View {
 			resetCopyPresentation()
 			revealedKeys.removeAll()
 			selectedKey = nil
+		}
+	}
+
+	/// The page and its commands, with what masks revealed values again as
+	/// the environment or page changes, or as the guard on values says to.
+	private var revealHandling: some View {
+		commandHandling
+		.onChange(of: store.selectedEnvironment) { _, environment in
+			resetCopyPresentation()
+			rawTextSaved = nil
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+			mode = mode.synchronized(to: environment)
+			revealedKeys.removeAll()
+			shownMenu = nil
+		}
+		.onChange(of: mode) { _, _ in
+			revealedKeys.removeAll()
+			shownMenu = nil
+		}
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealedKeys.removeAll() }
+	}
+
+	/// The page with what the app's commands ask of it, and what follows the
+	/// selected project.
+	private var commandHandling: some View {
+		valueSearchHandling
+		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
+		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
+		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
+			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
+		}
+		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
+			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
+		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
+		.task(id: schemaWatch) { await watchSchemaFolder() }
+		.task(id: iconWatch) {
+			// Redraws the selected project's icon whenever a file it can come from changes.
+			if let iconWatch { await store.projectIcons.watch(iconWatch.projectID) }
 		}
 	}
 
@@ -1159,8 +1172,13 @@ struct VaultWorkspaceView: View {
 		}
 	}
 
-	/// Copies right away, or once a refresh in progress publishes current values.
+	/// Copies right away, or once a refresh in progress publishes current
+	/// values, once the guard on values allows it, as every copy here does.
 	private func copySecret(_ key: String, _ environment: String) {
+		store.valueAccess.copy { copyApprovedSecret(key, environment) }
+	}
+
+	private func copyApprovedSecret(_ key: String, _ environment: String) {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage, let projectID = project?.id else { return }
 		guard store.isRefreshingLocalState else {
 			copyCurrentSecret(key, environment, projectID: projectID)
@@ -1184,6 +1202,10 @@ struct VaultWorkspaceView: View {
 	/// Copies what an inspector value field shows, after a refresh in progress
 	/// publishes current values.
 	private func copyValue(_ request: VaultValueCopy) {
+		store.valueAccess.copy { copyApprovedValue(request) }
+	}
+
+	private func copyApprovedValue(_ request: VaultValueCopy) {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage, project?.id == request.projectID else { return }
 		guard store.isRefreshingLocalState else {
 			copyCurrentValue(request)
@@ -1199,6 +1221,13 @@ struct VaultWorkspaceView: View {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage,
 			let current = store.selectedProject, current.id == request.projectID
 		else { return }
+		let feedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
+		if let selection = request.selection {
+			guard store.clipboard.copy(selection) else { return }
+			copyFeedback = feedback
+			request.onCopied?()
+			return
+		}
 		let draft = store.keyDrafts.draft(VaultKeyDraft.ID(projectID: request.projectID, key: request.key))
 		let name = draft.map { EnvValidation.isValidVariableName($0.name) ? $0.name : $0.key } ?? request.key
 		var value = ""
@@ -1208,7 +1237,7 @@ struct VaultWorkspaceView: View {
 			value = shown
 		}
 		guard store.clipboard.copy(request.format.text(key: name, value: value)) else { return }
-		copyFeedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
+		copyFeedback = feedback
 	}
 
 	private func copiedEnvironment(in project: VaultProject) -> String? {
@@ -1221,6 +1250,10 @@ struct VaultWorkspaceView: View {
 	/// Copies the selected environment as a .env file, at once, or once a
 	/// refresh in progress publishes current values.
 	private func copyAll() {
+		store.valueAccess.copy { copyApprovedAll() }
+	}
+
+	private func copyApprovedAll() {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage, copyAllTask == nil, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		copyFeedback = nil
@@ -1251,6 +1284,10 @@ struct VaultWorkspaceView: View {
 	/// Copies Raw text's lines of `keys`, with their current values, at once
 	/// or once a refresh in progress publishes them.
 	private func copyLines(_ keys: [String]) {
+		store.valueAccess.copy { copyApprovedLines(keys) }
+	}
+
+	private func copyApprovedLines(_ keys: [String]) {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage, !keys.isEmpty, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		copyLinesTask?.cancel()
@@ -1295,7 +1332,9 @@ struct VaultWorkspaceView: View {
 				rawTextFailures[target] = nil
 			},
 			onCopy: { copyEditedText($0, in: target) },
-			onFixCharacters: { store.fixRawTextCharacters(target, $0) }
+			onFixCharacters: { store.fixRawTextCharacters(target, $0) },
+			isShown: store.shownRawTextEdits.contains(target),
+			onShow: { store.showRawTextEdit(target) }
 		)
 	}
 
@@ -1341,6 +1380,10 @@ struct VaultWorkspaceView: View {
 
 	/// Copies what was cut or copied in Raw text's editor, as every copy of values is.
 	private func copyEditedText(_ text: String, in target: VaultEnvironmentTarget) {
+		store.valueAccess.copy { copyApprovedEditedText(text, in: target) }
+	}
+
+	private func copyApprovedEditedText(_ text: String, in target: VaultEnvironmentTarget) {
 		guard store.isUnlocked, !text.isEmpty, store.clipboard.copy(text) else { return }
 		let lines = text.split(separator: "\n", omittingEmptySubsequences: true).count
 		copyFeedback = VaultCopyFeedback(target: .lines(VaultSensitiveActionContext(projectID: target.projectId,
@@ -1510,6 +1553,7 @@ struct VaultWorkspaceView: View {
 			searchText: searchText,
 			selectedKey: $selectedKey,
 			revealedKeys: $revealedKeys,
+			valueAccess: store.valueAccess,
 			showsInspector: $showsInspector,
 			columnWidths: Binding(
 				get: { store.layout.columnWidths(for: project.id) },
@@ -1519,6 +1563,7 @@ struct VaultWorkspaceView: View {
 			isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
 				projectID: project.id, environment: store.selectedEnvironment
 			)),
+			clipboardClear: store.settings.clipboardClear,
 			canUseSecrets: store.canUseLocalSecrets,
 			canEditValues: store.canEditValues(of: project.id),
 			cliAccess: store.selectedProjectCliAccess,
@@ -1543,7 +1588,7 @@ struct VaultWorkspaceView: View {
 			copiedLineCount: copiedLineCount(in: project),
 			rawEditing: rawTextEditing(in: project),
 			rawEditBlocker: store.rawTextEditBlocker,
-			onEditRaw: { store.beginRawTextEdit(order: $0) },
+			onEditRaw: { store.editRawText(order: $0) },
 			rawSaved: rawTextSaved,
 			onUndoRawSave: undoRawTextSave,
 			valueSearchSummary: store.valueSearch.isPresented ? nil
@@ -1604,6 +1649,10 @@ struct VaultWorkspaceView: View {
 
 	/// Copies a value of an unsaved edit whose project or key is gone.
 	private func copyUnsavedValue(_ id: VaultKeyDraft.ID, _ environment: String) {
+		store.valueAccess.copy { copyApprovedUnsavedValue(id, environment) }
+	}
+
+	private func copyApprovedUnsavedValue(_ id: VaultKeyDraft.ID, _ environment: String) {
 		guard store.isUnlocked, !store.isShowingAccountPage, store.keyDrafts.orphanIDs.contains(id),
 			let value = store.keyDrafts.draft(id)?.value(in: environment),
 			store.clipboard.copy(value)

@@ -489,6 +489,26 @@ struct CompanionStorageTests {
 		#expect(backend.data(record) == overridesRecord)
 	}
 
+	@Test("counting history for Settings reads no record and finishes no interrupted change: the count waits for one")
+	func usageLeavesInterruptedChangeAlone() throws {
+		let backend = CompanionTestBackend()
+		let store = SharedKeychainStore(service: "companion-\(UUID().uuidString)", backend: backend)
+		backend.store(vault, values)
+		backend.store(try markerName(), marker(overridesV1))
+		let record = try recordName("overrides")
+		backend.failWrites(to: [record])
+		#expect(throws: KeychainStoreError.self) { try store.applyVaultTransaction([.write(account: record, data: overridesRecord)], history: nil) }
+		backend.failWrites(to: [])
+		backend.resetCounts()
+
+		#expect(try store.historyUsage() == nil)
+		#expect(backend.reads(of: "__vault_transaction_v3__") == 0)
+		#expect(backend.data(record) == nil && backend.data("__vault_transaction_v3__") != nil, "The change is left for the next one to finish")
+
+		try store.recoverVaultTransaction()
+		#expect(try store.historyUsage() == VaultHistoryUsage(projects: 0, records: 0))
+	}
+
 	@Test("recovery replays a committed journal over a stray record it doesn't touch")
 	func recoveryOverStrayRecord() throws {
 		let backend = CompanionTestBackend()
