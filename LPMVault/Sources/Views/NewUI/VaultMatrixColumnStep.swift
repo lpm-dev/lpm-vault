@@ -3,13 +3,26 @@ import SwiftUI
 
 /// At an edge of the matrix's header, names the environment columns out of
 /// view on that side and brings the nearest one whole into view. With room it
-/// names the nearest; without, it shows their colors, as the sidebar lists them.
+/// names the nearest; without, it counts them.
 struct VaultColumnStepButton: View {
 	enum Direction {
 		/// Columns scrolled under the key column.
 		case before
 		/// Columns past the view's trailing edge.
 		case after
+	}
+
+	/// What the control says: the nearest environment's name, or how many are out of view.
+	enum Content: Equatable {
+		case named(String)
+		case counted(Int)
+
+		var text: String {
+			switch self {
+			case .named(let name): name
+			case .counted(let count): "+\(count.counted("env"))"
+			}
+		}
 	}
 
 	let direction: Direction
@@ -32,58 +45,58 @@ struct VaultColumnStepButton: View {
 		ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width)
 	}
 
-	private static let nameFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+	private static let textFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
 	private static let swatch: CGFloat = 7
 	private static let spacing: CGFloat = 5
 	private static let chevron: CGFloat = 7
 	private static let inset: CGFloat = 8
 
-	/// The width of the control naming `name`.
-	static func namedWidth(_ name: String) -> CGFloat {
-		let text = ceil((name as NSString).size(withAttributes: [.font: nameFont]).width)
-		return inset * 2 + swatch + spacing + text + spacing + chevron
+	/// The name of the nearest environment when the control has room for it, and otherwise how many there are.
+	static func content(nearest: String, count: Int, room: CGFloat) -> Content {
+		let text = ceil((nearest as NSString).size(withAttributes: [.font: textFont]).width)
+		return room >= inset * 2 + swatch + spacing + text + spacing + chevron ? .named(nearest) : .counted(count)
+	}
+
+	/// The control's name for VoiceOver: what it shows, then what it does.
+	static func accessibilityLabel(_ content: Content, nearest: String) -> String {
+		switch content {
+		case .named: "Show \(nearest)"
+		case .counted: "\(content.text): show \(nearest)"
+		}
 	}
 
 	private var nearest: String { environments.first?.name ?? "" }
-	private var named: Bool { room >= Self.namedWidth(nearest) }
+	private var content: Content { Self.content(nearest: nearest, count: environments.count, room: room) }
 
 	var body: some View {
+		let content = content
 		Button(action: action) {
 			HStack(spacing: Self.spacing) {
 				if direction == .before { chevron }
-				if named {
+				if case .named = content {
 					VaultEnvSwatch(color: environments.first?.color ?? VaultPalette.textFaint, size: Self.swatch)
-					Text(nearest)
-						.font(.system(size: 11.5, weight: .medium))
-						.foregroundStyle(VaultPalette.textSecondary)
-						.lineLimit(1)
-						.fixedSize()
-				} else {
-					HStack(spacing: 3) {
-						ForEach(Array(environments.prefix(3).enumerated()), id: \.offset) { _, environment in
-							VaultEnvSwatch(color: environment.color, size: Self.swatch)
-						}
-					}
 				}
+				Text(content.text)
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.lineLimit(1)
+					.fixedSize()
 				if direction == .after { chevron }
 			}
 			.padding(.horizontal, Self.inset)
-			.frame(height: 22)
+			.frame(height: 24)
 			.background {
-				RoundedRectangle(cornerRadius: 6, style: .continuous)
+				RoundedRectangle(cornerRadius: 6)
 					.fill(hovering ? VaultPalette.controlHover : VaultPalette.control)
 			}
-			.overlay {
-				RoundedRectangle(cornerRadius: 6, style: .continuous)
-					.strokeBorder(VaultPalette.border, lineWidth: 1)
-			}
-			.contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+			.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
-		.buttonStyle(.plain)
+		// Pressed and focused as every other button is.
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.onHover { hovering = $0 }
 		.animation(reduceMotion ? nil : VaultMotion.quick, value: hovering)
 		.help(help)
-		.accessibilityLabel("Show \(nearest)")
+		.accessibilityLabel(Self.accessibilityLabel(content, nearest: nearest))
 	}
 
 	private var chevron: some View {
@@ -152,7 +165,8 @@ struct VaultHorizontalScroller: NSViewRepresentable {
 			let destination = clip.constrainBoundsRect(bounds).origin.x
 			stop()
 			guard destination != clip.bounds.origin.x else { return }
-			guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, window != nil else {
+			// Frames come only while the window is on screen to draw them; off it, the step lands at once.
+			guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let window, window.occlusionState.contains(.visible) else {
 				move(to: destination)
 				return
 			}
@@ -160,6 +174,17 @@ struct VaultHorizontalScroller: NSViewRepresentable {
 			let link = displayLink(target: self, selector: #selector(advance))
 			link.add(to: .main, forMode: .common)
 			self.link = link
+			// Should frames stop coming partway, as when the window goes behind another, the step still ends where it was going.
+			let serial = target.serial
+			DispatchQueue.main.asyncAfter(deadline: .now() + Self.duration + 0.1) { [weak self] in
+				MainActor.assumeIsolated { self?.finish(serial: serial) }
+			}
+		}
+
+		private func finish(serial: Int) {
+			guard serial == self.serial, let step else { return }
+			stop()
+			move(to: step.to)
 		}
 
 		func stop() {

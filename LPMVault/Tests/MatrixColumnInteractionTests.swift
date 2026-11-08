@@ -65,6 +65,26 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Show .env.staging", exactly: true))
 		}
 
+		/// A display link doesn't fire for a window that isn't on screen, as one
+		/// behind others or on another space, so a step eased frame by frame never moved.
+		@Test("a step scrolls the table even while its window isn't on screen to draw the easing")
+		func stepsOffScreen() throws {
+			let document = NSView(frame: NSRect(x: 0, y: 0, width: 2000, height: 400))
+			let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+			scrollView.documentView = document
+			let scroller = VaultHorizontalScroller.ScrollerView(frame: .zero)
+			document.addSubview(scroller)
+			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+			window.isReleasedWhenClosed = false
+			window.contentView = scrollView
+			defer { window.close() }
+			#expect(!window.occlusionState.contains(.visible), "Never ordered in, so nothing draws it")
+			var target = VaultHorizontalScrollTarget()
+			target.scroll(to: 255)
+			scroller.scroll(to: target)
+			#expect(scrollView.contentView.bounds.origin.x == 255, "It lands at once rather than waiting for frames that won't come")
+		}
+
 		@Test("with room for every column, the matrix names none at its edges")
 		func roomForEveryColumn() async throws {
 			let host = host(width: 1100)
