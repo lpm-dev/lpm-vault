@@ -516,6 +516,13 @@ struct VaultValueCopy: Equatable, Sendable {
   let format: VaultCopyFormat
   /// Text selected in the value's field, copied or cut as it is, in place of a format.
   var selection: String? = nil
+  /// Called once the copy is made, as a cut waits to take its text out until then.
+  var onCopied: (@MainActor @Sendable () -> Void)? = nil
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.projectID == rhs.projectID && lhs.key == rhs.key && lhs.environment == rhs.environment
+      && lhs.format == rhs.format && lhs.selection == rhs.selection
+  }
 }
 
 /// How long feedback stays before it clears: a copy confirmation, or the

@@ -184,7 +184,7 @@ struct VaultValueAccessTests {
 		#expect(try await waitUntil { prompt.asked == 1 })
 		prompt.answer(false)
 		#expect(try await waitUntil { prompt.waiting == 0 })
-		await Task.yield()
+		try await quietPeriod()
 		#expect(!revealed)
 		#expect(access.needsApproval)
 	}
@@ -236,6 +236,26 @@ struct VaultValueAccessTests {
 		#expect(prompt.sleeps.count == 1, "Nothing is shown now, so no time starts")
 	}
 
+	@Test("editing shown values starts the time to mask them again over, so values in use stay shown")
+	func editsKeepValuesShown() async throws {
+		let prompt = ApprovalPrompt()
+		prompt.rehide = .thirtySeconds
+		let access = prompt.access(approval: .never)
+		access.reveal {}
+		#expect(try await waitUntil { prompt.sleeps.count == 1 })
+		prompt.now = 20
+		access.keepShowing()
+		prompt.wake(0)
+		#expect(try await waitUntil { prompt.sleeps.count == 2 }, "The time runs on from the edit")
+		#expect(prompt.sleeps.last?.duration == .seconds(30))
+		#expect(access.hideGeneration == 0)
+		prompt.wake(1)
+		#expect(try await waitUntil { access.hideGeneration == 1 })
+		access.keepShowing()
+		try await quietPeriod()
+		#expect(prompt.sleeps.count == 2, "Nothing shows, so an edit starts no time")
+	}
+
 	@Test("revealed values are masked again after the setting's time, from the latest reveal")
 	func rehideAfterInterval() async throws {
 		let prompt = ApprovalPrompt()
@@ -249,7 +269,7 @@ struct VaultValueAccessTests {
 		#expect(try await waitUntil { prompt.sleeps.count == 2 })
 		#expect(prompt.sleeps.map(\.duration) == [.seconds(60), .seconds(60)])
 		prompt.wake(0)
-		await Task.yield()
+		try await quietPeriod()
 		#expect(access.hideGeneration == 0, "The first reveal's time was replaced by the second's")
 		prompt.wake(1)
 		#expect(try await waitUntil { access.hideGeneration == 1 })
@@ -475,14 +495,13 @@ struct BackupPreferenceChangesTests {
 		strict.security = .init(lockAfter: .oneMinute, valueApproval: .afterFiveMinutes, clipboardClear: .tenSeconds, rehide: .oneMinute,
 			hidesFromCapture: true)
 		strict.newProjectsAskBeforeCLIReads = true
-		let current = BackupAppSection.Preferences(app: strict, updates: .standard)
 		var loose = VaultSettings.standard
 		loose.security = .init(lockAfter: .thirtyMinutes, valueApproval: .never, clipboardClear: .twoMinutes, rehide: .never,
 			hidesFromCapture: false)
 		loose.newProjectsKeepHistory = false
 		loose.remindsToBackUp = false
 		let backup = BackupAppSection.Preferences(app: loose, updates: .init(checks: false, downloads: true))
-		#expect(backup.lessStrict(than: current) == [
+		#expect(backup.lessStrict(than: strict, updates: .standard) == [
 			"Lock after: 30 min, instead of 1 min",
 			"Ask again to show or copy a value: Never, instead of After 5 min",
 			"Hide shown values again: Never, instead of After 1 min",
@@ -491,7 +510,22 @@ struct BackupPreferenceChangesTests {
 			"Ask before the CLI reads a new project: off, instead of on",
 			"Check for updates automatically: off, instead of on",
 		])
-		#expect(current.lessStrict(than: backup).isEmpty, "Stricter settings need no warning")
-		#expect(current.lessStrict(than: current).isEmpty)
+		let current = BackupAppSection.Preferences(app: strict, updates: .standard)
+		#expect(current.lessStrict(than: loose, updates: .init(checks: false, downloads: true)).isEmpty, "Stricter settings need no warning")
+		#expect(current.lessStrict(than: strict, updates: .standard).isEmpty)
+		#expect(backup.lessStrict(than: strict, updates: nil).last == "Ask before the CLI reads a new project: off, instead of on",
+			"A build that doesn't update itself has no automatic updates to compare")
+	}
+
+	@Test("a version 2 backup's settings say they replace this Mac's, which has them before it holds any project")
+	@MainActor
+	func settingsDetail() {
+		let v2 = BackupAppSection.Settings(appearance: .system, keySort: .ascending, quitShortcut: .doublePress, updateChannel: .stable,
+			projectOrder: [], environmentOrders: [:], preferences: .init(app: VaultSettings.standard, updates: .standard))
+		#expect(BackupRestoreSheet.settingsDetail(v2, hasProjects: false).hasSuffix(" — replaces this Mac’s"))
+		var v1 = v2
+		v1.preferences = nil
+		#expect(BackupRestoreSheet.settingsDetail(v1, hasProjects: false) == "Appearance, quit shortcut, key sort, project order and icons")
+		#expect(BackupRestoreSheet.settingsDetail(v1, hasProjects: true).hasSuffix(" — replaces this Mac’s"))
 	}
 }

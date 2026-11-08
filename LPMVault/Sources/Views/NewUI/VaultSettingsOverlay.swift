@@ -25,14 +25,28 @@ struct VaultSettingsOverlay: View {
 	static let menuWidth: CGFloat = 200
 	/// The space between a page's column of cards and the panel's sides.
 	static let contentInset: CGFloat = 28
-	/// The widest the panel grows in a large window: the menu, its hairline and
-	/// a page's widest column of cards, so no empty strip runs beside them.
-	static let maximumWidth: CGFloat = menuWidth + 1 + contentInset + VaultMetrics.formWidth + contentInset
 	static let headerHeight: CGFloat = 58
+
+	/// The width a page's scroll bar takes from it.
+	@State private var scrollBar = Self.scrollBarWidth
+
+	/// The widest the panel grows in a large window: the menu, its hairline and
+	/// a page's widest column of cards, so no empty strip runs beside them,
+	/// with `scrollBar` beside the cards when scroll bars always show.
+	static func maximumWidth(scrollBar: CGFloat) -> CGFloat {
+		menuWidth + 1 + contentInset + VaultMetrics.formWidth + contentInset + scrollBar
+	}
+
+	/// What a page's scroll bar takes from it: nothing where scroll bars show
+	/// only while scrolling, as with a trackpad, and their width where they
+	/// always show, as with a mouse or the setting that asks for it.
+	static var scrollBarWidth: CGFloat {
+		NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+	}
 
 	var body: some View {
 		GeometryReader { geometry in
-			let frame = Self.panelFrame(in: geometry.size)
+			let frame = Self.panelFrame(in: geometry.size, scrollBar: scrollBar)
 			ZStack {
 				VaultPalette.scrim
 					.overlay { VaultClickCatcher { store.closeAccountPage() } }
@@ -47,6 +61,9 @@ struct VaultSettingsOverlay: View {
 		.background(VaultMenuKeys { handle($0) })
 		.onReceive(NotificationCenter.default.publisher(for: .findSettings)) { _ in searchFocused = true }
 		.onChange(of: category) { _, category in search.pageShown(category) }
+		.onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+			scrollBar = Self.scrollBarWidth
+		}
 	}
 
 	/// Esc clears a search before it closes Settings. From the search field,
@@ -84,10 +101,10 @@ struct VaultSettingsOverlay: View {
 
 	/// Where the panel sits in a window `size` big, from its top-left: clear
 	/// of the title bar by the margin, as far from the bottom, centered, and no
-	/// wider than `maximumWidth`.
-	static func panelFrame(in size: CGSize) -> CGRect {
+	/// wider than `maximumWidth(scrollBar:)`.
+	static func panelFrame(in size: CGSize, scrollBar: CGFloat = 0) -> CGRect {
 		let top = VaultMetrics.titleBar + margin
-		let width = max(0, min(maximumWidth, size.width - 2 * margin))
+		let width = max(0, min(maximumWidth(scrollBar: scrollBar), size.width - 2 * margin))
 		return CGRect(x: (size.width - width) / 2, y: top, width: width, height: max(0, size.height - top - margin))
 	}
 
@@ -182,8 +199,9 @@ private struct VaultSettingsMenuColumn: View {
 		.frame(width: VaultSettingsOverlay.menuWidth, alignment: .leading)
 		.frame(maxHeight: .infinity)
 		.background(VaultPalette.sidebar)
-		.onChange(of: search.resultsAnnouncement) { _, announcement in
-			if let announcement { AccessibilityNotification.Announcement(announcement).post() }
+		// Each new set of results is said, even with as many as the last.
+		.onChange(of: search.results) { _, _ in
+			if let announcement = search.resultsAnnouncement { AccessibilityNotification.Announcement(announcement).post() }
 		}
 	}
 }

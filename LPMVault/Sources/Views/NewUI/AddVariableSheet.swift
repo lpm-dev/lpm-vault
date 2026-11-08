@@ -315,7 +315,9 @@ struct AddVariableSheet: View {
 					},
 					onSubmit: { submit(keepOpen: false) },
 					// What's typed here is no stored value, so it needs no approval; it still stays on this Mac.
-					onCopySelection: { _ = store.clipboard.copy($0) }
+					onCopySelection: { text, copied in
+						if store.clipboard.copy(text) { copied() }
+					}
 				)
 				.id(isValueRevealed)
 

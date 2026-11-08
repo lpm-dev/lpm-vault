@@ -21,7 +21,9 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func makeFixture(_ configure: (VaultSettings) -> Void = { _ in }) throws -> Fixture {
+		/// `clock`, when there is one, is the time the store's guard on values reads.
+		private func makeFixture(clock: LockedTime? = nil, _ configure: (VaultSettings) -> Void = { _ in }) throws -> Fixture {
+			let now: @Sendable () -> TimeInterval = { clock?.value ?? ProcessInfo.processInfo.systemUptime }
 			let folder = FileManager.default.temporaryDirectory.appending(path: "security-settings-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 			let defaults = try isolatedDefaults()
@@ -33,7 +35,7 @@ extension SheetInteractionTests {
 			keychain.envStorage[project.id] = (name: project.name, path: project.path, environments: project.environments)
 			let biometric = MockBiometricService()
 			let store = VaultStore(keychainService: keychain, biometricService: biometric,
-				apiService: MockAPIService(), preferences: defaults, authTokenProvider: { _, _ in nil }, settings: settings,
+				apiService: MockAPIService(), preferences: defaults, authTokenProvider: { _, _ in nil }, autoLockNow: now, settings: settings,
 				clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project]
@@ -98,11 +100,13 @@ extension SheetInteractionTests {
 			let size = NSSize(width: 1400, height: 800)
 			let host = try await overlay(fixture, .security, size: size)
 			defer { host.window.close() }
-			let panel = VaultSettingsOverlay.panelFrame(in: size)
+			// Where scroll bars always show, as on a Mac with a mouse, one stands between the cards and the panel's side.
+			let scrollBar = VaultSettingsOverlay.scrollBarWidth
+			let panel = VaultSettingsOverlay.panelFrame(in: size, scrollBar: scrollBar)
 			let control = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: "Lock after"), in: host.view)
 			let controlEnd = control.maxX * host.view.bounds.width
 			let cardPadding: CGFloat = 16
-			#expect(abs(controlEnd - (panel.maxX - VaultSettingsOverlay.contentInset - cardPadding)) < 1,
+			#expect(abs(controlEnd - (panel.maxX - scrollBar - VaultSettingsOverlay.contentInset - cardPadding)) < 1,
 				"The card's control ends at \(controlEnd), in a panel ending at \(panel.maxX)")
 			#expect(panel.width < size.width - 2 * VaultSettingsOverlay.margin, "Narrower than the window allows, as the cards are")
 		}
@@ -250,13 +254,67 @@ extension SheetInteractionTests {
 			try await host.click("Edit .env as text")
 			#expect(try await host.waitUntil { fixture.store.rawTextDraft(for: target) != nil })
 			#expect(try await host.waitForText("TOKEN=s3cret-token"))
+			let editor = try #require(Self.rawEditor(in: host.view))
+			editor.setSelectedRange(NSRange(location: 2, length: 3))
 
 			fixture.store.valueAccess.hideRevealed()
 			#expect(try await host.waitForTextToDisappear("TOKEN=s3cret-token"))
 			#expect(try await host.waitForText("Show Edit", exactly: true))
+			#expect(try await host.waitForText("Editing · values hidden"))
 			#expect(fixture.store.rawTextDraft(for: target) != nil, "The edit is kept")
 			try await host.click("Show Edit")
 			#expect(try await host.waitForText("TOKEN=s3cret-token"))
+			#expect(try await host.waitForText("Editing · real values shown"))
+			let shown = try #require(Self.rawEditor(in: host.view))
+			#expect(shown === editor && shown.selectedRange() == NSRange(location: 2, length: 3), "It's the same editor, as it was left")
+		}
+
+		private static func rawEditor(in view: NSView) -> VaultRawTextEditor.EditorTextView? {
+			if let editor = view as? VaultRawTextEditor.EditorTextView { return editor }
+			return view.subviews.lazy.compactMap { rawEditor(in: $0) }.first
+		}
+
+		@Test("Cut in a revealed inspector value takes text out only once the guarded copy is made: declined, the value stays and nothing is copied")
+		func inspectorCutThroughTheGuard() async throws {
+			let clock = LockedTime(0)
+			let fixture = try makeFixture(clock: clock) { $0.valueApproval = .afterFiveMinutes }
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			try #require(revealToggle(in: host)).press()
+			#expect(try await host.waitUntil { revealToggle(in: host)?.isOn == true })
+			try await host.click("TOKEN")
+			var found: NSTextField?
+			#expect(try await host.waitUntil {
+				found = Self.textField(in: host.view) { !($0 is NSSecureTextField) && $0.stringValue == "s3cret-token" }
+				return found != nil
+			})
+			let field = try #require(found)
+			#expect(host.window.makeFirstResponder(field))
+			let editor = try #require(field.currentEditor() as? NSTextView)
+
+			clock.value = 301
+			fixture.biometric.shouldSucceed = false
+			editor.setSelectedRange(NSRange(location: 6, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { fixture.biometric.confirmationReasons.count == 2 }, "Five minutes on, Cut asks again")
+			try await quietPeriod()
+			#expect(editor.string == "s3cret-token", "Declined, the text stays")
+			#expect(fixture.store.clipboard.pasteboard.string(forType: .string) == nil)
+
+			fixture.biometric.shouldSucceed = true
+			editor.setSelectedRange(NSRange(location: 6, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == "-token" })
+			#expect(try await host.waitUntil { editor.string == "s3cret" }, "Copied, the text comes out")
+		}
+
+		private static func textField(in view: NSView, where matches: (NSTextField) -> Bool) -> NSTextField? {
+			if let field = view as? NSTextField, matches(field) { return field }
+			for subview in view.subviews {
+				if let found = textField(in: subview, where: matches) { return found }
+			}
+			return nil
 		}
 
 		@Test("a declined approval reveals and copies nothing")
@@ -345,4 +403,15 @@ final class LockedCount: @unchecked Sendable {
 	private var stored = 0
 	var value: Int { lock.withLock { stored } }
 	func add() { lock.withLock { stored += 1 } }
+}
+
+/// A clock a test moves, read from a closure that can't say which actor it runs on.
+final class LockedTime: @unchecked Sendable {
+	private let lock = NSLock()
+	private var stored: TimeInterval
+	init(_ time: TimeInterval) { stored = time }
+	var value: TimeInterval {
+		get { lock.withLock { stored } }
+		set { lock.withLock { stored = newValue } }
+	}
 }

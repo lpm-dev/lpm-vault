@@ -151,11 +151,13 @@ struct RawTextStoreTests {
 		let (store, _) = try await makeStore(environments: ["default": ["A": "1"], "staging": ["S": "1"]])
 		defer { store.lock() }
 		store.selectedEnvironment = "staging"
-		#expect(store.beginRawTextEdit(order: ["S"]))
+		store.editRawText(order: ["S"])
+		#expect(store.shownRawTextEdits == [target("staging")])
 		store.updateRawTextDraft(target("staging"), text: "S=2\n")
 		store.renameEnvironment(in: "p", from: "staging", to: "qa")
 		#expect(try await waitUntil { store.rawTextDraft(for: target("qa")) != nil })
 		#expect(store.rawTextDraft(for: target("staging")) == nil)
+		#expect(store.shownRawTextEdits == [target("qa")], "A shown edit stays shown under its new name")
 		#expect(store.rawTextDraft(for: target("qa"))?.text == "S=2\n")
 		#expect(store.rawTextDraft(for: target("qa"))?.target == target("qa"))
 		store.deleteEnvironment(from: "p", name: "qa")

@@ -1225,6 +1225,7 @@ struct VaultWorkspaceView: View {
 		if let selection = request.selection {
 			guard store.clipboard.copy(selection) else { return }
 			copyFeedback = feedback
+			request.onCopied?()
 			return
 		}
 		let draft = store.keyDrafts.draft(VaultKeyDraft.ID(projectID: request.projectID, key: request.key))

@@ -35,10 +35,11 @@ struct BackupAppSection: Equatable, Sendable {
 		var app: VaultSettings.Snapshot
 		var updates: AutomaticUpdates
 
-		/// What restoring these would make less strict than `current`, a
-		/// setting to a line, as "Lock after: 30 min, instead of 2 min".
-		func lessStrict(than current: Preferences) -> [String] {
-			let backup = app.security, mac = current.app.security
+		/// What restoring these would make less strict than this Mac's `app`
+		/// settings and its automatic `updates`, nil for a build that doesn't
+		/// update itself: a setting to a line, as "Lock after: 30 min, instead of 2 min".
+		func lessStrict(than current: VaultSettings.Snapshot, updates currentUpdates: AutomaticUpdates?) -> [String] {
+			let backup = app.security, mac = current.security
 			var lines: [String] = []
 			func longer(_ backup: TimeInterval?, _ mac: TimeInterval?) -> Bool { (backup ?? .infinity) > (mac ?? .infinity) }
 			func line(_ entry: VaultSettingsEntry, _ backup: String, _ mac: String) { lines.append("\(entry.title): \(backup), instead of \(mac)") }
@@ -51,8 +52,8 @@ struct BackupAppSection: Equatable, Sendable {
 				line(.clipboardClear, backup.clipboardClear.title, mac.clipboardClear.title)
 			}
 			if !backup.hidesFromCapture, mac.hidesFromCapture { line(.hideFromCapture, "off", "on") }
-			if !app.newProjectsAskBeforeCLIReads, current.app.newProjectsAskBeforeCLIReads { line(.cliApproval, "off", "on") }
-			if !updates.checks, current.updates.checks { lines.append("Check for updates automatically: off, instead of on") }
+			if !app.newProjectsAskBeforeCLIReads, current.newProjectsAskBeforeCLIReads { line(.cliApproval, "off", "on") }
+			if !updates.checks, currentUpdates?.checks == true { lines.append("Check for updates automatically: off, instead of on") }
 			return lines
 		}
 	}

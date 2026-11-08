@@ -79,8 +79,10 @@ struct LPMCLILocatorTests {
 		let pids = try [childFile, shellFile].map { file in
 			try #require(pid_t(String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
 		}
-		defer { for pid in pids { kill(pid, SIGKILL) } }
-		#expect(try await waitUntil { pids.allSatisfy { kill($0, 0) != 0 } }, "Neither the shell nor what it started outlives the lookup")
+		let ended = try await waitUntil { pids.allSatisfy { kill($0, 0) != 0 } }
+		// Only when they outlived it: once they're gone, their process IDs can be another process's.
+		if !ended { for pid in pids { kill(pid, SIGKILL) } }
+		#expect(ended, "Neither the shell nor what it started outlives the lookup")
 	}
 
 	@Test("a cancelled lookup ends at once, with the shell stopped, rather than at the timeout")

@@ -61,13 +61,12 @@ private struct VaultSettingsAnchor: ViewModifier {
 }
 
 /// A Settings page's scroll view. It brings the setting search chose into view
-/// once the page has laid it out, which a page just opened hasn't yet, and
-/// after the update that found it there: a scroll asked for within that update
-/// is dropped.
+/// once the page has laid it out, which a page just opened hasn't yet. It
+/// jumps there, as the tint shows where: an animated scroll can stall in a
+/// window that isn't being drawn, leaving the setting out of sight.
 struct VaultSettingsScroller<Content: View>: View {
 	@ViewBuilder let content: Content
 	@Environment(\.vaultSettingsHighlight) private var highlight
-	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	@State private var anchors: Set<VaultSettingsEntry.ID> = []
 
 	private var target: VaultSettingsSearch.Highlight? {
@@ -81,7 +80,7 @@ struct VaultSettingsScroller<Content: View>: View {
 				.onPreferenceChange(VaultSettingsAnchors.self) { anchors = $0 }
 				.task(id: target) {
 					guard let target else { return }
-					withAnimation(reduceMotion ? nil : VaultMotion.panel) { proxy.scrollTo(target.entry.id, anchor: .center) }
+					proxy.scrollTo(target.entry.id, anchor: .center)
 				}
 		}
 	}

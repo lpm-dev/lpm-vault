@@ -26,6 +26,8 @@ struct SettingsPageStoreTests {
 		#expect(regular.minY == VaultMetrics.titleBar + 40 && regular.maxY == 800 - 40, "40 points below the title bar and above the bottom")
 		#expect(regular.width == 977 && abs(regular.midX - 640) < 0.5,
 			"Centered, at its widest: a 200-point menu, its hairline, and 720 points of cards inset 28 on each side")
+		#expect(VaultSettingsOverlay.panelFrame(in: CGSize(width: 1280, height: 800), scrollBar: 15).width == 992,
+			"Where scroll bars always show, wider by one, so the cards keep their width")
 		let small = VaultSettingsOverlay.panelFrame(in: CGSize(width: 1040, height: 640))
 		#expect(small.minX == 40 && small.maxX == 1000, "At least 40 points on each side")
 		#expect(small.minY == VaultMetrics.titleBar + 40 && small.maxY == 600)

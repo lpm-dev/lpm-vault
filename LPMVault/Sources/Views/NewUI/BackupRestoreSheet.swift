@@ -465,19 +465,21 @@ struct BackupRestoreSheet: View {
 		.accessibilityElement(children: .combine)
 	}
 
-	/// What the backup's settings replace: since version 2, LPM Vault's own as well.
-	static func settingsDetail(_ settings: BackupAppSection.Settings, replacing: Bool) -> String {
-		let replaced = settings.preferences == nil
-			? "Appearance, quit shortcut, key sort, project order and icons"
-			: "Security, new-project defaults, backup reminder, automatic updates, appearance, quit shortcut, key sort, project order and icons"
-		return replacing ? replaced + " — replaces this Mac’s" : replaced
+	/// What the backup's settings replace: since version 2, LPM Vault's own as
+	/// well, which this Mac has whether or not it holds projects yet.
+	static func settingsDetail(_ settings: BackupAppSection.Settings, hasProjects: Bool) -> String {
+		guard settings.preferences != nil else {
+			let replaced = "Appearance, quit shortcut, key sort, project order and icons"
+			return hasProjects ? replaced + " — replaces this Mac’s" : replaced
+		}
+		return "Security, new-project defaults, backup reminder, automatic updates, appearance, quit shortcut, key sort, project order and icons — replaces this Mac’s"
 	}
 
 	/// Each of the backup's settings that would leave this Mac less protected,
 	/// said before the person chooses to use them.
 	@ViewBuilder
 	private func lessStrictSettings(_ settings: BackupAppSection.Settings) -> some View {
-		let lines = settings.preferences?.lessStrict(than: .init(app: store.settings.snapshot, updates: store.automaticUpdates())) ?? []
+		let lines = settings.preferences?.lessStrict(than: store.settings.snapshot, updates: store.automaticUpdates()) ?? []
 		if !lines.isEmpty {
 			VStack(alignment: .leading, spacing: 3) {
 				Label("Less strict than this Mac’s:", systemImage: "exclamationmark.triangle")
@@ -514,7 +516,7 @@ struct BackupRestoreSheet: View {
 						Text("Use the backup’s settings")
 							.font(.system(size: 13))
 							.foregroundStyle(VaultPalette.textPrimary)
-						Text(Self.settingsDetail(settings, replacing: !store.projects.isEmpty))
+						Text(Self.settingsDetail(settings, hasProjects: !store.projects.isEmpty))
 							.font(.system(size: 11.5))
 							.foregroundStyle(VaultPalette.textTertiary)
 							.fixedSize(horizontal: false, vertical: true)

@@ -30,9 +30,11 @@ struct VaultValueField: NSViewRepresentable {
 	var onReturn: (NSEvent.ModifierFlags) -> Bool = { _ in false }
 	var onSubmit: () -> Void = {}
 	/// Copies text selected in the field, which Copy and Cut hand here rather
-	/// than to the clipboard, so it goes as every copy of a value does. A
-	/// field without it copies nothing; a secure field never does.
-	var onCopySelection: ((String) -> Void)?
+	/// than to the clipboard, so it goes as every copy of a value does; it
+	/// calls `copied` once the copy is made, after an approval if one is asked
+	/// for, and Cut takes the text out only then. A field without it copies
+	/// nothing; a secure field never does.
+	var onCopySelection: ((_ text: String, _ copied: @escaping @MainActor @Sendable () -> Void) -> Void)?
 
 	func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -66,8 +68,8 @@ struct VaultValueField: NSViewRepresentable {
 		field.recordsUndo = recordsUndo
 		field.delegate = context.coordinator
 		field.onFocusChange = { [weak coordinator = context.coordinator] focused in coordinator?.focusChanged(focused) }
-		(field as? PlainValueTextField)?.onCopySelection = { [weak coordinator = context.coordinator] text in
-			coordinator?.parent.onCopySelection?(text)
+		(field as? PlainValueTextField)?.onCopySelection = { [weak coordinator = context.coordinator] text, copied in
+			coordinator?.parent.onCopySelection?(text, copied)
 		}
 		apply(to: field)
 		return field
@@ -148,8 +150,8 @@ struct VaultValueField: NSViewRepresentable {
 }
 
 /// Says when a value field starts and stops being edited, and turns off the
-/// field editor's substitutions as editing starts, since the window shares
-/// one field editor among its fields.
+/// field editor's substitutions as editing starts: a secure field edits with
+/// the window's shared one, which other fields set up their own way.
 @MainActor
 protocol ValueFieldFocus: AnyObject {
 	var onFocusChange: ((Bool) -> Void)? { get set }
@@ -186,10 +188,14 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 		set {}
 	}
 
-	var onCopySelection: ((String) -> Void)? {
-		get { (cell as? ValueFieldCell)?.editor.onCopy }
-		set { (cell as? ValueFieldCell)?.editor.onCopy = newValue }
-	}
+	var onCopySelection: ((String, @escaping @MainActor @Sendable () -> Void) -> Void)?
+
+	/// The field's own editor, made as it's first edited.
+	lazy var editor: ValueFieldEditor = {
+		let editor = ValueFieldEditor()
+		editor.onCopy = { [weak self] text, copied in self?.onCopySelection?(text, copied) }
+		return editor
+	}()
 
 	/// The placeholder's words, which the field draws from its attributed placeholder.
 	override var placeholderString: String? {
@@ -234,47 +240,62 @@ private final class SecureValueTextField: NSSecureTextField, ValueFieldFocus {
 }
 
 /// A plain value field's cell, which edits with the field's own editor: the
-/// window's shared one would copy a value straight to the clipboard.
+/// window's shared one would copy a value straight to the clipboard. The field
+/// keeps the editor, as AppKit copies a cell without what Swift stores in it.
 private final class ValueFieldCell: NSTextFieldCell {
-	let editor = ValueFieldEditor()
-
-	override func fieldEditor(for controlView: NSView) -> NSTextView? { editor }
+	override func fieldEditor(for controlView: NSView) -> NSTextView? {
+		(controlView as? PlainValueTextField)?.editor ?? super.fieldEditor(for: controlView)
+	}
 }
 
 /// The editor of a value field's text. Copy and Cut hand the selection to
-/// `onCopy`, and nothing is dragged out or offered to a Service, as in Raw text.
+/// `onCopy`; nothing is dragged out, looked up, shared or offered to a
+/// Service, and its menu has only Cut, Copy, Paste and Select All, as Raw
+/// text's has.
 final class ValueFieldEditor: NSTextView {
-	var onCopy: ((String) -> Void)?
+	var onCopy: ((String, @escaping @MainActor @Sendable () -> Void) -> Void)?
 
 	convenience init() {
 		self.init(frame: .zero)
 		isFieldEditor = true
 	}
 
-	/// The text selected, every range of it in order.
-	private var selectedText: String? {
-		let ranges = selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
-		guard !ranges.isEmpty else { return nil }
-		let text = string as NSString
-		return ranges.map { text.substring(with: $0) }.joined()
-	}
+	private var hasSelection: Bool { selectedRanges.contains { $0.rangeValue.length > 0 } }
 
 	override func copy(_ sender: Any?) {
-		guard let text = selectedText, let onCopy else { return }
-		onCopy(text)
+		let ranges = selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
+		guard !ranges.isEmpty, let onCopy else { return }
+		let text = string as NSString
+		onCopy(ranges.map { text.substring(with: $0) }.joined()) {}
 	}
 
+	/// Takes the selection out once its copy is made, which can wait for an
+	/// approval; only if the field still holds it there, and is still edited.
 	override func cut(_ sender: Any?) {
-		guard isEditable, let text = selectedText, let onCopy else { return }
-		onCopy(text)
-		delete(sender)
+		let range = selectedRange()
+		guard isEditable, range.length > 0, let onCopy else { return }
+		let before = string
+		onCopy((before as NSString).substring(with: range)) { [weak self] in
+			guard let self, self.isEditable, self.delegate != nil, self.string == before else { return }
+			self.insertText("", replacementRange: range)
+		}
 	}
 
 	override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
 		if item.action == #selector(copy(_:)) || item.action == #selector(cut(_:)) {
-			guard onCopy != nil, selectedText != nil else { return false }
+			guard onCopy != nil, hasSelection else { return false }
 		}
 		return super.validateUserInterfaceItem(item)
+	}
+
+	override func menu(for event: NSEvent) -> NSMenu? {
+		let menu = NSMenu()
+		var items: [(String, Selector, String)] = [("Copy", #selector(copy(_:)), "c")]
+		if isEditable { items = [("Cut", #selector(cut(_:)), "x")] + items + [("Paste", #selector(paste(_:)), "v")] }
+		for (title, action, key) in items + [("Select All", #selector(selectAll(_:)), "a")] {
+			menu.addItem(withTitle: title, action: action, keyEquivalent: key).target = self
+		}
+		return menu
 	}
 
 	override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool { false }
@@ -283,4 +304,6 @@ final class ValueFieldEditor: NSTextView {
 
 	override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
 		returnType: NSPasteboard.PasteboardType?) -> Any? { nil }
+
+	override func quickLook(with event: NSEvent) {}
 }

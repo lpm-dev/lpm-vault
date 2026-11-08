@@ -24,6 +24,8 @@ final class VaultValueAccess {
 	@ObservationIgnored private var approvedAt: TimeInterval?
 	@ObservationIgnored private var asking: Task<Bool, Never>?
 	@ObservationIgnored private var rehideTask: Task<Void, Never>?
+	/// When the running time masks values again; edits move it later.
+	@ObservationIgnored private var rehideAt: TimeInterval?
 	/// Whether a value was revealed since values were last masked.
 	@ObservationIgnored private var showsValues = false
 	@ObservationIgnored private var generation = 0
@@ -99,6 +101,13 @@ final class VaultValueAccess {
 		startRehideTimer()
 	}
 
+	/// Values shown are being edited: the time to mask them again starts over,
+	/// so it masks values left showing, never ones in use.
+	func keepShowing() {
+		guard rehideTask != nil, let interval = rehide().seconds else { return }
+		rehideAt = now() + interval
+	}
+
 	/// Masks every revealed value now.
 	func hideRevealed() {
 		rehideTask?.cancel()
@@ -138,12 +147,26 @@ final class VaultValueAccess {
 	private func startRehideTimer() {
 		rehideTask?.cancel()
 		rehideTask = nil
+		rehideAt = nil
 		guard let interval = rehide().seconds else { return }
 		let session = generation
+		let start = now() + interval
+		rehideAt = start
 		rehideTask = Task { @MainActor [weak self, sleep] in
-			do { try await sleep(.seconds(interval)) } catch { return }
-			guard let self, !Task.isCancelled, session == generation else { return }
+			var deadline = start
+			var wait = interval
+			while true {
+				do { try await sleep(.seconds(wait)) } catch { return }
+				guard let self, !Task.isCancelled, session == generation, let at = rehideAt else { return }
+				// An edit while it slept moved the time later: sleep until then.
+				guard at > deadline else { break }
+				wait = at - now()
+				deadline = at
+				guard wait > 0 else { break }
+			}
+			guard let self else { return }
 			rehideTask = nil
+			rehideAt = nil
 			hide()
 		}
 	}

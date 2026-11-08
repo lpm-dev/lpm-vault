@@ -628,8 +628,9 @@ private struct VaultKeyEditor: View {
 			isEnabled: !disabled,
 			concealsDots: conceals,
 			onSubmit: save,
-			onCopySelection: { selection in
-				onCopy(VaultValueCopy(projectID: project.id, key: key, environment: environment, format: .value, selection: selection))
+			onCopySelection: { selection, copied in
+				onCopy(VaultValueCopy(projectID: project.id, key: key, environment: environment, format: .value,
+					selection: selection, onCopied: copied))
 			}
 		)
 		.id(revealed)
@@ -1049,7 +1050,10 @@ private struct VaultKeyEditor: View {
 	private func valueBinding(_ environment: String) -> Binding<String> {
 		Binding(
 			get: { currentValue(in: environment, draft: store.keyDrafts.draft(id)) },
-			set: { value in edit { $0.setValue(value, in: environment) } }
+			set: { value in
+				edit { $0.setValue(value, in: environment) }
+				store.valueAccess.keepShowing()
+			}
 		)
 	}
 

@@ -227,8 +227,10 @@ struct LPMVaultApp: App {
 					appDelegate.recordUserActivity = { [store] in
 						store.recordUserActivity()
 					}
+					// Nil for a build that doesn't update itself, which has no settings of its own to keep or compare.
 					store.automaticUpdates = { [updateChecker] in
-						.init(checks: updateChecker.automaticallyChecks, downloads: updateChecker.automaticallyDownloads)
+						guard updateChecker.canChangeAutomaticUpdates else { return nil }
+						return .init(checks: updateChecker.automaticallyChecks, downloads: updateChecker.automaticallyDownloads)
 					}
 					quitCoordinator.attach(store)
 					appDelegate.shouldTerminate = { [quitCoordinator] in quitCoordinator.shouldTerminate(sessionEnding: $0) }

@@ -1495,7 +1495,7 @@ final class VaultStore {
   @ObservationIgnored var relaunch: @MainActor () -> Void = AppRelaunch.relaunch
   /// Whether updates are looked for and installed in the background, which
   /// the app's updater knows and a backup carries.
-  @ObservationIgnored var automaticUpdates: @MainActor () -> BackupAppSection.AutomaticUpdates = { .standard }
+  @ObservationIgnored var automaticUpdates: @MainActor () -> BackupAppSection.AutomaticUpdates? = { nil }
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
   /// The last backup this Mac exported.
@@ -3646,8 +3646,12 @@ final class VaultStore {
       )
     ) { [weak self] persisted in
       guard let self else { return }
-      if let draft = rawTextDrafts.removeValue(forKey: VaultEnvironmentTarget(projectId: projectId, environment: oldName)) {
-        rawTextDrafts[VaultEnvironmentTarget(projectId: projectId, environment: newName)] = draft.renamed(to: newName)
+      let oldTarget = VaultEnvironmentTarget(projectId: projectId, environment: oldName)
+      let newTarget = VaultEnvironmentTarget(projectId: projectId, environment: newName)
+      let wasShown = shownRawTextEdits.contains(oldTarget)
+      if let draft = rawTextDrafts.removeValue(forKey: oldTarget) {
+        rawTextDrafts[newTarget] = draft.renamed(to: newName)
+        if wasShown { shownRawTextEdits.insert(newTarget) }
       }
       var order = orderedEnvironmentNames(for: persisted)
       if let idx = order.firstIndex(of: oldName) {
@@ -3933,6 +3937,7 @@ final class VaultStore {
   func updateRawTextDraft(_ target: VaultEnvironmentTarget, text: String) {
     guard isUnlocked, rawTextSaves[target] == nil else { return }
     rawTextDrafts[target]?.text = text
+    if shownRawTextEdits.contains(target) { valueAccess.keepShowing() }
     checkRawTextCharacters(target, after: .milliseconds(150))
   }
 
@@ -6260,7 +6265,7 @@ final class VaultStore {
       updateChannel: preferences.string(forKey: UpdateChecker.channelDefaultsKey).flatMap(VaultReleaseChannel.init(rawValue:)) ?? .stable,
       projectOrder: projectOrder,
       environmentOrders: environmentOrders,
-      preferences: BackupAppSection.Preferences(app: settings.snapshot, updates: automaticUpdates()))
+      preferences: BackupAppSection.Preferences(app: settings.snapshot, updates: automaticUpdates() ?? .standard))
   }
 
   /// Writes the environment's values to `destination`, kept out of git first

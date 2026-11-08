@@ -208,7 +208,10 @@ extension SheetInteractionTests {
 			let (store, _) = makeStore(["default": ["TOKEN": "s3cret-token"], "staging": ["TOKEN": "stg"]])
 			defer { store.lock() }
 			let copies = CopiedRequests()
-			let host = SheetTestHost(KeyInspectorFixture(store: store, onCopy: { copies.requests.append($0) }), size: NSSize(width: 300, height: 700))
+			let host = SheetTestHost(KeyInspectorFixture(store: store, onCopy: { request in
+				copies.requests.append(request)
+				if copies.succeeds { request.onCopied?() }
+			}), size: NSSize(width: 300, height: 700))
 			defer { host.window.close() }
 			try await host.click("Reveal this key in all environments")
 			var found: NSTextField?
@@ -225,10 +228,23 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { copies.requests.map(\.selection) == ["s3cret"] })
 			#expect(copies.requests.first?.environment == "default" && copies.requests.first?.key == "TOKEN")
 
+			copies.succeeds = false
 			editor.setSelectedRange(NSRange(location: 6, length: 6))
 			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
 			#expect(try await host.waitUntil { copies.requests.map(\.selection) == ["s3cret", "-token"] })
-			#expect(editor.string == "s3cret", "Cut takes the text out of the field")
+			#expect(editor.string == "s3cret-token", "A cut whose copy wasn't made, as when approval is declined, takes nothing out")
+
+			copies.succeeds = true
+			editor.setSelectedRange(NSRange(location: 6, length: 6))
+			#expect(NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil))
+			#expect(try await host.waitUntil { copies.requests.count == 3 })
+			#expect(try await host.waitUntil { editor.string == "s3cret" }, "Once copied, Cut takes the text out of the field")
+
+			let click = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+				windowNumber: host.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+			let actions = Set((editor.menu(for: click)?.items ?? []).compactMap(\.action))
+			#expect(actions == [#selector(NSText.cut(_:)), #selector(NSText.copy(_:)), #selector(NSText.paste(_:)), #selector(NSText.selectAll(_:))],
+				"No Share, Look Up, Translate or Services")
 
 			editor.selectAll(nil)
 			#expect(!editor.writeSelection(to: NSPasteboard(name: .drag), types: [.string]), "Nothing drags out or goes to a Service")
@@ -520,6 +536,8 @@ private struct KeyInspectorFixture: View {
 @MainActor
 private final class CopiedRequests {
 	var requests: [VaultValueCopy] = []
+	/// Whether the copy is made, as an approval allows.
+	var succeeds = true
 }
 
 /// The person's clipboard as a test found it, put back afterwards should the

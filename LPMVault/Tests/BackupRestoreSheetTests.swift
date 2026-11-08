@@ -120,6 +120,7 @@ extension SheetInteractionTests {
 		func settingsDisclosure() async throws {
 			let fixture = try fixture()
 			defer { fixture.tearDown() }
+			fixture.store.automaticUpdates = { .standard }
 			var loose = VaultSettings.standard
 			loose.security.lockAfter = .thirtyMinutes
 			loose.security.hidesFromCapture = false

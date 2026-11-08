@@ -170,7 +170,10 @@ extension SheetInteractionTests {
 			store.showSettings(.security)
 			let host = try await overlay(store, defaults)
 			defer { host.window.close() }
-			#expect(!host.isEditing(placeholder: "Search"))
+			// A new window's first field can start with the keyboard, as it does on CI; Settings opens in a window that has it elsewhere.
+			host.window.makeFirstResponder(nil)
+			#expect(try await host.waitUntil { !host.isEditing(placeholder: "Search") })
+			try await host.settle()
 			NotificationCenter.default.post(name: VaultFindTarget(showingSettings: store.isShowingAccountPage).notification, object: nil)
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "Search") })
 		}

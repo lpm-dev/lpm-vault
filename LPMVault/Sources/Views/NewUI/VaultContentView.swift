@@ -216,7 +216,7 @@ struct VaultContentView: View {
 				ViewThatFits(in: .horizontal) {
 					HStack(spacing: 6) {
 						viewControls
-						hint("Editing · real values shown")
+						hint(rawEditing.isShown ? "Editing · real values shown" : "Editing · values hidden")
 						Spacer(minLength: 8)
 						rawEditActions(rawEditing)
 					}
@@ -766,20 +766,21 @@ struct VaultContentView: View {
 				}
 				rawCard(editing: true) {
 					VStack(spacing: 0) {
-						if editing.isShown {
-							VaultRawTextEditor(
-								text: draft.text,
-								problems: draft.check.problems,
-								problemLines: draft.check.problemLines,
-								warnings: editing.characterWarnings?.pills ?? [],
-								label: "\(name) as text, editing",
-								isEditable: !editing.isSaving,
-								onChange: editing.onChange,
-								onCopy: editing.onCopy
-							)
-							.id("\(project.id)/\(selectedEnvironment)")
-						} else {
-							rawEditHidden(editing)
+						// Hidden, the editor stays, with its place, selection and undo, for Show Edit.
+						VaultRawTextEditor(
+							text: draft.text,
+							problems: draft.check.problems,
+							problemLines: draft.check.problemLines,
+							warnings: editing.characterWarnings?.pills ?? [],
+							label: "\(name) as text, editing",
+							isEditable: !editing.isSaving,
+							isConcealed: !editing.isShown,
+							onChange: editing.onChange,
+							onCopy: editing.onCopy
+						)
+						.id("\(project.id)/\(selectedEnvironment)")
+						.overlay {
+							if !editing.isShown { rawEditHidden(editing) }
 						}
 						VaultHairline()
 						rawEditorFooter(editing)
