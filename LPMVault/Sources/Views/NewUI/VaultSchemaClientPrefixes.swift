@@ -291,7 +291,7 @@ private struct VaultSchemaPrefixField: View {
 		let change = prefix.isEmpty || issue != nil ? nil : context.map { Prefixes.adding(prefix, in: $0) }
 		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 6) {
-				TextField("Custom prefix", text: $entry, prompt: Text("e.g. PUBLIC_").foregroundStyle(VaultPalette.textFaint))
+				TextField("Custom prefix", text: $entry, prompt: Text("e.g. PUBLIC_").foregroundStyle(VaultPalette.placeholder))
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12))
 					.autocorrectionDisabled()

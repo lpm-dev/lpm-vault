@@ -15,6 +15,15 @@ struct VaultProjectHoverCardTests {
 		#expect(Card.schemaLine(state: .unreadable(.init(location: "lpm.json", reason: "Not JSON")), check: nil, hasFolder: true).text == "lpm.json can't be read")
 	}
 
+	@Test("counts say what they count: keys that differ, are missing, or fail their rules")
+	func countsHaveUnits() {
+		#expect(VaultSmartView.drift.summary(1) == "1 key differs")
+		#expect(VaultSmartView.drift.summary(9) == "9 keys differ")
+		#expect(VaultSmartView.missing.summary(1) == "1 key missing")
+		#expect(VaultSmartView.missing.summary(3) == "3 keys missing")
+		#expect(VaultSmartView.invalid.summary(0) == "0 keys invalid")
+	}
+
 	@Test("the last change reads as a time ago, and as just now within a minute")
 	func relativeTime() {
 		let now = Date(timeIntervalSinceReferenceDate: 815_000_000)

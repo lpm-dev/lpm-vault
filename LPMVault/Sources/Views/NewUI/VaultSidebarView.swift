@@ -125,7 +125,7 @@ struct VaultSidebarView: View {
 				if searchText.isEmpty {
 					Text("Search projects and keys")
 						.font(.system(size: 12.5))
-						.foregroundStyle(VaultPalette.textFaint)
+						.foregroundStyle(VaultPalette.placeholder)
 						.allowsHitTesting(false)
 				}
 
@@ -615,11 +615,7 @@ struct VaultSidebarView: View {
 		}
 	}
 
-	private var accountInitials: String {
-		let words = accountName.split(separator: " ")
-		let result = words.prefix(2).compactMap(\.first).map(String.init).joined()
-		return result.isEmpty ? "LP" : result.uppercased()
-	}
+	private var accountInitials: String { VaultInitialsAvatar.initial(of: accountName) }
 }
 
 private extension View {
@@ -773,7 +769,7 @@ struct VaultAccountSwitcher: View {
 			if !store.userOrgs.isEmpty {
 				sectionLabel("ORGANIZATIONS").padding(.top, 6)
 				ForEach(store.userOrgs) { org in
-					accountRow(name: org.name, initials: initials(org.name), round: false, account: .org(org.slug))
+					accountRow(name: org.name, initials: VaultInitialsAvatar.initial(of: org.name), round: false, account: .org(org.slug))
 				}
 			}
 			VaultHairline().padding(.horizontal, 8).padding(.vertical, 6)
@@ -872,10 +868,5 @@ struct VaultAccountSwitcher: View {
 		if inside { hovered = choice } else if hovered == choice { hovered = nil }
 	}
 
-	private var personalInitials: String { initials(store.currentUser?.username ?? "LP") }
-
-	private func initials(_ name: String) -> String {
-		let value = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined()
-		return value.isEmpty ? "LP" : value.uppercased()
-	}
+	private var personalInitials: String { VaultInitialsAvatar.initial(of: store.currentUser?.username ?? "Personal vault") }
 }

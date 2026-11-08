@@ -55,6 +55,15 @@ struct SettingsPageStoreTests {
 		#expect(store.accountManagementURL?.path == "/dashboard/settings")
 		#expect(store.accountManagementURL?.host == AppEnvironment.production.baseURL.host)
 	}
+
+	@Test("an account's avatar shows the first letter of its name, as Settings does")
+	func avatarInitial() {
+		#expect(VaultInitialsAvatar.initial(of: "Acme Inc") == "A")
+		#expect(VaultInitialsAvatar.initial(of: "tolga") == "T")
+		#expect(VaultInitialsAvatar.initial(of: "@neo") == "N")
+		#expect(VaultInitialsAvatar.initial(of: "Personal vault") == "P")
+		#expect(VaultInitialsAvatar.initial(of: "") == "L")
+	}
 }
 
 extension SheetInteractionTests {

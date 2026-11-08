@@ -46,11 +46,12 @@ enum VaultSmartView: CaseIterable {
 		}
 	}
 
-	fileprivate func title(_ count: Int) -> String {
+	/// The count with what it counts, as the status bar and the project card say it.
+	func summary(_ count: Int) -> String {
 		switch self {
-		case .drift: "\(count) drifting"
-		case .missing: "\(count) missing"
-		case .invalid: "\(count) invalid"
+		case .drift: count == 1 ? "1 key differs" : "\(count) keys differ"
+		case .missing: "\(count.counted("key")) missing"
+		case .invalid: "\(count.counted("key")) invalid"
 		}
 	}
 
@@ -146,7 +147,7 @@ private struct VaultSmartViewLink: View {
 		Button(action: action) {
 			HStack(spacing: 5) {
 				indicator
-				Text(compact ? "\(count)" : view.title(count))
+				Text(compact ? "\(count)" : view.summary(count))
 					.font(VaultTypography.tabular(11, isCurrent ? .semibold : .regular))
 			}
 			.foregroundStyle(foreground)
@@ -160,7 +161,7 @@ private struct VaultSmartViewLink: View {
 		}
 		.buttonStyle(VaultPressStyle(cornerRadius: 5))
 		.help(view.help)
-		.accessibilityLabel(view.title(count))
+		.accessibilityLabel(view.summary(count))
 		.accessibilityAddTraits(isCurrent ? .isSelected : [])
 		.onHover { hovering = $0 }
 		.vaultPointingHand()

@@ -87,7 +87,7 @@ struct VaultTitleBarView: View {
 				borderless: true,
 				disabled: store.isRefreshingLocalState || store.isChangingCliAccess
 			) { Task { await store.refreshLocalState() } }
-			.help("Reload local changes from the LPM CLI")
+			.help("Reload from the Keychain, with any changes the LPM CLI made")
 			.accessibilityLabel("Refresh")
 			.accessibilityIdentifier("vault-refresh-local-state")
 

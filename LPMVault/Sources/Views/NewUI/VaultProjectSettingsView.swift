@@ -161,10 +161,11 @@ struct VaultProjectSettingsView: View {
 				iconCaption
 			}
 		} controls: {
+			// A well, not a button: filled and unedged, apart from the buttons that change it.
 			VaultProjectIconView(appearance: store.projectIcons.appearance(of: settings.icon, for: project.id), size: 16)
 				.frame(width: 28, height: 28)
-				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-				.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
+				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
+				.padding(.trailing, 6)
 			VaultBarButton(title: "Choose Icon…", disabled: isSaving, height: 28) { showsIconPicker = true }
 			VaultBarButton(title: isImporting ? "Choosing…" : "Choose File…", disabled: isSaving || isImporting, height: 28, action: chooseFile)
 			if !settings.icon.isAutomatic {

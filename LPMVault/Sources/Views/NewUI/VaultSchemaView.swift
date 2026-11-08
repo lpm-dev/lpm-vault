@@ -444,7 +444,7 @@ struct VaultSchemaView: View {
 							groupsHeader(count: listed.groupCount)
 							if listed.groups.isEmpty {
 								Text("No groups yet. A group asks the LPM CLI for all, one or none of its keys.")
-									.font(.system(size: 12.5))
+									.font(.system(size: 12))
 									.foregroundStyle(VaultPalette.textTertiary)
 									.padding(.horizontal, 20)
 									.padding(.vertical, 12)

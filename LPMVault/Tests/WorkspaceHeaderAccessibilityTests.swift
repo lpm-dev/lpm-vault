@@ -19,7 +19,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let expected: [(String, NSAccessibility.Role)] = [
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
-				("CLI approval off", .button), ("Show inspector", .button), ("Project Settings", .button), ("New Key", .button),
+				("Show inspector", .button), ("Project Settings", .button), ("New Key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
 				("Import variables into .env", .button), ("Export .env", .button),
 			]
@@ -30,7 +30,6 @@ extension SheetInteractionTests {
 			for symbolName in ["Split View Horizontally Right", "Download", "Share", "New secret"] {
 				#expect(!elements.contains { $0.says(symbolName) }, "A control is named \(symbolName)")
 			}
-			#expect(elements.first { $0.role == .button && ($0.label ?? $0.title) == "CLI approval off" }?.value == "Automatic")
 		}
 
 		@Test("Refresh sits with the sync status on the right, and Connect CLI leads the actions after them, before Publish and Lock")
@@ -50,14 +49,25 @@ extension SheetInteractionTests {
 			#expect(sync.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
 		}
 
-		@Test("the header's CLI approval chip says the setting and opens Project Settings, where it changes")
-		func approvalChip() async throws {
+		@Test("the header leaves CLI approval to the project's card and settings, and names it only when it needs fixing, opening Project Settings")
+		func approvalOnlyWhenItNeedsFixing() async throws {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
-			defer { host.window.close() }
-			try await host.click("CLI approval off")
-			#expect(try await host.waitForText("Delete Locally"))
+			#expect(try await host.waitForText("All variables"))
+			#expect(fixture.store.selectedProjectCliAccess == .automatic)
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.label?.hasPrefix("CLI approval") == true },
+				"The header names no approval that's set as it should be")
+			host.window.close()
+
+			fixture.keychain.unreadableCliAccess = ["header"]
+			fixture.keychain.failureError = .contradictoryApproval
+			let fixing = try await workspace(fixture.store)
+			defer { fixing.window.close() }
+			let link = try await fixing.waitForElement(saying: "CLI approval needs fixing")
+			#expect(link.role == .button && link.value == "Contradicts itself")
+			try await fixing.click("CLI approval needs fixing")
+			#expect(try await fixing.waitForText("Delete Locally"))
 		}
 
 		@Test("the header's Settings button opens the project's settings")

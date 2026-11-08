@@ -271,7 +271,7 @@ struct VaultTableColumnLayoutTests {
 		for environment in ["default", "production", "staging"] {
 			#expect(readable[.environment(environment)] >= VaultMetrics.readableValueColumn)
 		}
-		#expect(readable[.key] == keyWidth, "The key column keeps what its keys need")
+		#expect(readable[.key] >= keyWidth && readable[.key] < keyWidth + 2, "The key column keeps what its keys need, and the point rounding leaves")
 		#expect(readable.totalWidth > 709, "So the table is wider than the view, and scrolls")
 		let roomy = VaultTableColumnLayout(columns: columns, available: 1100, keyWidth: keyWidth, valueMinimum: VaultMetrics.readableValueColumn)
 		#expect(abs(roomy.totalWidth - 1100) < 0.5, "With room, nothing scrolls")
@@ -309,16 +309,22 @@ struct VaultTableColumnLayoutTests {
 		#expect(keyFloor > VaultTableColumn.key.minimumWidth && keyFloor < VaultMetrics.keyColumn)
 		let matrixMinimums = keyFloor + 2 * VaultTableColumn.environment("default").minimumWidth
 		#expect(matrix[.environment("default")] == matrix[.environment("production")])
-		#expect(abs(matrix.totalWidth - max(available, matrixMinimums)) < 0.001)
+		if available >= matrixMinimums {
+			#expect(abs(matrix.totalWidth - available) < 0.001)
+		} else {
+			// Too narrow for both: one shows whole, and the other waits past the edge.
+			#expect(matrix.boundaries.contains { $0.position == available })
+			#expect(matrix.hiddenColumns(at: 0).after == [.environment("production")])
+		}
 		// Keys keep their width until the value columns reach their minimums.
 		let environmentSlack = 2 * (VaultMetrics.environmentColumn - VaultTableColumn.environment("default").minimumWidth)
 		if available >= matrixDefaults - environmentSlack {
 			#expect(matrix[.key] == VaultMetrics.keyColumn)
-		} else {
+		} else if available >= matrixMinimums {
 			#expect(matrix[.key] < VaultMetrics.keyColumn && matrix[.key] >= keyFloor)
 			#expect(matrix[.environment("default")] == VaultTableColumn.environment("default").minimumWidth)
 		}
-		if available < matrixDefaults {
+		if available < matrixDefaults, available >= matrixMinimums {
 			#expect(matrix[.environment("default")] < VaultMetrics.environmentColumn)
 		}
 		let environment = VaultTableColumnLayout(columns: [.key, .value, .actions], available: available)
@@ -339,6 +345,57 @@ struct VaultTableColumnLayoutTests {
 			}
 			#expect(position == layout.totalWidth)
 		}
+	}
+
+	@Test("columns that can't all fit show whole: as many as fit at a readable width share the view, and the rest wait past its edge")
+	func wholeColumns() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production"), .environment("staging")]
+		let readable = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: 276, valueMinimum: VaultMetrics.readableValueColumn)
+		let width = readable[.environment("default")]
+		#expect(width >= VaultMetrics.readableValueColumn)
+		#expect(readable[.environment("production")] == width && readable[.environment("staging")] == width)
+		#expect(readable[.key] >= 276, "The key column keeps what its keys need")
+		#expect(readable.boundaries.contains { $0.position == 709 }, "A column ends where the view does, so none is cut")
+		#expect(readable.hiddenColumns(at: 0).before.isEmpty)
+		#expect(readable.hiddenColumns(at: 0).after == [.environment("staging")])
+		for column in columns { #expect(readable[column] == readable[column].rounded(), "Whole points, so no edge lands between pixels") }
+
+		let masked = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: 276)
+		#expect(abs(masked.totalWidth - 709) < 0.5, "Masked values fit narrower, so nothing scrolls")
+		#expect(masked.hiddenColumns(at: 0).after.isEmpty)
+
+		let narrow = VaultTableColumnLayout(columns: columns, available: 480, keyWidth: 276, valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(narrow.boundaries.contains { $0.position == 480 }, "Short of one readable column, the one shown takes the room")
+		#expect(narrow.hiddenColumns(at: 0).after == [.environment("production"), .environment("staging")])
+
+		var widths = VaultTableColumnWidths()
+		widths.resize(.environment("default"), to: 300, in: readable)
+		let resized = VaultTableColumnLayout(columns: columns, available: 709, requested: widths.requested, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(resized[.environment("default")] == 300, "Widths a person chose stay as they are")
+	}
+
+	@Test("stepping to a column out of view brings it whole into view from a column's edge, and back")
+	func steppingColumns() {
+		let environments = ["default", "production", "staging", "preview", "test"].map(VaultTableColumn.environment)
+		let layout = VaultTableColumnLayout(columns: [.key] + environments, available: 709, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		let width = layout[environments[0]]
+		#expect(layout.hiddenColumns(at: 0).after == Array(environments[2...]))
+
+		let next = layout.offset(showing: environments[2], from: 0)
+		#expect(next == width)
+		#expect(layout.hiddenColumns(at: next).before == [environments[0]])
+		#expect(layout.hiddenColumns(at: next).after == Array(environments[3...]))
+		#expect(layout.offset(showing: environments[2], from: 37) == width, "From a scroll that stopped partway, the step lands on an edge")
+		#expect(layout.hiddenColumns(at: 37).before == [environments[0]], "A column partly under the key column is out of view")
+		#expect(layout.hiddenColumns(at: 37).after == Array(environments[2...]), "As is one partly past the edge")
+
+		let last = layout.offset(showing: environments[4], from: next)
+		#expect(last == layout.maximumOffset)
+		#expect(layout.hiddenColumns(at: last).after.isEmpty)
+		#expect(layout.offset(showing: environments[2], from: last) == 2 * width, "Back to the column, at the view's start")
+		#expect(layout.offset(showing: environments[0], from: last) == 0)
 	}
 
 	@Test("resizing preserves neighboring widths and survives viewport changes", arguments: [false, true])

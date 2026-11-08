@@ -541,7 +541,7 @@ private struct VaultKeyEditor: View {
 			VaultHoverRow { hovering in
 				HStack(spacing: 0) {
 					valueField(environment, revealed: revealed, disabled: isSaving)
-					VaultRowIconButton(systemImage: revealed ? "eye.slash" : "eye", help: "\(revealed ? "Hide" : "Show") \(displayName) value") {
+					VaultRowIconButton(systemImage: revealed ? "eye.slash" : "eye", help: "\(revealed ? "Hide" : "Reveal") the \(displayName) value") {
 						toggleReveal(environment, cards: cards)
 					}
 					.disabled(!store.canUseLocalSecrets)
@@ -945,7 +945,7 @@ private struct VaultKeyEditor: View {
 					TextField(
 						"Description",
 						text: descriptionBinding(saved: rules.descriptions[key] ?? ""),
-						prompt: Text("Purpose, owner, when to rotate").foregroundStyle(VaultPalette.textFaint),
+						prompt: Text("Purpose, owner, when to rotate").foregroundStyle(VaultPalette.placeholder),
 						axis: .vertical
 					)
 					.lineLimit(2...6)

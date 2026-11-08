@@ -319,7 +319,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("Drift, 1"))
 				#expect(try await host.waitForText("Missing, 1"))
 				let matrixFooter = try await host.text(footer: footer)
-				#expect(!matrixFooter.contains("drifting") && !matrixFooter.contains("missing"),
+				#expect(!matrixFooter.contains("differ") && !matrixFooter.contains("missing"),
 					"The status bar doesn't repeat the chips above the table: \(matrixFooter)")
 				try await host.click("Missing, 1")
 				#expect(try await host.waitForTextToDisappear("DRIFTS"))
@@ -327,16 +327,16 @@ extension SheetInteractionTests {
 
 				try await host.clickSidebarEnvironment(".env.production")
 				#expect(try await host.waitForText("ACTIONS", exactly: true))
-				#expect(try await host.waitForText("1 missing", footer: footer))
-				try await host.click("1 drifting")
+				#expect(try await host.waitForText("1 key missing", footer: footer))
+				try await host.click("1 key differs")
 				#expect(try await host.waitForText("All variables"))
 				#expect(try await host.waitForTextToDisappear("LACKS"))
 				#expect(try await host.text().contains("DRIFTS"))
 
 				try await host.click("Schema")
 				#expect(try await host.waitForText("editing unavailable", footer: footer))
-				#expect(try await host.waitForText("1 drifting", footer: footer))
-				try await host.click("1 missing")
+				#expect(try await host.waitForText("1 key differs", footer: footer))
+				try await host.click("1 key missing")
 				#expect(try await host.waitForText("All variables"))
 				#expect(try await host.waitForTextToDisappear("DRIFTS"))
 				#expect(try await host.text().contains("LACKS"))

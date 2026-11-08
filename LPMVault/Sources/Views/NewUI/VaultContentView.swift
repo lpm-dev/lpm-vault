@@ -32,9 +32,9 @@ struct VaultCliAccessPresentation {
 	}
 }
 
-/// The project's CLI approval, said in the line under its title like its
-/// counts. It's a setting, not a view of the table, so it only says it and
-/// opens Project Settings, where it changes.
+/// The project's CLI approval when it needs fixing, said after the page's
+/// counts. It's a setting, not a view of the table, so it only says so and
+/// opens Project Settings, where it's fixed.
 struct VaultCliApprovalLink: View {
 	let presentation: VaultCliAccessPresentation
 	let action: () -> Void
@@ -43,8 +43,8 @@ struct VaultCliApprovalLink: View {
 	var body: some View {
 		Button(action: action) {
 			Text(presentation.title)
-				.font(VaultTypography.tabular(12.5))
-				.foregroundStyle(hovering ? VaultPalette.textSecondary : VaultPalette.textTertiary)
+				.font(VaultTypography.tabular(12))
+				.foregroundStyle(VaultPalette.orangeTintText)
 				.underline(hovering)
 				.padding(.horizontal, 3)
 				.frame(height: 22)
@@ -129,6 +129,8 @@ struct VaultContentView: View {
 	@State private var showsTransferMenu = false
 	/// How far the matrix has scrolled sideways, which pins its key column.
 	@State private var matrixScrollX: CGFloat = 0
+	/// Where a step to a column out of view scrolls the matrix.
+	@State private var matrixScrollTarget = VaultHorizontalScrollTarget()
 	@State private var rowClicks = VaultRowClicks()
 
 	var body: some View {
@@ -365,17 +367,18 @@ struct VaultContentView: View {
 
 	private func headerIdentity(_ derived: VaultContentDerivation, showsApproval: Bool, showsCounts: Bool = true) -> some View {
 		let (title, counts) = identity(derived)
+		// CLI approval is a setting the project's card and Project Settings show; the header names
+		// it only when it needs fixing, as a fact about the project that opens where it's fixed.
+		let namesApproval = showsApproval && cliAccessContradicts
 		return HStack(spacing: 10) {
 			Text(title)
 				.vaultPageTitle()
 			if showsCounts {
-				// One line about the project, every part between the same " · ", the approval last
-				// as a fact about it; it opens Project Settings, where it changes.
 				HStack(spacing: 0) {
-					Text(counts + (showsApproval ? " · " : ""))
-						.font(VaultTypography.tabular(12.5))
+					Text(counts + (namesApproval ? " · " : ""))
+						.font(VaultTypography.tabular(12))
 						.foregroundStyle(VaultPalette.textTertiary)
-					if showsApproval {
+					if namesApproval {
 						VaultCliApprovalLink(presentation: VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts),
 							action: onProjectSettings)
 					}
@@ -426,7 +429,7 @@ struct VaultContentView: View {
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
-				title: compact ? nil : "Reveal",
+				title: compact ? nil : "Reveal All",
 				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
 				label: "Reveal all values",
 				active: derived.allVisibleRevealed,
@@ -521,7 +524,7 @@ struct VaultContentView: View {
 				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3),
 				valueMinimum: readsValues ? VaultMetrics.readableValueColumn : nil)
 			let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
-			let overflows = matrixScrollX < tableWidth - geometry.size.width - 1
+			let hidden = layout.hiddenColumns(at: matrixScrollX)
 
 			ScrollView([.horizontal, .vertical]) {
 				LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -579,19 +582,52 @@ struct VaultContentView: View {
 				.frame(width: tableWidth, alignment: .leading)
 				.frame(minHeight: geometry.size.height, alignment: .top)
 				.onGeometryChange(for: CGFloat.self) { max(0, -$0.frame(in: .named(vaultMatrixSpace)).minX) } action: { matrixScrollX = $0 }
+				.background { VaultHorizontalScroller(target: matrixScrollTarget) }
 			}
 			.coordinateSpace(.named(vaultMatrixSpace))
 			.defaultScrollAnchor(.topLeading)
-			// More columns past the view's edge fade into it, so the table says it goes on.
-			.overlay(alignment: .trailing) {
-				if overflows {
-					LinearGradient(colors: [VaultPalette.content.opacity(0), VaultPalette.content], startPoint: .leading, endPoint: .trailing)
-						.frame(width: 20)
-						.allowsHitTesting(false)
-						.accessibilityHidden(true)
+			// Columns out of view are named at the header's edges, where a click brings the nearest one whole into view.
+			.overlay(alignment: .topLeading) {
+				if !hidden.before.isEmpty {
+					columnStep(hidden.before.reversed(), direction: .before,
+						room: layout[.key] - VaultColumnStepButton.keyHeaderWidth - 18, layout: layout)
+						.padding(.trailing, 8)
+						.frame(width: layout[.key] - 1, height: VaultMetrics.tableHeader, alignment: .trailing)
+				}
+			}
+			.overlay(alignment: .topTrailing) {
+				if !hidden.after.isEmpty {
+					columnStep(hidden.after, direction: .after,
+						room: roomAfterLastTitle(layout: layout, hidden: hidden.after, viewport: geometry.size.width), layout: layout)
+						.padding(.trailing, 8 + VaultMetrics.paneDividerHitWidth)
+						.frame(height: VaultMetrics.tableHeader)
 				}
 			}
 		}
+	}
+
+	/// The control naming `hidden`, the columns out of view on one side, nearest first, which brings the nearest whole into view.
+	private func columnStep(_ hidden: [VaultTableColumn], direction: VaultColumnStepButton.Direction, room: CGFloat,
+		layout: VaultTableColumnLayout) -> some View {
+		let environments = hidden.compactMap { column -> (name: String, color: Color)? in
+			guard case .environment(let environment) = column, let index = self.environments.firstIndex(of: environment) else { return nil }
+			return (VaultProject.displayName(for: environment), VaultPalette.environment(index))
+		}
+		return VaultColumnStepButton(direction: direction, environments: environments, room: room) {
+			guard let nearest = hidden.first else { return }
+			matrixScrollTarget.scroll(to: layout.offset(showing: nearest, from: matrixScrollX))
+		}
+	}
+
+	/// The room at the header's trailing edge past the title of the last column shown whole.
+	private func roomAfterLastTitle(layout: VaultTableColumnLayout, hidden: [VaultTableColumn], viewport: CGFloat) -> CGFloat {
+		let visibleEnd = viewport - VaultMetrics.paneDividerHitWidth
+		guard let first = hidden.first, let index = layout.boundaries.firstIndex(where: { $0.id == first }), index > 0 else { return visibleEnd }
+		let last = layout.boundaries[index - 1]
+		guard case .environment(let environment) = last.id else { return visibleEnd - layout[.key] }
+		let titleEnd = last.position - layout[last.id] - matrixScrollX + VaultColumnStepButton.titleInset
+			+ VaultColumnStepButton.headerTitleWidth(VaultProject.displayName(for: environment))
+		return visibleEnd - titleEnd - 18
 	}
 
 
@@ -1114,7 +1150,9 @@ private struct VaultMatrixHeader: View {
 				}
 				.padding(.horizontal, 12)
 				.frame(width: layout[.environment(environment)] - 1)
+				.accessibilityElement(children: .ignore)
 				.accessibilityLabel(VaultProject.displayName(for: environment))
+				.accessibilityAddTraits(.isHeader)
 				VaultTableColumnLine(hidden: environment == environments.last)
 			}
 		}

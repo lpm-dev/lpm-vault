@@ -24,6 +24,8 @@ enum VaultPalette {
 	static let textFaint = adaptive(light: 0x6C6C74, dark: 0xFFFFFF, darkOpacity: 0.48)
 	/// A control that's off: plainly fainter than any working control's text, in both appearances.
 	static let disabledText = adaptive(light: 0xA3A3AB, dark: 0xFFFFFF, darkOpacity: 0.36)
+	/// An empty field's prompt: lighter than any text that could be typed there, and still 3:1 against the field.
+	static let placeholder = adaptive(light: 0x8B8B94, dark: 0xFFFFFF, darkOpacity: 0.42)
 	static let masked = textFaint
 
 	static let border = adaptive(light: 0xDCDBE2, dark: 0x3A3A3F)
@@ -1087,9 +1089,15 @@ struct VaultInitialsAvatar: View {
 	var size: CGFloat = 26
 	var square = false
 
+	/// The first letter or digit of `name`, uppercased: one letter reads at
+	/// an avatar's size where two crowd it. LPM's L when there's none.
+	static func initial(of name: String) -> String {
+		name.first { $0.isLetter || $0.isNumber }.map { String($0).uppercased() } ?? "L"
+	}
+
 	var body: some View {
 		Text(initials)
-			.font(.system(size: size * 0.4, weight: .semibold))
+			.font(.system(size: size * 0.45, weight: .semibold))
 			.foregroundStyle(VaultPalette.avatarNeutralForeground)
 			.frame(width: size, height: size)
 			.background {

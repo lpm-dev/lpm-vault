@@ -336,6 +336,9 @@ final class VaultPopoverPresenter: NSObject {
 
 	/// Below this, a window has too little room for a menu to be any use, so it uses the screen's, as a menu goes past its window.
 	nonisolated static let minimumRoom: CGFloat = 200
+	/// How far a popover beside its view rises above the view's top, so a
+	/// menu's first row, inside the card's inset, sits level with the view.
+	nonisolated static let besideLift: CGFloat = 6
 
 	/// The most height a popover beside `anchor` has: the larger of the room
 	/// below and above it, or the whole height beside it, inside `window`
@@ -366,7 +369,7 @@ final class VaultPopoverPresenter: NSObject {
 	/// opposite edge when there's no room, inside `window` when either has
 	/// room there and otherwise inside `screen`, as a menu goes past its
 	/// window. Below or above, it starts at the anchor's leading edge, as a
-	/// menu does; beside, it's centered on it.
+	/// menu does; beside, level with its top, as a submenu does.
 	nonisolated static func frame(size: CGSize, beside anchor: CGRect, on edge: Edge, window: CGRect, screen: CGRect) -> CGRect {
 		let screenBounds = screen.insetBy(dx: screenMargin, dy: screenMargin)
 		for bounds in [window.insetBy(dx: windowMargin, dy: windowMargin).intersection(screenBounds), screenBounds] {
@@ -376,8 +379,8 @@ final class VaultPopoverPresenter: NSObject {
 		var origin = switch edge {
 		case .bottom: CGPoint(x: anchor.minX, y: anchor.minY - gap - size.height)
 		case .top: CGPoint(x: anchor.minX, y: anchor.maxY + gap)
-		case .leading: CGPoint(x: anchor.minX - gap - size.width, y: anchor.midY - size.height / 2)
-		case .trailing: CGPoint(x: anchor.maxX + gap, y: anchor.midY - size.height / 2)
+		case .leading: CGPoint(x: anchor.minX - gap - size.width, y: anchor.maxY + besideLift - size.height)
+		case .trailing: CGPoint(x: anchor.maxX + gap, y: anchor.maxY + besideLift - size.height)
 		}
 		if screenBounds.width.isFinite, screenBounds.height.isFinite {
 			origin.x = min(max(origin.x, screenBounds.minX), screenBounds.maxX - size.width)
@@ -410,7 +413,7 @@ final class VaultPopoverPresenter: NSObject {
 			let fitsAfter = after + size.width <= bounds.maxX
 			guard fitsBefore || fitsAfter else { return nil }
 			let x = edge == .leading ? (fitsBefore ? before : after) : (fitsAfter ? after : before)
-			return CGPoint(x: x, y: along(anchor.midY - size.height / 2, from: bounds.minY, to: bounds.maxY - size.height))
+			return CGPoint(x: x, y: along(anchor.maxY + besideLift - size.height, from: bounds.minY, to: bounds.maxY - size.height))
 		}
 	}
 }

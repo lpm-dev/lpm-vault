@@ -462,11 +462,13 @@ extension SheetInteractionTests {
 			)
 
 			for expected in [
-				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
+				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add the vault field to lpm.json",
+				"Create lpm.json if it's missing, and keep any fields it has.",
 				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Close",
 			] {
 				#expect(text.contains(expected), "missing \(expected)")
 			}
+			#expect(!text.contains("Copy vault ID"), "The JSON's Copy copies the ID with it, so the ID needs none of its own")
 		}
 
 		@Test("the connection sheet explicitly selects the named environment")
@@ -481,7 +483,7 @@ extension SheetInteractionTests {
 			)
 			#expect(text.contains("--env=staging"))
 			#expect(text.contains("once the project folder is linked"), "Without a folder, the commands say they wait on step 1")
-			#expect(text.contains("Choose the project folder first"))
+			#expect(!text.contains("Choose the project folder first"), "And say it once")
 		}
 
 		@Test("the title bar's Connect CLI button offers to connect the project to the LPM CLI")

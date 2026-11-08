@@ -163,23 +163,16 @@ struct ConnectCLISheet: View {
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.lineLimit(1)
-			Spacer(minLength: 4)
-			CopyButton(isCopied: copiedItem == "vault-id") {
-				copy(projectId, as: "vault-id")
-			}
-			// Every Copy in the sheet ends the same distance in from the content's edge.
-			.padding(.trailing, Self.copyInset)
-			.accessibilityLabel("Copy vault ID")
-			.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+			Spacer(minLength: 0)
 		}
 	}
 
 	private func projectSection(number: Int) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 8) {
-				step(number, "Add it to your project")
+				step(number, "Add the vault field to lpm.json")
 				Spacer()
-				VaultSegmentedPicker(title: "Add it to your project", options: SetupMode.allCases.map { ($0, $0.title) }, selection: $setupMode)
+				VaultSegmentedPicker(title: "How to add the vault field", options: SetupMode.allCases.map { ($0, $0.title) }, selection: $setupMode)
 			}
 			vaultIDSection
 			VStack(alignment: .leading, spacing: 0) {
@@ -215,6 +208,12 @@ struct ConnectCLISheet: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			if setupMode == .copyJSON {
+				Text("Create lpm.json if it's missing, and keep any fields it has.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
 			taskExample
 		}
 	}
@@ -363,13 +362,8 @@ struct ConnectCLISheet: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
-			// Until a folder is linked there's no lpm.json to check, so the commands wait on step 1, which says so quietly.
-			if status == .noFolder {
-				Label("Choose the project folder first, so LPM Vault can check lpm.json's environments for these.", systemImage: "info.circle")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
-			} else if let warning = guidance.warning {
+			// Until a folder is linked there's no lpm.json to check them against; the line under the step's title says they wait on it.
+			if status != .noFolder, let warning = guidance.warning {
 				VaultInlineWarning(text: warning)
 			}
 			let more = guidance.commands.count - 1
@@ -586,11 +580,11 @@ private struct CopyButton: View {
 		Button(action: action) {
 			HStack(spacing: 6) {
 				Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-					.font(.system(size: 11, weight: .medium))
+					.font(.system(size: 11))
 				Text(isCopied ? "Copied" : "Copy")
-					.font(.system(size: 12, weight: .semibold))
+					.font(.system(size: 12, weight: .medium))
 			}
-			.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textSecondary))
+			.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
 			.padding(.horizontal, 8)
 			.frame(height: 28)
 			.background(RoundedRectangle(cornerRadius: 7).fill(hovering ? VaultPalette.controlHover : .clear))
@@ -651,9 +645,9 @@ private struct CommandRow: View {
 				// Said the way every copy control in the sheet says it.
 				HStack(spacing: 6) {
 					Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-						.font(.system(size: 11, weight: .medium))
+						.font(.system(size: 11))
 					Text(isCopied ? "Copied" : "Copy")
-						.font(.system(size: 12, weight: .semibold))
+						.font(.system(size: 12, weight: .medium))
 				}
 				.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
 				// Where a Copy button's title ends, inside its box.

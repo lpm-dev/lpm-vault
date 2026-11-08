@@ -40,12 +40,12 @@ struct VaultProjectHoverCard: View {
 			VStack(alignment: .leading, spacing: 8) {
 				line(.init(symbol: "doc", text: project.environmentNames.count.counted("env file")))
 				if let invalid = invalidKeyCount, invalid > 0 {
-					line(.init(symbol: VaultSmartView.invalid.symbol, text: "\(invalid) invalid", tint: VaultSmartView.invalid.tint))
+					line(.init(symbol: VaultSmartView.invalid.symbol, text: VaultSmartView.invalid.summary(invalid), tint: VaultSmartView.invalid.tint))
 				}
 				if let snapshot = store.workspaceSnapshots[project.id] {
-					line(.init(symbol: VaultSmartView.missing.symbol, text: "\(snapshot.missingKeyCount) missing",
+					line(.init(symbol: VaultSmartView.missing.symbol, text: VaultSmartView.missing.summary(snapshot.missingKeyCount),
 						tint: snapshot.missingKeyCount > 0 ? VaultSmartView.missing.tint : nil))
-					line(.init(symbol: VaultSmartView.drift.symbol, text: "\(snapshot.driftingKeyCount) drifting"))
+					line(.init(symbol: VaultSmartView.drift.symbol, text: VaultSmartView.drift.summary(snapshot.driftingKeyCount)))
 				}
 			}
 		}

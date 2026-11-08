@@ -81,15 +81,20 @@ struct VaultTableColumnLayout {
   let widths: [VaultTableColumn: CGFloat]
   let boundaries: [Boundary]
   let totalWidth: CGFloat
+  /// The width of the view the table is laid out in.
+  let available: CGFloat
 
   /// `keyWidth` is the width the keys shown need, which the key column takes
   /// instead of its default when narrower, so the value columns get the rest.
   /// `valueMinimum`, while values are shown to be read, keeps each value
   /// column at least that wide and the key column at what its keys need:
   /// the table scrolls, with the key column pinned, rather than cut values
-  /// short where they're compared.
+  /// short where they're compared. When the environment columns can't all
+  /// fit, as many as fit share the view whole and the rest wait past its
+  /// edge, so none shows cut off until the table is scrolled.
   init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil,
     valueMinimum: CGFloat? = nil) {
+    self.available = available
     let fittedKey = keyWidth.map { min(Self.fittedKeyMaximum, max(Self.fittedKeyMinimum, $0)) }
     func defaultWidth(_ column: VaultTableColumn) -> CGFloat {
       column == .key ? (fittedKey ?? column.defaultWidth) : column.defaultWidth
@@ -118,8 +123,6 @@ struct VaultTableColumnLayout {
     let valueShrink = valueSlack > 0 ? min(1, deficit / valueSlack) : 0
     let keyShrink = columns.contains(.key) && slack(.key) > 0 ? min(1, max(0, deficit - valueSlack) / slack(.key)) : 0
     var widths: [VaultTableColumn: CGFloat] = [:]
-    var boundaries: [Boundary] = []
-    var position: CGFloat = 0
     for column in columns {
       let share: CGFloat
       if case .environment = column {
@@ -128,9 +131,27 @@ struct VaultTableColumnLayout {
         share = environmentCount == 0 && column == .value ? extra : 0
       }
       let fitted = defaultWidth(column) - slack(column) * (column == .key ? keyShrink : valueShrink)
-      let width = max(column.minimumWidth, requested[column] ?? max(minimum(column), fitted + share))
-      widths[column] = width
-      position += width
+      widths[column] = max(column.minimumWidth, requested[column] ?? max(minimum(column), fitted + share))
+    }
+    let fittedTotal = widths.values.reduce(CGFloat.zero, +)
+    if requested.isEmpty, environmentCount > 0, fittedTotal > available + 0.5 {
+      let environment = VaultTableColumn.environment("")
+      let fixed = columns.reduce(CGFloat.zero) { total, column in
+        if case .environment = column { total } else { total + (widths[column] ?? 0) }
+      }
+      let room = available - fixed
+      let shown = max(1, min(environmentCount, Int((room / minimum(environment)).rounded(.down))))
+      let width = max(environment.minimumWidth, (room / CGFloat(shown)).rounded(.down))
+      for column in columns {
+        if case .environment = column { widths[column] = width }
+      }
+      // Whole points for every column; what rounding leaves goes to the key, so the last column shown ends at the view's edge.
+      if let key = widths[.key] { widths[.key] = key + max(0, room - width * CGFloat(shown)) }
+    }
+    var boundaries: [Boundary] = []
+    var position: CGFloat = 0
+    for column in columns {
+      position += widths[column] ?? 0
       boundaries.append(Boundary(id: column, position: position))
     }
     self.widths = widths
@@ -139,6 +160,41 @@ struct VaultTableColumnLayout {
   }
 
   subscript(column: VaultTableColumn) -> CGFloat { widths[column] ?? column.defaultWidth }
+
+  /// The farthest the table scrolls sideways.
+  var maximumOffset: CGFloat { max(0, totalWidth - available) }
+
+  /// The columns past the pinned key column, in order, that aren't whole in
+  /// view while the table is scrolled `offset` sideways: those under the key
+  /// column or before it, and those past the view's edge.
+  func hiddenColumns(at offset: CGFloat) -> (before: [VaultTableColumn], after: [VaultTableColumn]) {
+    let start = offset + self[.key]
+    let end = offset + available
+    var before: [VaultTableColumn] = []
+    var after: [VaultTableColumn] = []
+    for boundary in boundaries where boundary.id != .key {
+      if boundary.position - self[boundary.id] < start - 0.5 {
+        before.append(boundary.id)
+      } else if boundary.position > end + 0.5 {
+        after.append(boundary.id)
+      }
+    }
+    return (before, after)
+  }
+
+  /// How far to scroll the table sideways, from `offset`, to bring `column`
+  /// whole into view: one before the view starts at the key column's edge;
+  /// one past it ends in view, with the first column shown starting whole.
+  func offset(showing column: VaultTableColumn, from offset: CGFloat) -> CGFloat {
+    guard let boundary = boundaries.first(where: { $0.id == column }) else { return offset }
+    let key = self[.key]
+    let columnStart = boundary.position - self[column]
+    if columnStart < offset + key - 0.5 { return min(maximumOffset, max(0, columnStart - key)) }
+    let needed = boundary.position - available
+    let starts = boundaries.lazy.filter { $0.id != .key }.map { $0.position - self[$0.id] - key }
+    let aligned = starts.first { $0 >= needed - 0.5 } ?? needed
+    return min(maximumOffset, max(0, min(aligned, columnStart - key)))
+  }
 
   /// The narrowest a fitted key column gets, wide enough for a typical key and
   /// its status glyphs; the table scrolls rather than cut keys shorter. A

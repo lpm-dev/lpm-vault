@@ -20,12 +20,16 @@ struct VaultPopoverTests {
 		#expect(flipped.minY == low.maxY + VaultPopoverPresenter.gap, "No room below, so it goes above")
 	}
 
-	@Test("a popover beside its view is centered on it, and goes to the other side when there's no room")
+	@Test("a popover beside its view starts level with its top, as a submenu does, rises only as far as the edge below needs, and goes to the other side when there's no room")
 	func beside() {
 		let anchor = CGRect(x: 600, y: 400, width: 28, height: 28)
 		let leading = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .leading, window: screen, screen: screen)
 		#expect(leading.maxX == anchor.minX - VaultPopoverPresenter.gap)
-		#expect(leading.midY == anchor.midY)
+		#expect(leading.maxY == anchor.maxY + VaultPopoverPresenter.besideLift, "Its first row sits level with the view")
+		let low = CGRect(x: 600, y: 40, width: 28, height: 28)
+		let lifted = VaultPopoverPresenter.frame(size: size, beside: low, on: .leading, window: screen, screen: screen)
+		#expect(lifted.minY == screen.minY + VaultPopoverPresenter.windowMargin, "Near the bottom, it rises just enough to fit in its window")
+		#expect(lifted.maxY > low.maxY)
 		let nearEdge = CGRect(x: 20, y: 400, width: 28, height: 28)
 		let flipped = VaultPopoverPresenter.frame(size: size, beside: nearEdge, on: .leading, window: screen, screen: screen)
 		#expect(flipped.minX == nearEdge.maxX + VaultPopoverPresenter.gap)
