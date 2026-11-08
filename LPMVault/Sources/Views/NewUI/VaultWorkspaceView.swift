@@ -209,36 +209,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	var body: some View {
-		valueSearchHandling
-		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
-		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
-		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
-			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
-		}
-		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
-			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
-		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
-		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
-		.task(id: schemaWatch) { await watchSchemaFolder() }
-		.task(id: iconWatch) {
-			// Redraws the selected project's icon whenever a file it can come from changes.
-			if let iconWatch { await store.projectIcons.watch(iconWatch.projectID) }
-		}
-		.onChange(of: store.selectedEnvironment) { _, environment in
-			resetCopyPresentation()
-			rawTextSaved = nil
-			exportTask?.cancel()
-			exportTask = nil
-			exportID = nil
-			mode = mode.synchronized(to: environment)
-			revealedKeys.removeAll()
-			shownMenu = nil
-		}
-		.onChange(of: mode) { _, _ in
-			revealedKeys.removeAll()
-			shownMenu = nil
-		}
-		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealedKeys.removeAll() }
+		revealHandling
 		.onChange(of: store.history.showRequest) { _, request in
 			if request != nil { mode = .history }
 		}
@@ -286,6 +257,47 @@ struct VaultWorkspaceView: View {
 			resetCopyPresentation()
 			revealedKeys.removeAll()
 			selectedKey = nil
+		}
+	}
+
+	/// The page and its commands, with what masks revealed values again as
+	/// the environment or page changes, or as the guard on values says to.
+	private var revealHandling: some View {
+		commandHandling
+		.onChange(of: store.selectedEnvironment) { _, environment in
+			resetCopyPresentation()
+			rawTextSaved = nil
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+			mode = mode.synchronized(to: environment)
+			revealedKeys.removeAll()
+			shownMenu = nil
+		}
+		.onChange(of: mode) { _, _ in
+			revealedKeys.removeAll()
+			shownMenu = nil
+		}
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealedKeys.removeAll() }
+	}
+
+	/// The page with what the app's commands ask of it, and what follows the
+	/// selected project.
+	private var commandHandling: some View {
+		valueSearchHandling
+		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
+		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
+		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
+			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
+		}
+		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
+			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
+		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
+		.task(id: schemaWatch) { await watchSchemaFolder() }
+		.task(id: iconWatch) {
+			// Redraws the selected project's icon whenever a file it can come from changes.
+			if let iconWatch { await store.projectIcons.watch(iconWatch.projectID) }
 		}
 	}
 
