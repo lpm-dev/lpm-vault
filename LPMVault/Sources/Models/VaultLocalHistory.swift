@@ -560,7 +560,7 @@ final class VaultLocalHistory {
 		case .changed:
 			settleUndo(of: applied.entry, .failed("The values changed since, so nothing was undone."))
 		case .unavailable:
-			settleUndo(of: applied.entry, .failed("The project isn't available, so nothing was undone."))
+			settleUndo(of: applied.entry, .failed("The project isn’t available, so nothing was undone."))
 		case .failed(let message):
 			settleUndo(of: applied.entry, .failed(message))
 		}
@@ -707,6 +707,17 @@ final class VaultLocalHistory {
 		return await actions.overview(projectID, HistoryEngine.Filter(limit: 0)).map { overview in
 			Summary(state: overview.state, timeline: overview.state.history == "off" ? nil : overview.timeline)
 		}
+	}
+
+	/// When the project's values last changed, by its newest history entry;
+	/// nil while its history is off, empty or can't be read.
+	func lastChange(of projectID: String) async -> Date? {
+		await collectOutcomes()
+		guard case .success(let overview) = await actions.overview(projectID, HistoryEngine.Filter(limit: 1)),
+			overview.state.history != "off",
+			case .entry(let entry)? = overview.timeline?.rows.first
+		else { return nil }
+		return VaultHistoryText.date(entry.time)
 	}
 
 	/// Where a key's change sits in an entry, by the environment's and the

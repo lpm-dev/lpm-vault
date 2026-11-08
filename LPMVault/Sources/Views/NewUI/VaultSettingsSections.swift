@@ -8,13 +8,9 @@ struct VaultGeneralSettingsSection: View {
 		@Bindable var quitSettings = quitSettings
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Quit shortcut", detail: quitSettings.selection.explanation) {
-				Picker("Quit shortcut", selection: $quitSettings.selection) {
-					ForEach(VaultQuitShortcut.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.accessibilityHint(quitSettings.selection.explanation)
+				VaultSegmentedPicker(title: "Quit shortcut", options: VaultQuitShortcut.allCases.map { ($0, $0.title) },
+					selection: $quitSettings.selection, segmentWidth: VaultSettingsLayout.segment)
+					.accessibilityHint(quitSettings.selection.explanation)
 			}
 		}
 	}
@@ -30,13 +26,9 @@ struct VaultAppearanceSettingsSection: View {
 		@Bindable var appearanceSettings = appearanceSettings
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
-				Picker("Appearance", selection: $appearanceSettings.selection) {
-					ForEach(VaultAppearance.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.accessibilityHint(Self.themeExplanation)
+				VaultSegmentedPicker(title: "Appearance", options: VaultAppearance.allCases.map { ($0, $0.title) },
+					selection: $appearanceSettings.selection, segmentWidth: VaultSettingsLayout.segment)
+					.accessibilityHint(Self.themeExplanation)
 			}
 		}
 	}
@@ -54,15 +46,11 @@ struct VaultUpdateSettingsSection: View {
 					updates.checkForUpdates()
 				}
 			}
-			VaultHairline(color: VaultPalette.rowDivider)
+			VaultHairline()
 			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
-				Picker("Update channel", selection: $updates.channel) {
-					ForEach(VaultReleaseChannel.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.disabled(!updates.canChangeChannel)
+				VaultSegmentedPicker(title: "Update channel", options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
+					selection: $updates.channel, segmentWidth: VaultSettingsLayout.segment)
+					.disabled(!updates.canChangeChannel)
 				.accessibilityHint(updates.channelDescription)
 			}
 			if updates.hasPendingUpdate {
@@ -99,7 +87,12 @@ struct VaultLPMHomeSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: store.lpmHome.displayPath + (store.lpmHome.isDefault ? " (default)" : ""), detail: Self.explanation, detailIsSelectable: false) {
+			// A path in the code font, as a project's folder is, and what it is in the system font.
+			VaultSettingsRow(
+				titleText: Text(store.lpmHome.displayPath).font(VaultTypography.code(12.5, .medium))
+					+ Text(store.lpmHome.isDefault ? "  (default)" : "").font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary),
+				detail: Self.explanation, detailIsSelectable: false
+			) {
 				HStack(spacing: 8) {
 					if !store.lpmHome.isDefault {
 						VaultBarButton(title: "Use Default", disabled: isWorking, height: 28) {
@@ -117,7 +110,7 @@ struct VaultLPMHomeSettingsSection: View {
 			}
 			if let leftovers {
 				HStack(alignment: .firstTextBaseline, spacing: 8) {
-					Text("The last move couldn't remove \(leftovers.items.count.counted("item")) from \(leftovers.home). They are copies of what moved.")
+					Text("The last move couldn’t remove \(leftovers.items.count.counted("item")) from \(leftovers.home). They are copies of what moved.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.orange)
 						.fixedSize(horizontal: false, vertical: true)
@@ -137,7 +130,7 @@ struct VaultLPMHomeSettingsSection: View {
 		guard let url = folderPicker() else { return }
 		begin {
 			guard let target = await store.lpmHome(at: url) else {
-				problem = "LPM Vault can't use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
+				problem = "LPM Vault can’t use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
 				return
 			}
 			await consider(target)
@@ -163,7 +156,7 @@ struct VaultLPMHomeSettingsSection: View {
 		let found = await store.lpmHomeContents(target)
 		let held = await store.lpmHomeContents(store.lpmHome)
 		guard let found, let held else {
-			problem = "LPM Vault couldn't read what the LPM homes hold, so it changed nothing."
+			problem = "LPM Vault couldn’t read what the LPM homes hold, so it changed nothing."
 			return
 		}
 		change = Change(target: target, current: held, found: found)
@@ -222,7 +215,7 @@ struct VaultLPMHomeSettingsSection: View {
 		panel.canCreateDirectories = true
 		panel.allowsMultipleSelection = false
 		panel.prompt = "Use as LPM Home"
-		panel.message = "Choose the folder your shell's LPM_HOME names"
+		panel.message = "Choose the folder your shell’s LPM_HOME names"
 		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
 		return panel.url
 	}
@@ -241,16 +234,28 @@ private struct VaultSettingsRows<Content: View>: View {
 /// A setting's name and explanation, with its control on the trailing side.
 /// A detail that's a value, such as the version, can be selected and copied.
 private struct VaultSettingsRow<Control: View>: View {
-	let title: String
+	let title: Text
 	let detail: String
 	var detailIsSelectable = false
 	@ViewBuilder let control: Control
 
+	init(title: String, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+		self.init(titleText: Text(title).font(.system(size: 13, weight: .semibold)), detail: detail,
+			detailIsSelectable: detailIsSelectable, control: control)
+	}
+
+	/// A title drawn its own way, such as a path in the code font.
+	init(titleText: Text, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+		title = titleText
+		self.detail = detail
+		self.detailIsSelectable = detailIsSelectable
+		self.control = control()
+	}
+
 	var body: some View {
 		HStack(alignment: .center, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
-				Text(title)
-					.font(.system(size: 13))
+				title
 					.foregroundStyle(VaultPalette.textPrimary)
 				if detailIsSelectable {
 					Text(detail)
@@ -262,10 +267,17 @@ private struct VaultSettingsRow<Control: View>: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
+						.frame(maxWidth: VaultMetrics.explanationWidth, alignment: .leading)
 				}
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 			control
 		}
 	}
+}
+
+/// What the Settings page's controls share, so they line up down the page.
+enum VaultSettingsLayout {
+	/// Each segment's width in the page's segmented pickers: "Double press" with room to spare.
+	static let segment: CGFloat = 104
 }

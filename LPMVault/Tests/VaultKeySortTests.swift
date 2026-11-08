@@ -40,7 +40,7 @@ struct VaultKeySortTests {
 		}
 
 		var testDescription: String {
-			"\(mode == .matrix ? "all variables" : "environment"), \(filter.rawValue), search \"\(searchText)\""
+			"\(mode == .matrix ? "all keys" : "environment"), \(filter.rawValue), search \"\(searchText)\""
 		}
 	}
 

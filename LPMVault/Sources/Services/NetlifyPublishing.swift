@@ -247,7 +247,7 @@ enum NetlifyPublishing {
 		static let added = Refusal(text: "Added on Netlify since this review. Review again.")
 		static let changed = Refusal(text: "Changed on Netlify since this review. Review again.")
 		static let removed = Refusal(text: "Removed on Netlify since this review. Review again.")
-		static let unknownChangeTime = Refusal(text: "Netlify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once on Netlify, then review again.")
+		static let unknownChangeTime = Refusal(text: "Netlify doesn’t say when this variable last changed, so LPM Vault can’t tell whether it changed since this review. Edit it once on Netlify, then review again.")
 	}
 
 	/// How the change can be sent, as Netlify has the key now, or why it can't
@@ -321,7 +321,7 @@ enum NetlifyPublishing {
 					? "Netlify stored it as a secret, though LPM Vault sent it readable."
 					: "Netlify stored it readable, though LPM Vault sent it as a secret. Mark it as containing secret values on Netlify.")
 		} else if valueID == nil {
-			report.outcomes[change.key] = .failed("Netlify accepted it, but its answer doesn't show the value for this deploy context. Check it on Netlify.")
+			report.outcomes[change.key] = .failed("Netlify accepted it, but its answer doesn’t show the value for this deploy context. Check it on Netlify.")
 		} else {
 			report.outcomes[change.key] = .published
 		}
@@ -361,13 +361,13 @@ enum NetlifyPublishing {
 	static func message(_ error: NetlifyAPIError) -> String {
 		switch error {
 		case .unauthorized: "Netlify no longer accepts this connection. Connect Netlify again on the Platforms page."
-		case .forbidden: "Your role on this Netlify team can't change the site's variables."
-		case .notFound: "Netlify couldn't find the site or the variable."
+		case .forbidden: "Your role on this Netlify team can’t change the site’s variables."
+		case .notFound: "Netlify couldn’t find the site or the variable."
 		case .rateLimited: "Netlify is limiting requests. Try again in a minute."
 		case .rejected(let status): "Netlify refused it (HTTP \(status))."
-		case .transport: "Netlify couldn't be reached."
+		case .transport: "Netlify couldn’t be reached."
 		case .cancelled: "Cancelled."
-		case .invalidResponse: "Netlify's answer couldn't be read."
+		case .invalidResponse: "Netlify’s answer couldn’t be read."
 		case .server(let status): "Netlify answered with HTTP \(status)."
 		}
 	}

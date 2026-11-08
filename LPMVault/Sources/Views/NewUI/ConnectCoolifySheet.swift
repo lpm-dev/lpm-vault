@@ -39,7 +39,7 @@ struct ConnectCoolifySheet: View {
 			VaultHairline()
 			VStack(alignment: .leading, spacing: 16) {
 				field("Coolify address") {
-					TextField("https://coolify.example.com", text: $address)
+					TextField(vaultPrompt: "https://coolify.example.com", text: $address)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(12.5))
 						.foregroundStyle(VaultPalette.textPrimary)
@@ -72,7 +72,7 @@ struct ConnectCoolifySheet: View {
 			.disabled(isConnecting)
 			.padding(24)
 			VaultSheetFooter {
-				Label("The token stays in this Mac's Keychain", systemImage: "lock")
+				Label("The token stays in this Mac’s Keychain", systemImage: "lock")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} actions: {
@@ -95,15 +95,9 @@ struct ConnectCoolifySheet: View {
 
 	private var header: some View {
 		HStack(alignment: .top, spacing: 14) {
-			Image(systemName: "server.rack")
-				.font(.system(size: 16, weight: .semibold))
-				.foregroundStyle(VaultPalette.accentForeground)
-				.frame(width: 38, height: 38)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
-				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Connect Coolify")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("Publish to the applications and services of a team on your Coolify instance.")
 					.font(.system(size: 12.5))
@@ -120,14 +114,14 @@ struct ConnectCoolifySheet: View {
 
 	private var guidance: some View {
 		VStack(alignment: .leading, spacing: 6) {
-			step(1, "Turn on API access in Coolify's Settings → Advanced.")
-			step(2, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn't need Root, Deploy or Read Sensitive.")
+			step(1, "Turn on API access in Coolify’s Settings → Advanced.")
+			step(2, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn’t need Root, Deploy or Read Sensitive.")
 			step(3, "The token reaches the team you had selected when you created it.")
 		}
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.sidebar))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func step(_ number: Int, _ text: String) -> some View {

@@ -400,9 +400,9 @@ struct EnvFileImportTests {
 		let imported = try await EnvFileImportService(limits: limits).load(.text(content))
 		#expect(imported.secrets == ["A": "1", "B": "2"])
 		#expect(imported.skippedLineCount == 1 && imported.firstSkippedLine == 2)
-		#expect(imported.skippedLinesDescription == "Line 2 isn't KEY=value, so it's left out.")
+		#expect(imported.skippedLinesDescription == "Line 2 isn’t KEY=value, so it’s left out.")
 		let several = try await EnvFileImportService(limits: limits).load(.text("A=1\nfirst\nsecond\nthird"))
-		#expect(several.skippedLinesDescription == "3 lines aren't KEY=value, so they're left out, starting at line 2.")
+		#expect(several.skippedLinesDescription == "3 lines aren’t KEY=value, so they’re left out, starting at line 2.")
 		#expect(try await EnvFileImportService(limits: limits).load(.text("A=1")).skippedLinesDescription == nil)
 	}
 

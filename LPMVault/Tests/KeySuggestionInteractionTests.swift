@@ -65,7 +65,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("OAUTH_TOKEN"))
 			try host.pressWhileEditing("\u{1b}", code: 53)
 			#expect(try await host.waitForTextToDisappear("DECLARED, NOT SET"))
-			#expect(try await host.text().contains("Add variable"))
+			#expect(try await host.text().contains("New Key"))
 		}
 
 		@Test("a long list stays inside the sheet, above the footer, and scrolls to the highlighted key")
@@ -126,7 +126,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "EMPTY"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
 
-			#expect(try await host.waitForText("Empty values aren't allowed"))
+			#expect(try await host.waitForText("Empty values aren’t allowed"))
 			#expect(try await host.text().contains("Add anyway"))
 		}
 

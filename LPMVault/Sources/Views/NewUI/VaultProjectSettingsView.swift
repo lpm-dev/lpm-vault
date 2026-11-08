@@ -37,23 +37,20 @@ struct VaultProjectSettingsView: View {
 			header
 			VaultHairline()
 			ScrollView {
-				VStack(alignment: .leading, spacing: 18) {
-					identity
+				// The title bar names the project and the rows below edit it, so the page starts with them.
+				VStack(alignment: .leading, spacing: 20) {
 					section("PROJECT") {
 						nameRow
-						VaultHairline(color: VaultPalette.rowDivider)
+						VaultHairline()
 						iconRow
-						VaultHairline(color: VaultPalette.rowDivider)
+						VaultHairline()
 						folderRow
 					}
 					section("SECURITY") { cliApprovalRow }
 					section("HISTORY") { historyRow }
 					section("DANGER ZONE") { deleteRow }
 				}
-				.frame(maxWidth: 640, alignment: .leading)
-				.padding(.horizontal, 24)
-				.padding(.vertical, 20)
-				.frame(maxWidth: .infinity, alignment: .leading)
+				.vaultFormColumn()
 			}
 		}
 		.background(VaultPalette.content)
@@ -82,27 +79,24 @@ struct VaultProjectSettingsView: View {
 
 	// MARK: - Header
 
+	/// The page's place as a path: the way back is where the path starts, so
+	/// the title row starts and stands as every page's does.
 	private var header: some View {
 		HStack(spacing: 12) {
-			Button(action: onBack) {
-				HStack(spacing: 5) {
-					Image(systemName: "chevron.left").font(.system(size: 10.5, weight: .semibold))
-					Text("All variables").font(.system(size: 12.5))
-				}
-				.foregroundStyle(VaultPalette.accentText)
-				.contentShape(Rectangle())
+			// The way back reads as a step on the path, lighter than the page it leads from, on the title's baseline.
+			HStack(alignment: .firstTextBaseline, spacing: 7) {
+				VaultBackTitle(title: "All Keys", action: onBack)
+				Image(systemName: "chevron.right")
+					.font(.system(size: 10, weight: .semibold))
+					.foregroundStyle(VaultPalette.textFaint)
+					.accessibilityHidden(true)
+				Text("Project Settings")
+					.vaultPageTitle()
+					.lineLimit(1)
+					.accessibilityAddTraits(.isHeader)
+					.accessibilityFocused($titleFocused)
 			}
-			.buttonStyle(.plain)
-			.vaultPointingHand()
-			.accessibilityLabel("Back to all variables")
-			Text("/").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
-				.accessibilityHidden(true)
-			Text("Project Settings")
-				.font(.system(size: 19, weight: .bold))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.lineLimit(1)
-				.accessibilityAddTraits(.isHeader)
-				.accessibilityFocused($titleFocused)
+			.fixedSize()
 			Spacer(minLength: 12)
 			if let error = store.projectSettingsErrors[project.id] {
 				Text(error)
@@ -124,31 +118,8 @@ struct VaultProjectSettingsView: View {
 					.keyboardShortcut("s", modifiers: .command)
 			}
 		}
-		.padding(.horizontal, 24)
-		.frame(height: 58)
-	}
-
-	private var identity: some View {
-		HStack(spacing: 14) {
-			VaultProjectIconView(appearance: store.projectIcons.appearance(of: settings.icon, for: project.id), size: 48)
-			VStack(alignment: .leading, spacing: 3) {
-				Text(VaultProjectRenamePolicy.normalizedName(settings.name) ?? project.name)
-					.font(.system(size: 17, weight: .bold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-				HStack(spacing: 6) {
-					Text(displayPath)
-						.font(VaultTypography.tabular(11.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.lineLimit(1)
-						.truncationMode(.middle)
-						.textSelection(.enabled)
-					if folderExists {
-						VaultRowIconButton(systemImage: "arrow.up.forward.square", help: "Show in Finder") { showInFinder() }
-					}
-				}
-			}
-		}
+		.padding(.horizontal, 20)
+		.frame(height: 60)
 	}
 
 	// MARK: - Rows
@@ -157,7 +128,7 @@ struct VaultProjectSettingsView: View {
 		row("Name") {
 			Text("Shown in the sidebar and the title bar.")
 		} controls: {
-			TextField("Project name", text: Binding(
+			TextField(vaultPrompt: "Project name", text: Binding(
 				get: { settings.name },
 				set: { name in store.editProjectSettings(of: project) { $0.name = name } }
 			))
@@ -191,19 +162,35 @@ struct VaultProjectSettingsView: View {
 				iconCaption
 			}
 		} controls: {
+			// A well, not a button: filled and unedged, apart from the buttons that change it.
 			VaultProjectIconView(appearance: store.projectIcons.appearance(of: settings.icon, for: project.id), size: 16)
 				.frame(width: 28, height: 28)
-				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-				.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
-			VaultBarButton(title: "Choose icon…", disabled: isSaving, height: 28) { showsIconPicker = true }
-			VaultBarButton(title: isImporting ? "Choosing…" : "Choose file…", disabled: isSaving || isImporting, height: 28, action: chooseFile)
-			if !settings.icon.isAutomatic {
-				VaultBarButton(title: "Reset", disabled: isSaving, height: 28) {
-					store.projectIcons.clearImportFailure(for: project.id)
-					store.editProjectSettings(of: project) { $0.icon = .automatic }
-				}
-				.help("Reset to Automatic")
+				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
+				.padding(.trailing, 6)
+			// One menu for every way to change it, rather than buttons that read alike.
+			VaultBarMenu(accessibilityLabel: "Choose icon", menuWidth: 248, rows: [
+				.init(id: IconChoice.picker, title: "Symbol, Emoji or Monogram…"),
+				.init(id: IconChoice.file, title: "Image File…", isEnabled: !isImporting),
+				.init(id: IconChoice.automatic, title: "Use Automatic", detail: settings.icon.isAutomatic ? "in use" : nil,
+					isEnabled: !settings.icon.isAutomatic, separated: true),
+			], onChoose: chooseIcon) {
+				Text(isImporting ? "Choosing…" : "Choose…").font(.system(size: 12.5, weight: .medium))
 			}
+			.disabled(isSaving)
+		}
+	}
+
+	private enum IconChoice: Hashable {
+		case picker, file, automatic
+	}
+
+	private func chooseIcon(_ choice: IconChoice) {
+		switch choice {
+		case .picker: showsIconPicker = true
+		case .file: chooseFile()
+		case .automatic:
+			store.projectIcons.clearImportFailure(for: project.id)
+			store.editProjectSettings(of: project) { $0.icon = .automatic }
 		}
 	}
 
@@ -239,7 +226,7 @@ struct VaultProjectSettingsView: View {
 			return [.init(text: "Monogram · \(letters) · \(color.title)")]
 		case .projectFile(let path):
 			let caption: [CaptionPart] = [.init(text: "Image · "), .init(text: path, isPath: true)]
-			return fileFailed ? caption + [.init(text: " · can't be read, so the automatic icon shows")] : caption
+			return fileFailed ? caption + [.init(text: " · can’t be read, so the automatic icon shows")] : caption
 		case .storedImage(_, let name):
 			let caption: [CaptionPart] = [.init(text: "Image · \(name)")]
 			return fileFailed ? caption + [.init(text: " · missing, so the automatic icon shows")] : caption
@@ -249,9 +236,10 @@ struct VaultProjectSettingsView: View {
 	private var folderRow: some View {
 		row("Folder") {
 			if folderExists {
-				Text(displayPath).font(VaultTypography.tabular(11.5)).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+				Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+					.help(project.path)
 			} else {
-				Text(project.path.isEmpty ? "This project isn't linked to a folder." : "\(displayPath) can't be found.")
+				Text(project.path.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
 					.foregroundStyle(VaultPalette.redText)
 			}
 		} controls: {
@@ -268,18 +256,17 @@ struct VaultProjectSettingsView: View {
 		let access = store.selectedProjectCliAccess
 		return row("CLI approval") {
 			if access == nil {
-				Text("The CLI approval policy can't be read.").foregroundStyle(VaultPalette.orangeTintText)
+				Text("The CLI approval policy can’t be read.").foregroundStyle(VaultPalette.orangeTintText)
 			} else {
-				Text("When on, the LPM CLI asks for Touch ID or your Mac password before reading this project's values. It's the same setting as the header switch, and changing it asks for Touch ID.")
+				Text("When on, the LPM CLI asks for Touch ID or your Mac password before it reads this project’s values. Changing it asks for Touch ID.")
 			}
 		} controls: {
 			Toggle("CLI approval", isOn: Binding(
 				get: { access == .requireApproval },
 				set: { required in Task { await store.changeCliAccess(to: required ? .requireApproval : .automatic) } }
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.small)
-			.labelsHidden()
 			.disabled(access == nil || store.isChangingCliAccess || !store.canUseLocalSecrets)
 			.help(VaultCliAccessPresentation(access: access).help)
 			.accessibilityValue(VaultCliAccessPresentation(access: access).accessibilityValue)
@@ -321,9 +308,8 @@ struct VaultProjectSettingsView: View {
 					if on { setHistory(enabled: true) } else { confirmsHistoryOff = true }
 				}
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.small)
-			.labelsHidden()
 			.disabled(historySummary == nil || changingHistory || !store.canUseLocalSecrets || state == "unsupported" || state == "removing")
 			.help(state == "off" ? "Start keeping history with the next change" : "Turn off and delete this project’s history")
 		}
@@ -352,7 +338,7 @@ struct VaultProjectSettingsView: View {
 	}
 
 	private var deleteRow: some View {
-		row("Delete locally") {
+		row("Delete from this Mac") {
 			Text("Removes the project, its Keychain values and its local history from this Mac. Its folder, its lpm.json and a synced cloud copy stay.")
 		} controls: {
 			VaultBarButton(title: "Delete Locally…", destructive: true, disabled: isSaving, height: 28, action: onDelete)
@@ -362,11 +348,11 @@ struct VaultProjectSettingsView: View {
 	// MARK: - Layout
 
 	private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-		VStack(alignment: .leading, spacing: 7) {
+		VStack(alignment: .leading, spacing: 8) {
 			Text(title).vaultSectionLabel().accessibilityAddTraits(.isHeader)
 			VStack(spacing: 0) { content() }
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.card))
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 	}
 
@@ -384,6 +370,7 @@ struct VaultProjectSettingsView: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineSpacing(2)
 					.fixedSize(horizontal: false, vertical: true)
+					.frame(maxWidth: VaultMetrics.explanationWidth, alignment: .leading)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 			// Centered on the title's line, however short the controls are.
@@ -433,9 +420,33 @@ struct VaultProjectSettingsView: View {
 
 	static func message(for failure: ProjectIconStore.ImportFailure) -> String {
 		switch failure {
-		case .unreadable: "That file can't be read."
-		case .notAnImage: "That file isn't an image LPM Vault can show."
-		case .couldNotSave: "The image couldn't be copied into LPM Vault."
+		case .unreadable: "That file can’t be read."
+		case .notAnImage: "That file isn’t an image LPM Vault can show."
+		case .couldNotSave: "The image couldn’t be copied into LPM Vault."
 		}
+	}
+}
+
+/// The start of a page's path, in the title's size but quieter, which goes back to it.
+private struct VaultBackTitle: View {
+	let title: String
+	let action: () -> Void
+
+	@State private var hovering = false
+
+	var body: some View {
+		Button(action: action) {
+			Text(title)
+				.font(.system(size: 15))
+				.foregroundStyle(hovering ? VaultPalette.accentForeground : VaultPalette.textSecondary)
+				.lineLimit(1)
+				.contentShape(Rectangle())
+				.vaultHoverAnimation(hovering)
+		}
+		.buttonStyle(VaultPressStyle(cornerRadius: 5))
+		.vaultPointingHand()
+		.onHover { hovering = $0 }
+		.help("Back to All Keys")
+		.accessibilityLabel("Back to All Keys")
 	}
 }

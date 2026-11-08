@@ -57,7 +57,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.keyDescriptions["schema-page"]?.schema == .noFolder })
 			try await host.click("Schema")
-			#expect(try await host.waitForText("Rules live in your project's lpm.json"))
+			#expect(try await host.waitForText("Rules live in your project’s lpm.json"))
 			#expect(try await host.text().contains("Learn about envSchema"))
 		}
 
@@ -91,9 +91,9 @@ extension SheetInteractionTests {
 				if case .unreadable? = store.keyDescriptions["schema-page"]?.schema { true } else { false }
 			})
 			try await host.click("Schema")
-			#expect(try await host.waitForText("Schema can't be read"))
+			#expect(try await host.waitForText("Schema can’t be read"))
 			let text = try await host.text()
-			#expect(text.contains("LPM doesn't know this field. Check its spelling"))
+			#expect(text.contains("LPM doesn’t know this field. Check its spelling"))
 			#expect(text.contains("PORT.rnage"), "The location names the unknown field")
 			#expect(text.contains("Checks paused"))
 
@@ -109,7 +109,7 @@ extension SheetInteractionTests {
 			try recheck()
 			#expect(store.isReloadingKeyDescriptions, "Recheck reads lpm.json again before the page notices the change itself")
 			#expect(try await host.waitForText("5 declared keys"))
-			#expect(try await !host.text().contains("Schema can't be read"))
+			#expect(try await !host.text().contains("Schema can’t be read"))
 		}
 
 		@Test("long rule and source badges fit the available width", arguments: [CGFloat(140), 264, 400])

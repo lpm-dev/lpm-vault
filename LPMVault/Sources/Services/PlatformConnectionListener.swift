@@ -38,11 +38,11 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		case .differentInstallation: "\(name) answered for a different installation. Connect again."
 		case .alreadyUsed: "This connection link was already used. Connect again from LPM Vault."
 		case .approvalExpired: "Your approval on \(name) expired before it could be used. Connect again."
-		case .platformUnavailable: "\(name) isn't reachable right now. Try again later."
-		case .platformRefused: "\(name) didn't accept the connection. Connect again."
-		case .exchangeUncertain: "\(name)'s answer didn't come back, so the connection couldn't be finished. Connect again."
-		case .insufficientScope: "\(name) didn't grant all the access LPM Vault needs. Connect again, and approve every permission it asks for."
-		case .other: "\(name) couldn't be connected. Try again."
+		case .platformUnavailable: "\(name) isn’t reachable right now. Try again later."
+		case .platformRefused: "\(name) didn’t accept the connection. Connect again."
+		case .exchangeUncertain: "\(name)’s answer didn’t come back, so the connection couldn’t be finished. Connect again."
+		case .insufficientScope: "\(name) didn’t grant all the access LPM Vault needs. Connect again, and approve every permission it asks for."
+		case .other: "\(name) couldn’t be connected. Try again."
 		}
 	}
 }
@@ -312,7 +312,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		case .failure(let failure):
 			return LoopbackPage.response(
 				success: false,
-				title: "\(name) wasn't connected",
+				title: "\(name) wasn’t connected",
 				label: "Connection stopped",
 				detail: "\(failure.message(for: platform)) Return to LPM Vault to try again.",
 				link: link)
@@ -321,7 +321,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 				success: false,
 				title: "Start from LPM Vault",
 				label: "Not recognized",
-				detail: "This page didn't come from a connection LPM Vault started. Connect \(name) from LPM Vault's Platforms page.")
+				detail: "This page didn’t come from a connection LPM Vault started. Connect \(name) from LPM Vault’s Platforms page.")
 		}
 	}
 }

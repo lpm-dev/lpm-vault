@@ -67,7 +67,7 @@ struct RawTextEditTests {
 			"Line 5: duplicate of line 1",
 			"Line 6: log_level differs from LOG_LEVEL on line 1 only in letter case",
 			"Line 7: invalid key name — use letters, digits and _, not starting with a digit",
-			"Line 8: its value's opening \" is never closed",
+			"Line 8: its value’s opening \" is never closed",
 		])
 		#expect(check.problemLines == [1, 2, 3, 4, 5, 6, 7, 8])
 		#expect(check.values == ["LOG_LEVEL": "info"], "A line with a problem sets nothing, nor does what an open quote swallows")

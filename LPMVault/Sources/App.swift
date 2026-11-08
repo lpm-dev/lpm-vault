@@ -165,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct LPMVaultApp: App {
 	@NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 	@Environment(\.openWindow) private var openWindow
-	@State private var store = VaultStore()
+	@State private var store = VaultStore(layout: VaultLayoutPreferences(defaults: .standard))
 	@State private var updateChecker = UpdateChecker()
 	@State private var appearanceSettings = VaultAppearanceSettings()
 	@State private var quitSettings = VaultQuitSettings()
@@ -272,6 +272,21 @@ struct LPMVaultApp: App {
 
 				Divider()
 
+				// The title bar's sync status offers these too; their shortcuts live here.
+				let cannotSync = !store.isUnlocked || store.selectedProject == nil || !store.isLoggedIn || store.isSyncing
+				Button("Pull from lpm.dev…") {
+					NotificationCenter.default.post(name: .pullProject, object: nil)
+				}
+				.keyboardShortcut("l", modifiers: [.command, .shift])
+				.disabled(cannotSync)
+				Button(store.selectedAccountIsOrganization ? "Share with Organization…" : "Push to lpm.dev…") {
+					NotificationCenter.default.post(name: .pushProject, object: nil)
+				}
+				.keyboardShortcut("p", modifiers: [.command, .shift])
+				.disabled(cannotSync)
+
+				Divider()
+
 				Button(store.isUnlocked ? "Lock LPM Vault" : "Unlock LPM Vault") {
 					if store.isUnlocked {
 						store.lock()
@@ -295,5 +310,7 @@ extension Notification.Name {
 	static let findValue = Notification.Name("dev.lpm.vault.find-value")
 	static let findReusedValues = Notification.Name("dev.lpm.vault.find-reused-values")
 	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")
+	static let pullProject = Notification.Name("dev.lpm.vault.pull-project")
+	static let pushProject = Notification.Name("dev.lpm.vault.push-project")
 	static let dismissVaultSearch = Notification.Name("dev.lpm.vault.dismiss-search")
 }

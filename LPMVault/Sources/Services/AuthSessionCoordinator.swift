@@ -28,7 +28,7 @@ enum AuthSessionCoordinatorError: Error, LocalizedError, Sendable {
 		case .sessionRevokedWithCleanupFailure(let message):
 			"The shared session was revoked, but metadata cleanup failed: \(message)"
 		case .unsupportedCredentialBackend:
-			"This session is stored in the Rust client's encrypted fallback. Sign in from LPM Vault to move it to Keychain."
+			"This session is stored in the Rust client’s encrypted fallback. Sign in from LPM Vault to move it to Keychain."
 		}
 	}
 }

@@ -7,10 +7,10 @@ import Testing
 @Suite("Workspace pane layout")
 @MainActor
 struct VaultPaneLayoutTests {
-	@Test("the sidebar starts wide enough for its navigation labels")
+	@Test("the sidebar starts wide enough for its navigation labels, and narrower still on request")
 	func sidebarDefaultWidth() {
-		#expect(VaultMetrics.sidebar == 280)
-		#expect(VaultMetrics.sidebarMinimum == 280)
+		#expect(VaultMetrics.sidebar == 260)
+		#expect(VaultMetrics.sidebarMinimum == 240)
 	}
 
 	@Test("layout stays bounded across window sizes and requested widths")
@@ -65,6 +65,94 @@ struct VaultPaneLayoutTests {
 		#expect(view.acceptsFirstMouse(for: nil))
 	}
 
+	@Test("the sidebar keeps the width a person gave it across a lock, and the next launch")
+	func sidebarWidthSurvivesLock() async throws {
+		let domain = "pane-widths-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(), layout: VaultLayoutPreferences(defaults: defaults), authTokenProvider: { _, _ in nil })
+		let project = VaultProject(id: "pane-lock", name: "Layout Preview", path: "",
+			environments: ["default": ["EXAMPLE_KEY": "example-value"]])
+		store.isUnlocked = true
+		defer { store.lock() }
+		store.projects = [project]
+		store.selectedProjectId = project.id
+		try #require(try await waitUntil { store.workspaceSnapshots[project.id] != nil })
+		let host = NSHostingView(rootView: ContentView(store: store)
+			.environment(UpdateChecker())
+			.environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 800),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		defer { window.close() }
+		window.orderBack(nil)
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 }
+		let sidebar = try #require(resizeViews(in: host).first)
+		#expect(sidebar.accessibilityPerformIncrement())
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "280 points" }
+
+		store.lock()
+		try await waitForLayout(host) { resizeViews(in: host).isEmpty }
+		#expect(resizeViews(in: host).isEmpty, "Locked, the workspace is gone")
+		store.isUnlocked = true
+		store.projects = [project]
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 }
+		#expect(resizeViews(in: host).first?.accessibilityValue() as? String == "280 points")
+		#expect(VaultLayoutPreferences(defaults: defaults).sidebarWidth == 280, "The next launch starts where this one left off")
+
+		// Hidden, as the title bar's sidebar button hides it, it stays hidden across a lock too.
+		store.layout.sidebarChoice = false
+		try await waitForLayout(host) { resizeViews(in: host).isEmpty }
+		store.lock()
+		store.isUnlocked = true
+		store.projects = [project]
+		try await waitForLayout(host) { says("Show sidebar", in: window) }
+		#expect(says("Show sidebar", in: window))
+		#expect(resizeViews(in: host).isEmpty && store.layout.sidebarChoice == false)
+	}
+
+	private func says(_ label: String, in window: NSWindow) -> Bool {
+		AccessibilityTree.elements(in: window).contains { $0.label == label }
+	}
+
+	@Test("the layout a person set is saved and read back: pane widths, a shown or hidden sidebar, and each project's column widths")
+	func layoutPreferencesRoundTrip() throws {
+		let domain = "layout-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let fresh = VaultLayoutPreferences(defaults: defaults)
+		#expect(fresh.sidebarWidth == VaultMetrics.sidebar && fresh.inspectorWidth == VaultMetrics.inspector)
+		#expect(fresh.sidebarChoice == nil)
+
+		var widths = VaultProjectTableColumnWidths()
+		widths.matrix.resize(.environment("prod:eu"), to: 280, in: VaultTableColumnLayout(columns: [.key, .environment("prod:eu")], available: 900))
+		widths.environment.resize(.value, to: 410, in: VaultTableColumnLayout(columns: [.key, .value, .actions], available: 900))
+		fresh.sidebarWidth = 312
+		fresh.inspectorWidth = 344
+		fresh.sidebarChoice = false
+		fresh.setColumnWidths(widths, for: "project")
+
+		let relaunched = VaultLayoutPreferences(defaults: defaults)
+		#expect(relaunched.sidebarWidth == 312 && relaunched.inspectorWidth == 344)
+		#expect(relaunched.sidebarChoice == false)
+		#expect(relaunched.columnWidths(for: "project") == widths, "Every column, an environment named with a colon too")
+		relaunched.sidebarChoice = nil
+		#expect(VaultLayoutPreferences(defaults: defaults).sidebarChoice == nil, "Following the window's width again is saved too")
+
+		defaults.set(Double.nan, forKey: VaultLayoutPreferences.sidebarWidthKey)
+		defaults.set(-40.0, forKey: VaultLayoutPreferences.inspectorWidthKey)
+		defaults.set(Data("not json".utf8), forKey: VaultLayoutPreferences.columnWidthsPrefix + "project")
+		let damaged = VaultLayoutPreferences(defaults: defaults)
+		#expect(damaged.sidebarWidth == VaultMetrics.sidebar && damaged.inspectorWidth == VaultMetrics.inspector, "Unusable widths start over")
+		#expect(damaged.columnWidths(for: "project") == VaultProjectTableColumnWidths())
+
+		let unsaved = VaultLayoutPreferences()
+		unsaved.sidebarWidth = 300
+		#expect(unsaved.sidebarWidth == 300, "Without somewhere to save, it lasts as long as its store")
+	}
+
 	@Test("workspace dividers resize accessibly and retain inspector width when reopened")
 	func workspaceResizeAndReopen() async throws {
 		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
@@ -89,21 +177,21 @@ struct VaultPaneLayoutTests {
 		let sidebar = try #require(resizeViews(in: host).first)
 		#expect(sidebar.accessibilityLabel() == "Resize sidebar")
 		#expect(sidebar.accessibilityRole() == .splitter)
-		#expect(sidebar.accessibilityValue() as? String == "280 points")
+		#expect(sidebar.accessibilityValue() as? String == "260 points")
 		#expect(sidebar.accessibilityPerformIncrement())
-		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "300 points" }
-		#expect(sidebar.accessibilityValue() as? String == "300 points")
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "280 points" }
+		#expect(sidebar.accessibilityValue() as? String == "280 points")
 		sidebar.onDragChanged?(50)
-		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "350 points" }
-		#expect(sidebar.accessibilityValue() as? String == "350 points")
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "330 points" }
+		#expect(sidebar.accessibilityValue() as? String == "330 points")
 		sidebar.onDragChanged?(100)
-		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "400 points" }
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "380 points" }
 		sidebar.onDragEnded?(100)
-		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "400 points" }
-		#expect(sidebar.accessibilityValue() as? String == "400 points")
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "380 points" }
+		#expect(sidebar.accessibilityValue() as? String == "380 points")
 		sidebar.onDragEnded?(-100)
-		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "300 points" }
-		#expect(sidebar.accessibilityValue() as? String == "300 points")
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "280 points" }
+		#expect(sidebar.accessibilityValue() as? String == "280 points")
 		try clickInspectorToggle(in: window, contentRightEdge: 1400)
 		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
 		#expect(resizeViews(in: host).count == 2)
@@ -134,22 +222,27 @@ struct VaultPaneLayoutTests {
 		#expect(reopened.accessibilityValue() as? String == "320 points")
 
 		try recordWorkspace(host, named: "workspace-restored-panes")
+
+		// Too narrow for all three panes, the open inspector takes the sidebar's place,
+		// and the sidebar comes back at its width once there's room again.
 		window.setContentSize(NSSize(width: 1040, height: 800))
-		// Divider targets are centered on their hairlines; the content sits between the lines.
-		try await waitForLayout(host) {
-			let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
-			let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-			return abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01
-		}
-		let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
-		let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-		#expect(abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01)
+		let narrow = VaultPaneBudget(available: 1040, requestedSidebar: 280, requestedInspector: 320, showsInspector: true, showsSidebar: false)
+		#expect(narrow.content >= VaultMetrics.contentMinimum)
+		try await waitForLayout(host) { resizeViews(in: host).map { $0.accessibilityLabel() } == ["Resize inspector"] }
+		let narrowInspector = try #require(resizeViews(in: host).first)
+		// Divider targets are centered on their hairlines; the content runs from the window's edge to the inspector's line.
+		try await waitForLayout(host) { abs(host.convert(narrowInspector.bounds, from: narrowInspector).midX - narrow.inspectorDividerCenter) < 0.01 }
+		let inspectorFrame = host.convert(narrowInspector.bounds, from: narrowInspector)
+		#expect(abs(inspectorFrame.midX - narrow.inspectorDividerCenter) < 0.01)
 		#expect(inspectorFrame.maxX < host.bounds.width)
+		#expect(narrowInspector.accessibilityValue() as? String == "320 points")
 		try recordWorkspace(host, named: "workspace-minimum-width")
+
 		window.setContentSize(NSSize(width: 1400, height: 800))
-		try await waitForLayout(host) { reopened.accessibilityValue() as? String == "320 points" }
-		#expect(sidebar.accessibilityValue() as? String == "300 points")
-		#expect(reopened.accessibilityValue() as? String == "320 points")
+		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
+		let restored = resizeViews(in: host)
+		#expect(restored.first { $0.accessibilityLabel() == "Resize sidebar" }?.accessibilityValue() as? String == "280 points")
+		#expect(restored.first { $0.accessibilityLabel() == "Resize inspector" }?.accessibilityValue() as? String == "320 points")
 	}
 
 	@Test("pane hairlines sit flush against their panes and stay easy to grab")
@@ -241,8 +334,8 @@ struct VaultPaneLayoutTests {
 	/// inset and the 6 points between its buttons. This suite isn't a UI suite, so it
 	/// can't find the toggle by its name; the buttons' widths are measured as drawn.
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
-		let newKey = NSHostingView(rootView: VaultBarButton(systemImage: "plus", title: "New key", filled: true, height: 27) {}).fittingSize.width
-		let settings = NSHostingView(rootView: VaultOutlineButton(systemImage: "gearshape", title: "Settings") {}).fittingSize.width
+		let newKey = NSHostingView(rootView: VaultBarButton(systemImage: "plus", title: "New Key", filled: true, height: 27) {}).fittingSize.width
+		let settings = NSHostingView(rootView: VaultOutlineButton(systemImage: "gearshape", title: "Project Settings") {}).fittingSize.width
 		try NativeTestClick.send(to: window, at: NSPoint(x: contentRightEdge - 20 - newKey - 6 - settings - 6 - 13.5, y: 723.5))
 	}
 
@@ -256,16 +349,82 @@ struct VaultPaneLayoutTests {
 @Suite("Workspace table column layout")
 @MainActor
 struct VaultTableColumnLayoutTests {
-	@Test("initial columns fill wide viewports and scroll in narrow ones", arguments: [CGFloat(420), 1200])
+	@Test("while values are shown to be read, value columns keep a readable width and the key column its keys', and the table scrolls instead")
+	func readableValues() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production"), .environment("staging")]
+		let keyWidth: CGFloat = 286
+		let squeezed = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: keyWidth)
+		#expect(squeezed[.environment("default")] < VaultMetrics.environmentColumn, "Masked values share what's left")
+		let readable = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: keyWidth, valueMinimum: VaultMetrics.readableValueColumn)
+		for environment in ["default", "production", "staging"] {
+			#expect(readable[.environment(environment)] >= VaultMetrics.readableValueColumn)
+		}
+		#expect(readable[.key] >= keyWidth && readable[.key] < keyWidth + 2, "The key column keeps what its keys need, and the point rounding leaves")
+		#expect(readable.totalWidth > 709, "So the table is wider than the view, and scrolls")
+		let roomy = VaultTableColumnLayout(columns: columns, available: 1100, keyWidth: keyWidth, valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(abs(roomy.totalWidth - 1100) < 0.5, "With room, nothing scrolls")
+	}
+
+	@Test("the key column fits the longest key shown, up to a little past its default, and gives what it doesn't need to the values")
+	func keyColumnFitsKeys() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production")]
+		let short = VaultTableColumnLayout.keyWidth(for: ["PORT", "HOST"], publicKeys: [], marks: 3)
+		#expect(short < VaultMetrics.keyColumn)
+		let plain = VaultTableColumnLayout(columns: columns, available: 700)
+		let fitted = VaultTableColumnLayout(columns: columns, available: 700, keyWidth: short)
+		#expect(fitted[.key] == max(VaultTableColumnLayout.fittedKeyMinimum, short))
+		#expect(fitted[.environment("default")] > plain[.environment("default")])
+		#expect(abs(fitted.totalWidth - plain.totalWidth) < 0.5, "The same width, shared differently")
+
+		let long = VaultTableColumnLayout.keyWidth(for: ["PORT", String(repeating: "W", count: 60)], publicKeys: [], marks: 3)
+		#expect(VaultTableColumnLayout(columns: columns, available: 700, keyWidth: long)[.key] == VaultTableColumnLayout.fittedKeyMaximum,
+			"The longest key sets the width, up to its cap")
+		let publicURL = VaultTableColumnLayout.keyWidth(for: ["NEXT_PUBLIC_API_URL"], publicKeys: ["NEXT_PUBLIC_API_URL"], marks: 3)
+		#expect(publicURL <= VaultTableColumnLayout.fittedKeyMaximum, "A typical long public key fits whole with its marks")
+		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: ["PORT"], marks: 3)
+			> VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 3), "A public key's globe takes room")
+		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 1)
+			< VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 3), "One table keeps fewer mark slots")
+	}
+
+	@Test("initial columns fill wide viewports, give up their slack to fit narrow ones, values before keys, and scroll below that",
+		arguments: [CGFloat(380), 420, 500, 560, 1200])
 	func initialLayout(available: CGFloat) {
 		let matrix = VaultTableColumnLayout(columns: [.key, .environment("default"), .environment("production")], available: available)
-		#expect(matrix[.key] == VaultMetrics.keyColumn)
+		let matrixDefaults = VaultMetrics.keyColumn + 2 * VaultMetrics.environmentColumn
+		// Fitting stops at a key column wide enough to read; a person can drag it narrower.
+		let keyFloor = VaultTableColumnLayout.fittedKeyMinimum
+		#expect(keyFloor > VaultTableColumn.key.minimumWidth && keyFloor < VaultMetrics.keyColumn)
+		let matrixMinimums = keyFloor + 2 * VaultTableColumn.environment("default").minimumWidth
 		#expect(matrix[.environment("default")] == matrix[.environment("production")])
-		#expect(matrix.totalWidth == max(available, VaultMetrics.keyColumn + 2 * VaultMetrics.environmentColumn))
+		if available >= matrixMinimums {
+			#expect(abs(matrix.totalWidth - available) < 0.001)
+		} else {
+			// Too narrow for both: one shows whole, and the other waits past the edge.
+			#expect(matrix.boundaries.contains { $0.position == available })
+			#expect(matrix.hiddenColumns(at: 0).after == [.environment("production")])
+		}
+		// Keys keep their width until the value columns reach their minimums.
+		let environmentSlack = 2 * (VaultMetrics.environmentColumn - VaultTableColumn.environment("default").minimumWidth)
+		if available >= matrixDefaults - environmentSlack {
+			#expect(matrix[.key] == VaultMetrics.keyColumn)
+		} else if available >= matrixMinimums {
+			#expect(matrix[.key] < VaultMetrics.keyColumn && matrix[.key] >= keyFloor)
+			#expect(matrix[.environment("default")] == VaultTableColumn.environment("default").minimumWidth)
+		}
+		if available < matrixDefaults, available >= matrixMinimums {
+			#expect(matrix[.environment("default")] < VaultMetrics.environmentColumn)
+		}
 		let environment = VaultTableColumnLayout(columns: [.key, .value, .actions], available: available)
-		#expect(environment[.value] == VaultMetrics.environmentValueColumn)
+		let environmentMinimums = keyFloor + VaultTableColumn.value.minimumWidth + VaultMetrics.environmentActionsColumn
 		#expect(environment[.actions] == VaultMetrics.environmentActionsColumn)
-		#expect(environment.totalWidth == max(available, VaultMetrics.keyColumn + VaultMetrics.environmentValueColumn + VaultMetrics.environmentActionsColumn))
+		#expect(abs(environment.totalWidth - max(available, environmentMinimums)) < 0.001)
+		let environmentDefaults = VaultMetrics.keyColumn + VaultMetrics.environmentValueColumn + VaultMetrics.environmentActionsColumn
+		if available >= environmentDefaults {
+			// The value takes the spare width; the key keeps its own.
+			#expect(environment[.key] == VaultMetrics.keyColumn)
+			#expect(environment[.value] == VaultMetrics.environmentValueColumn + available - environmentDefaults)
+		}
 		for layout in [matrix, environment] {
 			var position: CGFloat = 0
 			for boundary in layout.boundaries {
@@ -274,6 +433,80 @@ struct VaultTableColumnLayoutTests {
 			}
 			#expect(position == layout.totalWidth)
 		}
+	}
+
+	@Test("columns that can't all fit show whole: as many as fit at a readable width share the view, and the rest wait past its edge")
+	func wholeColumns() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production"), .environment("staging")]
+		let readable = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: 276, valueMinimum: VaultMetrics.readableValueColumn)
+		let width = readable[.environment("default")]
+		#expect(width >= VaultMetrics.readableValueColumn)
+		#expect(readable[.environment("production")] == width && readable[.environment("staging")] == width)
+		#expect(readable[.key] >= 276, "The key column keeps what its keys need")
+		#expect(readable.boundaries.contains { $0.position == 709 }, "A column ends where the view does, so none is cut")
+		#expect(readable.hiddenColumns(at: 0).before.isEmpty)
+		#expect(readable.hiddenColumns(at: 0).after == [.environment("staging")])
+		for column in columns { #expect(readable[column] == readable[column].rounded(), "Whole points, so no edge lands between pixels") }
+
+		let masked = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: 276)
+		#expect(abs(masked.totalWidth - 709) < 0.5, "Masked values fit narrower, so nothing scrolls")
+		#expect(masked.hiddenColumns(at: 0).after.isEmpty)
+
+		let narrow = VaultTableColumnLayout(columns: columns, available: 480, keyWidth: 276, valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(narrow.boundaries.contains { $0.position == 480 }, "Short of one readable column, the one shown takes the room")
+		#expect(narrow.hiddenColumns(at: 0).after == [.environment("production"), .environment("staging")])
+
+		var widths = VaultTableColumnWidths()
+		widths.resize(.environment("default"), to: 300, in: readable)
+		let resized = VaultTableColumnLayout(columns: columns, available: 709, requested: widths.requested, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(resized[.environment("default")] == 300, "Widths a person chose stay as they are")
+	}
+
+	@Test("a column that ends where the view does, while others wait past it, draws no line there, so no empty strip shows")
+	func columnAtTheEdge() {
+		let environments = ["default", "production", "staging"].map(VaultTableColumn.environment)
+		let layout = VaultTableColumnLayout(columns: [.key] + environments, available: 718, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(layout.endsAtEdge(environments[1], offset: 0))
+		#expect(!layout.endsAtEdge(environments[0], offset: 0))
+		let next = layout.offset(showing: environments[2], from: 0)
+		#expect(layout.endsAtEdge(environments[2], offset: next) && !layout.endsAtEdge(environments[1], offset: next))
+		#expect(!layout.endsAtEdge(environments[1], offset: 40), "Partway, the line shows where the column ends")
+	}
+
+	@Test("the step control names the nearest column out of view where it fits, and counts them where it doesn't, saying what it shows to VoiceOver")
+	func stepControlContent() {
+		typealias Step = VaultColumnStepButton
+		#expect(Step.content(nearest: ".env.staging", count: 1, room: 200) == .named(".env.staging"))
+		#expect(Step.content(nearest: ".env.staging", count: 2, room: 70) == .counted(2))
+		#expect(Step.Content.counted(1).text == "1 more" && Step.Content.counted(2).text == "2 more")
+		#expect(Step.accessibilityLabel(.named(".env.staging"), nearest: ".env.staging") == "Show .env.staging")
+		#expect(Step.accessibilityLabel(.counted(2), nearest: ".env.staging") == "2 more: show .env.staging",
+			"Its name holds the words it shows")
+	}
+
+	@Test("stepping to a column out of view brings it whole into view from a column's edge, and back")
+	func steppingColumns() {
+		let environments = ["default", "production", "staging", "preview", "test"].map(VaultTableColumn.environment)
+		let layout = VaultTableColumnLayout(columns: [.key] + environments, available: 709, keyWidth: 276,
+			valueMinimum: VaultMetrics.readableValueColumn)
+		let width = layout[environments[0]]
+		#expect(layout.hiddenColumns(at: 0).after == Array(environments[2...]))
+
+		let next = layout.offset(showing: environments[2], from: 0)
+		#expect(next == width)
+		#expect(layout.hiddenColumns(at: next).before == [environments[0]])
+		#expect(layout.hiddenColumns(at: next).after == Array(environments[3...]))
+		#expect(layout.offset(showing: environments[2], from: 37) == width, "From a scroll that stopped partway, the step lands on an edge")
+		#expect(layout.hiddenColumns(at: 37).before == [environments[0]], "A column partly under the key column is out of view")
+		#expect(layout.hiddenColumns(at: 37).after == Array(environments[2...]), "As is one partly past the edge")
+
+		let last = layout.offset(showing: environments[4], from: next)
+		#expect(last == layout.maximumOffset)
+		#expect(layout.hiddenColumns(at: last).after.isEmpty)
+		#expect(layout.offset(showing: environments[2], from: last) == 2 * width, "Back to the column, at the view's start")
+		#expect(layout.offset(showing: environments[0], from: last) == 0)
 	}
 
 	@Test("resizing preserves neighboring widths and survives viewport changes", arguments: [false, true])

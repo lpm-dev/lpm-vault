@@ -10,6 +10,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 	let project: VaultProject
 	/// Opens a key in the side panel, such as the Secret key that blocks a prefix.
 	let onOpenKey: (String) -> Void
+	/// Opens the review that saves the draft to lpm.json; nil while there's nothing to review or it can't open.
+	var onReview: (() -> Void)?
 
 	@State private var showsFrameworks = false
 	/// lpm.json's prefix whose removal waits for confirmation, because keys rely on it.
@@ -31,17 +33,29 @@ struct VaultSchemaClientPrefixesPopover: View {
 		let removal = removing.flatMap { prefix in context.map { Prefixes.removing(prefix, in: $0) } }
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
-				Text("Client prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
-				(Text("Keys starting with these are public. ") + Text("lpm.json › envSchema.clientPrefixes").font(VaultTypography.tabular(11)))
+				Text("Client Prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
+				Text("Keys that start with one of these are public, so their values can ship in client code.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
+				Text("lpm.json › envSchema.clientPrefixes")
+					.font(VaultTypography.tabular(11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+					.padding(.top, 2)
 			}
 			.padding(.horizontal, 14)
 			.padding(.top, 14)
 			.padding(.bottom, 10)
 
 			frameworks
+			Text("CUSTOM PREFIXES")
+				.vaultSectionLabel()
+				.padding(.horizontal, 14)
+				.padding(.top, 6)
+				.padding(.bottom, 2)
+				.accessibilityAddTraits(.isHeader)
 			ForEach(imported, id: \.self) { prefix in
 				row(prefix, keys: counts[prefix], source: importedSources[prefix], removable: false, unavailable: availability.reason)
 			}
@@ -56,18 +70,20 @@ struct VaultSchemaClientPrefixesPopover: View {
 				VaultSchemaPrefixField(store: store, project: project, availability: availability, onOpenKey: onOpenKey)
 			}
 			VaultHairline()
-			HStack {
-				Text("\(Set(own).union(importedSources.keys).count) of \(Prefixes.maximum)")
+			HStack(spacing: 8) {
+				Text("\(Set(own).union(importedSources.keys).count) of \(Prefixes.maximum) custom prefixes")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
 				Spacer(minLength: 8)
-				Text("Changes join the draft")
+				if canEdit {
+					VaultBarButton(title: "Review & Save…", disabled: onReview == nil, height: 24) { onReview?() }
+						.help("Changes here join the Schema draft until you review and save them to lpm.json (⌘S)")
+				}
 			}
-			.font(.system(size: 11))
-			.foregroundStyle(VaultPalette.textTertiary)
 			.padding(.horizontal, 14)
-			.padding(.vertical, 10)
+			.padding(.vertical, 8)
 		}
 		.frame(width: 340)
-		.background(VaultPalette.content)
 		// A removal waiting for confirmation ends when its prefix goes some other way, such as an undo.
 		.onChange(of: own) { _, own in if let removing, !own.contains(removing) { self.removing = nil } }
 	}
@@ -81,14 +97,17 @@ struct VaultSchemaClientPrefixesPopover: View {
 			} label: {
 				HStack(spacing: 6) {
 					Image(systemName: showsFrameworks ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
-					Text("Framework prefixes — always public").font(.system(size: 11.5))
+					Text("Framework Prefixes, Always Public").font(.system(size: 11.5))
 					Spacer(minLength: 8)
-					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(.system(size: 11))
+					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(VaultTypography.tabular(11)).foregroundStyle(VaultPalette.textTertiary)
 				}
-				.foregroundStyle(VaultPalette.textTertiary)
+				.foregroundStyle(VaultPalette.textSecondary)
+				.padding(.horizontal, 4)
+				.frame(height: 24)
 				.contentShape(Rectangle())
 			}
-			.buttonStyle(.plain)
+			.buttonStyle(VaultPressStyle(cornerRadius: 5))
+			.padding(.horizontal, -4)
 			.accessibilityLabel(showsFrameworks ? "Hide framework prefixes" : "Show framework prefixes")
 			if showsFrameworks {
 				VaultFlowLayout(spacing: 5, lineSpacing: 5) {
@@ -98,7 +117,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 							.foregroundStyle(VaultPalette.textSecondary)
 							.padding(.horizontal, 6)
 							.frame(height: 20)
-							.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
+							.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, lineWidth: 1) }
 					}
 				}
 				.padding(.leading, 15)
@@ -129,10 +148,10 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.padding(.horizontal, 5)
-					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+					.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 					.help(removable
 						? "\(file), which lpm.json imports, lists it too, so it stays in effect if you remove it here"
-						: "Listed in \(file), which lpm.json imports, so it can't be removed here")
+						: "Listed in \(file), which lpm.json imports, so it can’t be removed here")
 					.accessibilityLabel(removable ? "Also listed in \(file)" : "Listed in \(file)")
 			}
 			if let keys {
@@ -141,17 +160,9 @@ struct VaultSchemaClientPrefixesPopover: View {
 			if !removable {
 				Image(systemName: "lock").font(.system(size: 9)).foregroundStyle(VaultPalette.textFaint).accessibilityHidden(true)
 			} else if let onRemove {
-				Button(action: onRemove) {
-					Image(systemName: "xmark")
-						.font(.system(size: 9, weight: .bold))
-						.foregroundStyle(VaultPalette.textFaint)
-						.frame(width: 20, height: 20)
-						.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-				.disabled(!canEdit || unavailable != nil)
-				.help(unavailable ?? "Remove \(shown)")
-				.accessibilityLabel("Remove \(shown)")
+				VaultRowIconButton(systemImage: "xmark", help: unavailable ?? "Remove \(shown)", label: "Remove \(shown)",
+					disabled: !canEdit || unavailable != nil, compact: true, action: onRemove)
+					.padding(.trailing, -4)
 			}
 		}
 		.padding(.horizontal, 14)
@@ -168,8 +179,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 			HStack(alignment: .top, spacing: 6) {
 				Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).padding(.top, 1)
 				Text(removal.keys.count == 1
-					? "1 public key uses it — it'll become private in the same change."
-					: "\(removal.keys.count) public keys use it — they'll become private in the same change.")
+					? "1 public key uses it — it’ll become private in the same change."
+					: "\(removal.keys.count) public keys use it — they’ll become private in the same change.")
 					.font(.system(size: 11.5))
 					.fixedSize(horizontal: false, vertical: true)
 			}
@@ -190,7 +201,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.padding(10)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.orangeTint))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
 		.padding(.horizontal, 10)
 		.padding(.vertical, 4)
 	}
@@ -203,7 +214,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		if overridden > 0 {
 			let them = overridden == 1 ? "it" : "them"
 			Text((overridden == 1 ? "1 of them is declared in an imported schema" : "\(overridden) of them are declared in imported schemas")
-				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "public" : "private"). Later changes to that rule in the imported schema won't apply to \(them).")
+				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "public" : "private"). Later changes to that rule in the imported schema won’t apply to \(them).")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -211,8 +222,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 		}
 		if restored > 0 {
 			Text(restored == 1
-				? "1 of them goes back to its imported rule: lpm.json's override only marked it."
-				: "\(restored) of them go back to their imported rules: lpm.json's overrides only marked them.")
+				? "1 of them goes back to its imported rule: lpm.json’s override only marked it."
+				: "\(restored) of them go back to their imported rules: lpm.json’s overrides only marked them.")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -229,7 +240,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.lineLimit(1)
 					.padding(.horizontal, 6)
 					.frame(height: 20)
-					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			}
 			if keys.count > shownKeys {
 				Text("and \(keys.count - shownKeys) more").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(height: 20)
@@ -269,7 +280,7 @@ private struct VaultSchemaPrefixField: View {
 	let availability: ProjectEnvSchemaClientPrefixes.Availability
 	let onOpenKey: (String) -> Void
 
-	@Environment(\.dismiss) private var dismiss
+	@Environment(\.vaultPopoverDismiss) private var dismiss
 	@State private var entry = ""
 	@FocusState private var entryFocused: Bool
 
@@ -280,7 +291,7 @@ private struct VaultSchemaPrefixField: View {
 		let change = prefix.isEmpty || issue != nil ? nil : context.map { Prefixes.adding(prefix, in: $0) }
 		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 6) {
-				TextField("NEW_PREFIX_", text: $entry)
+				TextField("Custom prefix", text: $entry, prompt: Text("e.g. PUBLIC_").foregroundStyle(VaultPalette.placeholder))
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12))
 					.autocorrectionDisabled()
@@ -288,12 +299,10 @@ private struct VaultSchemaPrefixField: View {
 					.onSubmit { if let change { add(prefix, shown: change) } }
 					.padding(.horizontal, 8)
 					.frame(height: 28)
-					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-					.overlay {
-						RoundedRectangle(cornerRadius: 7)
-							.stroke(issue != nil ? VaultPalette.red : (entryFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: issue != nil || entryFocused ? 1.5 : 1)
-					}
+					.vaultInputField(focused: entryFocused, invalid: issue != nil)
 					.accessibilityLabel("New client prefix")
+					// The popover opens to add a prefix, so typing starts here, once its window has the keyboard.
+					.task { entryFocused = true }
 				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }
 			}
 			if availability != .checking, let reason = availability.reason {
@@ -331,7 +340,7 @@ private struct VaultSchemaPrefixField: View {
 				ForEach(change.exposed, id: \.key) { exposure in
 					HStack(alignment: .top, spacing: 6) {
 						Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
-						Text("\(exposure.source) marks \(exposure.key.escapingDirectionControls) Secret, and lpm.json's override doesn't, so its value becomes public.")
+						Text("\(exposure.source) marks \(exposure.key.escapingDirectionControls) Secret, and lpm.json’s override doesn’t, so its value becomes public.")
 							.font(.system(size: 11, weight: .medium))
 							.fixedSize(horizontal: false, vertical: true)
 					}

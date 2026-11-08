@@ -315,7 +315,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("File value for ALPHA revealed visually"))
 			for key in ["ALPHA", "BETA", "GAMMA"] { try await host.click("Add \(key)") }
 			#expect(try await host.waitForText("+0 added · 3 skipped"))
-			#expect(try await host.waitUntil { element("Nothing to import, ⏎", in: host)?.isEnabled == false })
+			#expect(try await host.waitUntil { element("Nothing to import", in: host)?.isEnabled == false }, "Off, its ⏎ waits until it works")
 			try await host.click("Add BETA")
 			#expect(try await host.waitForText("+1 added · 2 skipped"))
 			try record(host, named: "new-file-review")
@@ -401,7 +401,7 @@ extension SheetInteractionTests {
 			let host = try await sheet(store)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Nothing to import"))
-			#expect(element("Nothing to import, ⏎", in: host)?.isEnabled == false)
+			#expect(element("Nothing to import", in: host)?.isEnabled == false)
 			try await host.settle()
 			#expect(try await !host.text().contains("Import complete"))
 			#expect(keychain.updateEnvironmentsCallCount == 0)
@@ -458,7 +458,7 @@ extension SheetInteractionTests {
 			#expect(try await second.waitForText("Undo import"))
 			otherKeychain.envStorage["project"]?.environments["default"]?["FROM_CLI"] = "1"
 			try await second.click("Undo import")
-			#expect(try await second.waitForText(".env changed after the import, so it can't be undone."))
+			#expect(try await second.waitForText(".env changed after the import, so it can’t be undone."))
 			#expect(otherKeychain.envStorage["project"]?.environments["default"]?["NEW"] == "added")
 		}
 

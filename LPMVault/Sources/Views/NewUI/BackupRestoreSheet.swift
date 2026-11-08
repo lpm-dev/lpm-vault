@@ -76,7 +76,7 @@ struct BackupRestoreSheet: View {
 		HStack(alignment: .top, spacing: 14) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(title)
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityAddTraits(.isHeader)
 				Text(subtitle)
@@ -117,7 +117,7 @@ struct BackupRestoreSheet: View {
 					}
 					.padding(14)
 					.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				} else {
 					VStack(spacing: 10) {
 						fileTile
@@ -131,7 +131,7 @@ struct BackupRestoreSheet: View {
 					.background(RoundedRectangle(cornerRadius: 10).fill(isDropTargeted ? VaultPalette.accentTint : VaultPalette.sidebar))
 					.overlay {
 						RoundedRectangle(cornerRadius: 10)
-							.stroke(isDropTargeted ? VaultPalette.accent : VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+							.strokeBorder(isDropTargeted ? VaultPalette.accent : VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
 					}
 				}
 				VStack(alignment: .leading, spacing: 8) {
@@ -310,7 +310,7 @@ struct BackupRestoreSheet: View {
 			}
 			VStack(spacing: 0) { content() }
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 	}
 
@@ -356,9 +356,9 @@ struct BackupRestoreSheet: View {
 						VaultBarButton(title: "Change…", height: 26) { pickFolder(for: project) }
 					} else if let suggested = suggestedFolders[project.id] {
 						VaultBarButton(title: "Use this folder", height: 26) { choices.folders[project.id] = suggested }
-						VaultBarButton(title: "Choose folder…", height: 26) { pickFolder(for: project) }
+						VaultBarButton(title: "Choose Folder…", height: 26) { pickFolder(for: project) }
 					} else {
-						VaultBarButton(title: "Choose folder…", height: 26) { pickFolder(for: project) }
+						VaultBarButton(title: "Choose Folder…", height: 26) { pickFolder(for: project) }
 					}
 				}
 			}
@@ -441,13 +441,7 @@ struct BackupRestoreSheet: View {
 				.font(VaultTypography.tabular(12))
 				.foregroundStyle(VaultPalette.textPrimary)
 			Spacer(minLength: 8)
-			Picker(label, selection: replaces) {
-				Text("Keep mine").tag(false)
-				Text("Replace").tag(true)
-			}
-			.pickerStyle(.segmented)
-			.labelsHidden()
-			.fixedSize()
+			VaultSegmentedPicker(title: label, options: [(false, "Keep mine"), (true, "Replace")], selection: replaces)
 		}
 	}
 
@@ -561,7 +555,7 @@ struct BackupRestoreSheet: View {
 						}
 					}
 					.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 					if phase == .finished {
 						if let result, result.destinations > 0 {
 							Text("\(result.destinations.counted("publish destination")) added. They publish once their platform’s login is connected.")

@@ -165,7 +165,7 @@ extension SheetInteractionTests {
 			try await host.click("Paste text", in: sheet)
 			try paste("A=1\nB=2", into: sheet)
 			try await host.click("New file", in: sheet)
-			#expect(try await host.waitForText("See its keys first, and leave out any you don't want", in: sheet))
+			#expect(try await host.waitForText("See its keys first, and leave out any you don’t want", in: sheet))
 			#expect(element("Review before applying", in: sheet)?.isOn == true)
 			#expect(try await host.waitUntil { element("Review 2 variables", in: sheet)?.isEnabled == false }, "A new file needs a name")
 			try host.typeText("production", placeholder: "staging", in: sheet)
@@ -220,7 +220,7 @@ extension SheetInteractionTests {
 			let editor = try pasteEditor(in: sheet)
 			editor.selectAll(nil)
 			try paste("GOOD=1\nnot an assignment\n", into: sheet)
-			#expect(try await host.waitForText("Line 2 isn't KEY=value, so it's left out.", in: sheet))
+			#expect(try await host.waitForText("Line 2 isn’t KEY=value, so it’s left out.", in: sheet))
 			#expect(try await host.waitForText("1 variable", in: sheet))
 			#expect(element("Review 1 variable", in: sheet)?.isEnabled == true)
 			try await host.click("Clear", in: sheet)
@@ -293,7 +293,7 @@ extension SheetInteractionTests {
 			NotificationCenter.default.post(name: .newSecret, object: nil)
 			#expect(try await host.waitUntil { host.window.attachedSheet != nil })
 			let addVariable = try #require(host.window.attachedSheet)
-			#expect(try await host.waitForText("Add variable", in: addVariable))
+			#expect(try await host.waitForText("New Key", in: addVariable))
 			NotificationCenter.default.post(name: .importVariables, object: nil)
 			try await host.settle()
 			#expect(try await !host.text(in: addVariable).contains("Import variables"))
@@ -429,7 +429,7 @@ private struct ImportWorkspace {
 
 	/// Clicks Import in the header and returns the sheet it opens.
 	func openImport(in host: SheetTestHost<ImportWorkspaceRoot>) async throws -> NSWindow {
-		try await host.click("Import variables into .env")
+		try await host.click("Import into .env…")
 		return try await sheet(of: host)
 	}
 

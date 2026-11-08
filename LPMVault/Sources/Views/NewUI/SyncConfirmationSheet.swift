@@ -7,8 +7,8 @@ enum SyncConfirmationAction: String {
 
 	var title: String {
 		switch self {
-		case .push: "Push to Cloud"
-		case .pull: "Pull from Cloud"
+		case .push: "Push to lpm.dev"
+		case .pull: "Pull from lpm.dev"
 		case .share: "Share with Organization"
 		}
 	}

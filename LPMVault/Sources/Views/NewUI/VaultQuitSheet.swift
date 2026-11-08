@@ -53,7 +53,7 @@ struct VaultQuitSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(title)
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityAddTraits(.isHeader)
 				Text(subtitle)
@@ -103,7 +103,7 @@ struct VaultQuitSheet: View {
 				return "Some edits changed elsewhere while they were being saved. Review them in the inspector, or quit to discard them."
 			}
 			guard failed.count == 1, let item = failed.first, case .failed(let reason) = item.state else {
-				return "Each row says why it couldn't be saved. Your edits are still in the inspector."
+				return "Each row says why it couldn’t be saved. Your edits are still in the inspector."
 			}
 			return "\(item.projectName) · \(reason). Your edit is still in the inspector."
 		}
@@ -122,13 +122,13 @@ struct VaultQuitSheet: View {
 		if edits > 0 {
 			let editText = edits == 1 ? "1 edit" : "\(edits) edits"
 			let projectText = projects == 1 ? "1 project" : "\(projects) projects"
-			parts.append("\(editText) in \(projectText) \(edits == 1 ? "hasn't" : "haven't") been saved to the Keychain")
+			parts.append("\(editText) in \(projectText) \(edits == 1 ? "hasn’t" : "haven’t") been saved to the Keychain")
 		}
 		if drafts > 0 {
-			parts.append(drafts == 1 ? "a schema draft hasn't been written to lpm.json" : "\(drafts) schema drafts haven't been written to lpm.json")
+			parts.append(drafts == 1 ? "a schema draft hasn’t been written to lpm.json" : "\(drafts) schema drafts haven’t been written to lpm.json")
 		}
 		if settings > 0 {
-			parts.append("project settings for \(settings == 1 ? "1 project" : "\(settings) projects") haven't been saved")
+			parts.append("project settings for \(settings == 1 ? "1 project" : "\(settings) projects") haven’t been saved")
 		}
 		if sheets > 0 {
 			parts.append(sheets == 1 ? "a sheet is still open" : "\(sheets) sheets are still open")
@@ -158,7 +158,7 @@ struct VaultQuitSheet: View {
 		}
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 		.clipShape(RoundedRectangle(cornerRadius: 10))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func row(_ item: VaultQuitCoordinator.Item) -> some View {
@@ -257,11 +257,11 @@ struct VaultQuitSheet: View {
 		let review = coordinator.needsReviewCount
 		switch coordinator.phase {
 		case .reviewing where review > 0:
-			return AnyView(calloutBox("Edits that can't be saved here stay as they are if you cancel; quitting discards them.",
+			return AnyView(calloutBox("Edits that can’t be saved here stay as they are if you cancel; quitting discards them.",
 				systemImage: "exclamationmark.triangle.fill", tint: VaultPalette.orangeTint, text: VaultPalette.orangeTintText))
 		case .failed:
 			let others = review > 0 ? " Edits that need a review are discarded too." : ""
-			return AnyView(calloutBox("Retry, or quit anyway to discard only what couldn't be saved.\(others)",
+			return AnyView(calloutBox("Retry, or quit anyway to discard only what couldn’t be saved.\(others)",
 				systemImage: "exclamationmark.circle.fill", tint: VaultPalette.redTint, text: VaultPalette.redText))
 		default:
 			return nil
@@ -304,8 +304,8 @@ struct VaultQuitSheet: View {
 	private var actions: some View {
 		switch coordinator.phase {
 		case .idle, .reviewing:
-			VaultBarButton(title: "Discard all", height: 28) { coordinator.discardAndQuit() }
-				.help("Discard all (⌘⌫)")
+			VaultBarButton(title: "Discard All", height: 28) { coordinator.discardAndQuit() }
+				.help("Discard All (⌘⌫)")
 			VaultBarButton(title: "Cancel", height: 28) { coordinator.cancel() }
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(title: "Save and quit", filled: true, height: 28) { coordinator.saveAndQuit() }

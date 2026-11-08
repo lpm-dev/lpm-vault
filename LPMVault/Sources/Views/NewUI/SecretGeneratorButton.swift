@@ -23,17 +23,19 @@ struct SecretGeneratorButton: View {
 					.foregroundStyle(VaultPalette.accentForeground)
 					.fixedSize()
 			} else if compact {
-				Image(systemName: "sparkles")
-					.font(.system(size: 11, weight: .semibold))
-					.foregroundStyle(hovering || showsGenerator ? VaultPalette.accentDeep : VaultPalette.textTertiary)
-					.frame(width: 26, height: 26)
-					.background(RoundedRectangle(cornerRadius: 6).fill(hovering || showsGenerator ? VaultPalette.accentTint : .clear))
+				let active = (hovering || showsGenerator) && !disabled
+				Image(systemName: "wand.and.stars")
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(active ? VaultPalette.textPrimary : VaultPalette.textTertiary)
+					.frame(width: 28, height: 28)
+					.background(RoundedRectangle(cornerRadius: 6).fill(active ? VaultPalette.controlHover : .clear))
+					.vaultHoverAnimation(active)
 			} else {
 				HStack(spacing: 5) {
-					Image(systemName: "sparkles")
-						.font(.system(size: 11, weight: .semibold))
+					Image(systemName: "wand.and.stars")
+						.font(.system(size: 11, weight: .medium))
 					Text("Generate")
-						.font(.system(size: 12, weight: .semibold))
+						.font(.system(size: 12, weight: .medium))
 					Image(systemName: "chevron.down")
 						.font(.system(size: 8, weight: .bold))
 				}
@@ -44,14 +46,15 @@ struct SecretGeneratorButton: View {
 				.fixedSize()
 			}
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.disabled(disabled)
 		.opacity((compact || linkTitle != nil) && disabled ? 0.45 : 1)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
+		// Only the link form points; the icon and labeled forms are buttons.
+		.vaultPointingHand(enabled: linkTitle != nil && !disabled)
 		.help(label)
 		.accessibilityLabel(label)
-		.popover(isPresented: $showsGenerator, arrowEdge: .trailing) {
+		.vaultPopover(isPresented: $showsGenerator, arrowEdge: .trailing) {
 			SecretGeneratorPanel(kind: $kind, length: $length) {
 				guard !disabled else { return }
 				onGenerate(SecretValueGenerator.generate(kind, length: length))
@@ -69,6 +72,8 @@ struct SecretGeneratorPanel: View {
 	@Binding var kind: SecretValueKind
 	@Binding var length: Int
 	let onGenerate: () -> Void
+
+	@State private var choosingLength = false
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
@@ -140,20 +145,20 @@ struct SecretGeneratorPanel: View {
 					.accessibilityLabel("\(preset) \(kind.lengthUnit?.label ?? "")")
 				}
 				segmentDivider
-				Menu {
-					ForEach(SecretValueGenerator.additionalLengths, id: \.self) { option in
-						Button("\(option)") { select(length: option) }
-					}
-				} label: {
+				Button { choosingLength.toggle() } label: {
 					segmentLabel(customLengthLabel, selected: !SecretValueGenerator.presetLengths.contains(length))
 				}
-				.menuStyle(.button)
 				.buttonStyle(.plain)
-				.menuIndicator(.hidden)
 				.fixedSize()
 				.accessibilityLabel("Other length")
+				.accessibilityHint("Shows a menu")
+				.vaultMenu(isPresented: $choosingLength, rows: SecretValueGenerator.additionalLengths.map {
+					VaultMenuList<Int>.Row(id: $0, title: "\($0)", detail: kind.lengthUnit?.label, isChecked: $0 == length)
+				}, width: 160, label: "Other length") { option in
+					select(length: option)
+				}
 			}
-			.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.clipShape(RoundedRectangle(cornerRadius: 6))
 			Text(kind.lengthUnit?.label ?? "bytes")
 				.font(.system(size: 10.5))
@@ -176,10 +181,10 @@ struct SecretGeneratorPanel: View {
 	private func segmentLabel(_ text: String, selected: Bool) -> some View {
 		Text(text)
 			.font(VaultTypography.tabular(11, selected ? .bold : .regular))
-			.foregroundStyle(selected ? .white : VaultPalette.masked)
+			.foregroundStyle(selected ? VaultPalette.selectedText : VaultPalette.masked)
 			.padding(.horizontal, 8)
 			.frame(height: 20)
-			.background(selected ? VaultPalette.strongFill : .clear)
+			.background(selected ? VaultPalette.selectedFill : .clear)
 			.contentShape(Rectangle())
 	}
 
@@ -203,12 +208,12 @@ private struct GeneratorKindRow: View {
 			HStack(spacing: 10) {
 				Text(tag)
 					.font(VaultTypography.tabular(10, .bold))
-					.foregroundStyle(selected ? VaultPalette.accentDeep : VaultPalette.masked)
+					.foregroundStyle(selected ? VaultPalette.textSecondary : VaultPalette.masked)
 					.frame(width: 30)
 				VStack(alignment: .leading, spacing: 1) {
 					Text(title)
 						.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-						.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textPrimary)
+						.foregroundStyle(VaultPalette.textPrimary)
 					Text(subtitle)
 						.font(.system(size: 10.5))
 						.foregroundStyle(VaultPalette.textFaint)
@@ -218,7 +223,7 @@ private struct GeneratorKindRow: View {
 				if selected {
 					Image(systemName: "checkmark")
 						.font(.system(size: 10, weight: .bold))
-						.foregroundStyle(VaultPalette.accentForeground)
+						.foregroundStyle(VaultPalette.textPrimary)
 				}
 			}
 			.padding(.horizontal, 8)
@@ -226,7 +231,7 @@ private struct GeneratorKindRow: View {
 			.contentShape(Rectangle())
 			.background(
 				RoundedRectangle(cornerRadius: 7)
-					.fill(selected ? VaultPalette.accentTint : (hovering ? VaultPalette.neutralTint : .clear))
+					.fill(selected ? VaultPalette.selectedFill : (hovering ? VaultPalette.neutralTint : .clear))
 			)
 		}
 		.buttonStyle(.plain)

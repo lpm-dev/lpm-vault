@@ -23,7 +23,7 @@ enum VaultWorkspaceMode: Equatable {
 }
 
 enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
-  case all = "All keys"
+  case all = "All"
   case drift = "Drift"
   case missing = "Missing"
   /// Keys whose values fail their lpm.json rules.
@@ -34,7 +34,7 @@ enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
 
 enum VaultEnvironmentViewMode: String, CaseIterable, Identifiable {
   case table = "Table"
-  case raw = "Raw text"
+  case raw = "Raw Text"
 
   var id: String { rawValue }
 }
@@ -81,26 +81,77 @@ struct VaultTableColumnLayout {
   let widths: [VaultTableColumn: CGFloat]
   let boundaries: [Boundary]
   let totalWidth: CGFloat
+  /// The width of the view the table is laid out in.
+  let available: CGFloat
 
-  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:]) {
-    let defaultTotal = columns.reduce(CGFloat.zero) { $0 + $1.defaultWidth }
+  /// `keyWidth` is the width the keys shown need, which the key column takes
+  /// instead of its default when narrower, so the value columns get the rest.
+  /// `valueMinimum`, while values are shown to be read, keeps each value
+  /// column at least that wide and the key column at what its keys need:
+  /// the table scrolls, with the key column pinned, rather than cut values
+  /// short where they're compared. When the environment columns can't all
+  /// fit, as many as fit share the view whole and the rest wait past its
+  /// edge, so none shows cut off until the table is scrolled.
+  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil,
+    valueMinimum: CGFloat? = nil) {
+    self.available = available
+    let fittedKey = keyWidth.map { min(Self.fittedKeyMaximum, max(Self.fittedKeyMinimum, $0)) }
+    func defaultWidth(_ column: VaultTableColumn) -> CGFloat {
+      column == .key ? (fittedKey ?? column.defaultWidth) : column.defaultWidth
+    }
+    func minimum(_ column: VaultTableColumn) -> CGFloat {
+      switch column {
+      case .environment, .value: max(column.minimumWidth, valueMinimum ?? 0)
+      case .key: valueMinimum == nil ? Self.fittedKeyMinimum : defaultWidth(column)
+      case .actions: column.minimumWidth
+      }
+    }
+    let defaultTotal = columns.reduce(CGFloat.zero) { $0 + defaultWidth($1) }
     let environmentCount = columns.reduce(0) { count, column in
       if case .environment = column { count + 1 } else { count }
     }
     let extra = requested.isEmpty ? max(0, available - defaultTotal) : 0
+    // A narrow viewport takes width from the value columns first, in proportion
+    // to how far each can shrink, and from the key column only once they're at
+    // their minimums, so keys stay readable and every column stays in view
+    // before any of them scrolls.
+    let deficit = requested.isEmpty ? max(0, defaultTotal - available) : 0
+    func slack(_ column: VaultTableColumn) -> CGFloat {
+      max(0, defaultWidth(column) - minimum(column))
+    }
+    let valueSlack = columns.filter { $0 != .key }.reduce(CGFloat.zero) { $0 + slack($1) }
+    let valueShrink = valueSlack > 0 ? min(1, deficit / valueSlack) : 0
+    let keyShrink = columns.contains(.key) && slack(.key) > 0 ? min(1, max(0, deficit - valueSlack) / slack(.key)) : 0
     var widths: [VaultTableColumn: CGFloat] = [:]
-    var boundaries: [Boundary] = []
-    var position: CGFloat = 0
     for column in columns {
       let share: CGFloat
       if case .environment = column {
         share = extra / CGFloat(environmentCount)
       } else {
-        share = environmentCount == 0 && column == .key ? extra : 0
+        share = environmentCount == 0 && column == .value ? extra : 0
       }
-      let width = max(column.minimumWidth, requested[column] ?? (column.defaultWidth + share))
-      widths[column] = width
-      position += width
+      let fitted = defaultWidth(column) - slack(column) * (column == .key ? keyShrink : valueShrink)
+      widths[column] = max(column.minimumWidth, requested[column] ?? max(minimum(column), fitted + share))
+    }
+    let fittedTotal = widths.values.reduce(CGFloat.zero, +)
+    if requested.isEmpty, environmentCount > 0, fittedTotal > available + 0.5 {
+      let environment = VaultTableColumn.environment("")
+      let fixed = columns.reduce(CGFloat.zero) { total, column in
+        if case .environment = column { total } else { total + (widths[column] ?? 0) }
+      }
+      let room = available - fixed
+      let shown = max(1, min(environmentCount, Int((room / minimum(environment)).rounded(.down))))
+      let width = max(environment.minimumWidth, (room / CGFloat(shown)).rounded(.down))
+      for column in columns {
+        if case .environment = column { widths[column] = width }
+      }
+      // Whole points for every column; what rounding leaves goes to the key, so the last column shown ends at the view's edge.
+      if let key = widths[.key] { widths[.key] = key + max(0, room - width * CGFloat(shown)) }
+    }
+    var boundaries: [Boundary] = []
+    var position: CGFloat = 0
+    for column in columns {
+      position += widths[column] ?? 0
       boundaries.append(Boundary(id: column, position: position))
     }
     self.widths = widths
@@ -109,9 +160,86 @@ struct VaultTableColumnLayout {
   }
 
   subscript(column: VaultTableColumn) -> CGFloat { widths[column] ?? column.defaultWidth }
+
+  /// The farthest the table scrolls sideways.
+  var maximumOffset: CGFloat { max(0, totalWidth - available) }
+
+  /// Whether `column` ends at the view's trailing edge while the table is
+  /// scrolled `offset` sideways, where the line after it would sit against the pane's.
+  func endsAtEdge(_ column: VaultTableColumn, offset: CGFloat) -> Bool {
+    guard let boundary = boundaries.first(where: { $0.id == column }) else { return false }
+    return abs(boundary.position - (offset + available)) < 0.5
+  }
+
+  /// The columns past the pinned key column, in order, that aren't whole in
+  /// view while the table is scrolled `offset` sideways: those under the key
+  /// column or before it, and those past the view's edge.
+  func hiddenColumns(at offset: CGFloat) -> (before: [VaultTableColumn], after: [VaultTableColumn]) {
+    let start = offset + self[.key]
+    let end = offset + available
+    var before: [VaultTableColumn] = []
+    var after: [VaultTableColumn] = []
+    for boundary in boundaries where boundary.id != .key {
+      if boundary.position - self[boundary.id] < start - 0.5 {
+        before.append(boundary.id)
+      } else if boundary.position > end + 0.5 {
+        after.append(boundary.id)
+      }
+    }
+    return (before, after)
+  }
+
+  /// How far to scroll the table sideways, from `offset`, to bring `column`
+  /// whole into view: one before the view starts at the key column's edge;
+  /// one past it ends in view, with the first column shown starting whole.
+  func offset(showing column: VaultTableColumn, from offset: CGFloat) -> CGFloat {
+    guard let boundary = boundaries.first(where: { $0.id == column }) else { return offset }
+    let key = self[.key]
+    let columnStart = boundary.position - self[column]
+    if columnStart < offset + key - 0.5 { return min(maximumOffset, max(0, columnStart - key)) }
+    let needed = boundary.position - available
+    let starts = boundaries.lazy.filter { $0.id != .key }.map { $0.position - self[$0.id] - key }
+    let aligned = starts.first { $0 >= needed - 0.5 } ?? needed
+    return min(maximumOffset, max(0, min(aligned, columnStart - key)))
+  }
+
+  /// The narrowest a fitted key column gets, wide enough for a typical key and
+  /// its status glyphs; the table scrolls rather than cut keys shorter. A
+  /// person can still drag it down to the key column's minimum.
+  static let fittedKeyMinimum: CGFloat = 200
+  /// A little past the default, so a key as long as NEXT_PUBLIC_API_URL keeps its whole name beside its marks.
+  static let fittedKeyMaximum: CGFloat = 300
+
+  /// The width a key cell needs for the longest of `keys`: its name in the
+  /// selected row's weight, a public key's globe, the status marks and the
+  /// cell's insets. `marks` is how many mark slots the table keeps.
+  @MainActor
+  static func keyWidth(for keys: some Sequence<String>, publicKeys: Set<String>, marks: Int) -> CGFloat {
+    var widest: CGFloat = 0
+    for key in keys {
+      widest = max(widest, VaultKeyNameWidths.width(of: key) + (publicKeys.contains(key) ? 22 : 0))
+    }
+    let markSlots = marks > 0 ? CGFloat(marks) * 14 + CGFloat(marks - 1) * 4 + 8 : 0
+    // The cell's 20-point leading and 14-point trailing insets, and room to breathe before the marks.
+    return ceil(20 + widest + 12 + markSlots + 14)
+  }
 }
 
-struct VaultTableColumnWidths {
+/// Key names' widths in the table's key font, measured once each.
+@MainActor
+enum VaultKeyNameWidths {
+  private static var widths: [String: CGFloat] = [:]
+  private static let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+
+  static func width(of key: String) -> CGFloat {
+    if let width = widths[key] { return width }
+    let width = ceil((key as NSString).size(withAttributes: [.font: font]).width)
+    widths[key] = width
+    return width
+  }
+}
+
+struct VaultTableColumnWidths: Equatable {
   private(set) var requested: [VaultTableColumn: CGFloat] = [:]
 
   mutating func resize(_ column: VaultTableColumn, to width: CGFloat, in layout: VaultTableColumnLayout) {
@@ -120,9 +248,50 @@ struct VaultTableColumnWidths {
   }
 }
 
-struct VaultProjectTableColumnWidths {
+/// Saved as each column's name and width, such as `{"key": 300, "env:production": 240}`.
+extension VaultTableColumnWidths: Codable {
+  init(from decoder: any Decoder) throws {
+    let saved = try decoder.singleValueContainer().decode([String: Double].self)
+    for (name, width) in saved {
+      guard let column = VaultTableColumn(savedName: name), width.isFinite, width > 0 else { continue }
+      requested[column] = max(column.minimumWidth, CGFloat(width))
+    }
+  }
+
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(Dictionary(uniqueKeysWithValues: requested.map { ($0.key.savedName, Double($0.value)) }))
+  }
+}
+
+struct VaultProjectTableColumnWidths: Equatable, Codable {
   var matrix = VaultTableColumnWidths()
   var environment = VaultTableColumnWidths()
+}
+
+extension VaultTableColumn {
+  private static let environmentPrefix = "env:"
+
+  /// The name a saved width goes by.
+  var savedName: String {
+    switch self {
+    case .key: "key"
+    case .value: "value"
+    case .actions: "actions"
+    case .environment(let name): Self.environmentPrefix + name
+    }
+  }
+
+  init?(savedName: String) {
+    switch savedName {
+    case "key": self = .key
+    case "value": self = .value
+    case "actions": self = .actions
+    default:
+      guard savedName.hasPrefix(Self.environmentPrefix) else { return nil }
+      self = .environment(String(savedName.dropFirst(Self.environmentPrefix.count)))
+    }
+  }
 }
 
 /// The order the workspace lists keys in, kept across launches.
@@ -306,6 +475,16 @@ enum VaultCopyFormat: CaseIterable, Identifiable, Sendable {
     case .dotenv: "Copy as KEY=value"
     case .export: "Copy as export KEY=value"
     case .reference: "Copy process.env.KEY"
+    }
+  }
+
+  /// What a menu lists the format as, under a "Copy as" heading.
+  var shortTitle: String {
+    switch self {
+    case .value: "Value"
+    case .dotenv: "KEY=value"
+    case .export: "export KEY=value"
+    case .reference: "process.env.KEY"
     }
   }
 
@@ -697,6 +876,11 @@ struct VaultContentDerivation: Equatable {
   let allKeys: [String]
   let filteredKeys: [String]
   let environmentKeys: [String]
+  /// How many keys the environment's table lists before a search narrows
+  /// it: its stored keys, and those lpm.json declares that it doesn't set.
+  let environmentKeyCount: Int
+  /// How many of those it doesn't set.
+  let environmentUnsetCount: Int
   /// Every visible value that can be masked is revealed.
   let allVisibleRevealed: Bool
   /// Some visible value can be masked; public values always show.
@@ -754,10 +938,14 @@ struct VaultContentDerivation: Equatable {
         filteredKeys = matchingKeys
       }
       environmentKeys = []
+      environmentKeyCount = 0
+      environmentUnsetCount = 0
     case .environment:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       let extra = unstoredKeys.filter { project.value(for: $0, in: selectedEnvironment) == nil }
+      environmentUnsetCount = extra.count
+      environmentKeyCount = project.secretCount(for: selectedEnvironment) + extra.count
       if extra.isEmpty {
         let ascendingKeys = snapshot.allSecretKeys
         let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment, sortOrder)
@@ -790,6 +978,8 @@ struct VaultContentDerivation: Equatable {
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []
+      environmentKeyCount = 0
+      environmentUnsetCount = 0
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
     hasMaskableValues = visibleKeys.contains { !publicKeys.contains($0) }

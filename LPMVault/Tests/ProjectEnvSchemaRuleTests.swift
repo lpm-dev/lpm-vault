@@ -104,25 +104,25 @@ struct ProjectEnvSchemaRuleTests {
 	func availability() throws {
 		let secret = try rule(#"{"secret":true,"format":"url"}"#)
 		let key = Rule.Context(key: "KEY")
-		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "not for secret keys"))
-		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "needs integer or port format"))
+		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "Not for secret keys"))
+		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "Needs Integer or Port format"))
 		#expect(secret.availability(of: .protocols, in: key).isAvailable)
-		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "not for public keys"))
+		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "Not for public keys"))
 		#expect(Rule().availability(of: .secret, in: .init(key: "MODE", comparedBy: ["X"])) == .init(isAvailable: false, hint: "X compares its value"))
-		#expect(Rule().availability(of: .client, in: key) == .init(isAvailable: false, hint: "needs a public prefix"))
-		#expect(Rule().availability(of: .requiredWhen, in: .init(key: "KEY", declaredKeys: ["KEY"])) == .init(isAvailable: false, hint: "no other keys"))
+		#expect(Rule().availability(of: .client, in: key) == .init(isAvailable: false, hint: "Needs a public prefix"))
+		#expect(Rule().availability(of: .requiredWhen, in: .init(key: "KEY", declaredKeys: ["KEY"])) == .init(isAvailable: false, hint: "No other keys"))
 	}
 
 	@Test("conflicts the LPM CLI rejects block their row and offer fixes")
 	func conflicts() throws {
 		let conflicted = try rule(#"{"secret":true,"default":"x","enum":["a"],"ci":"variable","min":1,"protocols":["https"],"requiredWhen":{"variable":"TOKEN","equals":"on"}}"#)
 		let found = conflicted.conflicts(in: .init(key: "API_KEY", secretKeys: ["TOKEN"]))
-		#expect(found[.defaultValue] == .init(kind: .blocking, message: "Secret keys can't have a default.", fixes: [.turnOffSecret, .remove(.defaultValue)]))
+		#expect(found[.defaultValue] == .init(kind: .blocking, message: "Secret keys can’t have a default.", fixes: [.turnOffSecret, .remove(.defaultValue)]))
 		#expect(found[.allowedValues]?.fixes == [.turnOffSecret, .remove(.allowedValues)])
 		#expect(found[.ci]?.fixes == [.setCIStorage(.secret)])
 		#expect(found[.bounds]?.fixes == [.setFormat(.integer), .remove(.bounds)])
 		#expect(found[.protocols]?.fixes == [.setFormat(.url), .remove(.protocols)])
-		#expect(found[.requiredWhen] == .init(kind: .blocking, message: "TOKEN is secret, so its value can't be compared.", fixes: [.usePresence, .remove(.requiredWhen)]))
+		#expect(found[.requiredWhen] == .init(kind: .blocking, message: "TOKEN is secret, so its value can’t be compared.", fixes: [.usePresence, .remove(.requiredWhen)]))
 
 		var fixed = conflicted
 		fixed.apply(.turnOffSecret)
@@ -134,27 +134,27 @@ struct ProjectEnvSchemaRuleTests {
 	@Test("a key can't be secret while another key compares its value")
 	func secretComparedByAnotherKey() throws {
 		let found = try rule(#"{"secret":true}"#).conflicts(in: .init(key: "MODE", comparedBy: ["X"]))
-		#expect(found[.secret] == .init(kind: .blocking, message: "X compares this key's value in Required when, so it can't be secret.", fixes: [.turnOffSecret]))
+		#expect(found[.secret] == .init(kind: .blocking, message: "X compares this key’s value in Required when, so it can’t be secret.", fixes: [.turnOffSecret]))
 	}
 
 	@Test("ranges, overlapping scoped defaults, and rules Required makes pointless are named", arguments: [
-		(#"{"format":"integer","min":5,"max":1}"#, Rule.Field.bounds, "Min can't be more than max."),
+		(#"{"format":"integer","min":5,"max":1}"#, Rule.Field.bounds, "Min can’t be more than max."),
 		(#"{"format":"port","max":"1.5"}"#, .bounds, "Use a whole number."),
 		(#"{"minLength":"-1"}"#, .length, "Use a whole number of characters."),
-		(#"{"minLength":9,"maxLength":3}"#, .length, "The shortest length can't be more than the longest."),
+		(#"{"minLength":9,"maxLength":3}"#, .length, "The shortest length can’t be more than the longest."),
 		(#"{"format":"url","protocols":[]}"#, .protocols, "Add at least one URL scheme."),
 		(#"{"enum":[]}"#, .allowedValues, "Add at least one allowed value."),
-		(#"{"empty":"reject","default":""}"#, .defaultValue, "An empty default can't be used while empty values are rejected."),
-		(#"{"empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#, .defaultsIn, "An empty scoped default can't be used while empty values are rejected."),
-		(#"{"required":true,"default":""}"#, .defaultValue, "An empty default can't satisfy Required."),
+		(#"{"empty":"reject","default":""}"#, .defaultValue, "An empty default can’t be used while empty values are rejected."),
+		(#"{"empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#, .defaultsIn, "An empty scoped default can’t be used while empty values are rejected."),
+		(#"{"required":true,"default":""}"#, .defaultValue, "An empty default can’t satisfy Required."),
 		(#"{"format":"port","max":"99999999999999999999"}"#, .bounds, "Use a whole number from -9223372036854775808 to 9223372036854775807."),
 		(#"{"format":"port","min":70000}"#, .bounds, "These bounds leave no valid port, which runs from 1 to 65535."),
 		(#"{"maxLength":"+5"}"#, .length, "Use a whole number of characters."),
-		(#"{"format":"url","protocols":["https:"]}"#, .protocols, "“https:” isn't a URL scheme. Use lowercase letters, digits, “+”, “.” and “-”, starting with a letter, without a colon."),
+		(#"{"format":"url","protocols":["https:"]}"#, .protocols, "“https:” isn’t a URL scheme. Use lowercase letters, digits, “+”, “.” and “-”, starting with a letter, without a colon."),
 		(#"{"format":"url","protocols":["https","https"]}"#, .protocols, "A URL scheme is listed twice."),
-		(#"{"requiredIn":[{"service":["api gateway"]}]}"#, .requiredIn, "“api gateway” isn't a valid name. Use letters, digits, “.”, “_” and “-”, up to 64 characters."),
+		(#"{"requiredIn":[{"service":["api gateway"]}]}"#, .requiredIn, "“api gateway” isn’t a valid name. Use letters, digits, “.”, “_” and “-”, up to 64 characters."),
 		(#"{"requiredIn":[{"environment":["a","b"]},{"environment":["b","a"],"stage":["development","build","runtime","ci","test"]}]}"#, .requiredIn, "Two scopes are the same."),
-		(#"{"requiredWhen":{"variable":"GONE","present":true}}"#, .requiredWhen, "GONE isn't declared."),
+		(#"{"requiredWhen":{"variable":"GONE","present":true}}"#, .requiredWhen, "GONE isn’t declared."),
 		(#"{"defaultsIn":[{"when":{"environment":["a"]},"value":"1"},{"when":{"stage":["build"]},"value":"2"}]}"#, .defaultsIn, "Scoped defaults overlap, so more than one could apply. Narrow them."),
 		(#"{"requiredWhen":{"variable":"KEY","present":true}}"#, .requiredWhen, "No effect: it depends on the key itself."),
 	])

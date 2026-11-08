@@ -39,7 +39,7 @@ struct VaultHistorySource: Sendable, Equatable {
 	private static func newId() -> String {
 		var bytes = [UInt8](repeating: 0, count: 16)
 		let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-		precondition(status == errSecSuccess, "The system's random source failed")
+		precondition(status == errSecSuccess, "The system’s random source failed")
 		return bytes.map { String(format: "%02x", $0) }.joined()
 	}
 }
@@ -138,16 +138,16 @@ enum HistoryRecorder {
 		case "off":
 			return .off
 		case "removing", "unsupported":
-			return .notRecorded(reason: "newerVersion", message: "A newer LPM CLI or LPM Vault keeps this project's history.")
+			return .notRecorded(reason: "newerVersion", message: "A newer LPM CLI or LPM Vault keeps this project’s history.")
 		case "both":
-			return .notRecorded(reason: "damaged", message: "This project's history is damaged.")
+			return .notRecorded(reason: "damaged", message: "This project’s history is damaged.")
 		case "default", "on":
 			break
 		default:
-			return .notRecorded(reason: "failed", message: "The LPM engine read this project's history as \(state).")
+			return .notRecorded(reason: "failed", message: "The LPM engine read this project’s history as \(state).")
 		}
 		if let unreadableBefore {
-			return .notRecorded(reason: "failed", message: "The values it replaced couldn't be read: \(unreadableBefore)")
+			return .notRecorded(reason: "failed", message: "The values it replaced couldn’t be read: \(unreadableBefore)")
 		}
 		guard let before else { return .nothing }
 		let change = HistoryEngine.Change(
@@ -194,7 +194,7 @@ enum HistoryRecorder {
 			return .notRecorded(reason: "limit", message: "This Mac holds too many LPM records to start history for another project.")
 		}
 		guard let approval = try storage.historyApproval(vaultId: vaultId) else {
-			return .notRecorded(reason: "unavailable", message: "The values' approval couldn't be confirmed.")
+			return .notRecorded(reason: "unavailable", message: "The values’ approval couldn’t be confirmed.")
 		}
 		let plan = try HistoryEngine.record(
 			vaultId: vaultId, change: change, before: before, after: after,
@@ -223,7 +223,7 @@ enum HistoryRecorder {
 		after: SecretBytes
 	) throws -> VaultHistoryOutcome {
 		guard let marker else {
-			return .notRecorded(reason: "damaged", message: "This project's history has no marker.")
+			return .notRecorded(reason: "damaged", message: "This project’s history has no marker.")
 		}
 		var opened = try open(storage, vaultId: vaultId, marker: marker)
 		var growth = HistoryEngine.Growth.unasked
@@ -243,7 +243,7 @@ enum HistoryRecorder {
 				return .recorded(entry: change.id, gap: false, crowded: nil)
 			case .needsPrevious(let part):
 				guard let bytes = try storage.historyRecord(account("history", vaultId, part: part)) else {
-					return .notRecorded(reason: "damaged", message: "A part of this project's history is missing.")
+					return .notRecorded(reason: "damaged", message: "A part of this project’s history is missing.")
 				}
 				previous = secret(bytes)
 			case .needsGrowthAdmission:
@@ -271,7 +271,7 @@ enum HistoryRecorder {
 				return .notRecorded(reason: reason, message: message)
 			}
 		}
-		return .notRecorded(reason: "failed", message: "Recording this change didn't settle.")
+		return .notRecorded(reason: "failed", message: "Recording this change didn’t settle.")
 	}
 
 	/// What admission allows for an operation in `vaultId`, after trimming
@@ -426,7 +426,7 @@ enum HistoryRecorder {
 	}
 
 	private static let damagedHead = HistoryEngine.Failure(
-		code: "history.damaged", message: "This project's history head or key can't be read.")
+		code: "history.damaged", message: "This project’s history head or key can’t be read.")
 
 	private struct HeadParts: Decodable { let parts: [Int] }
 
@@ -440,7 +440,7 @@ enum HistoryRecorder {
 		known: [Int: SecretBytes] = [:]
 	) throws -> HistoryEngine.Stored {
 		guard let parts = try? head.withUnsafeBytes({ try JSONDecoder().decode(HeadParts.self, from: Data($0)) }).parts else {
-			throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head can't be read.")
+			throw HistoryEngine.Failure(code: "history.damaged", message: "This project’s history head can’t be read.")
 		}
 		var read: [(part: Int, bytes: SecretBytes?)] = []
 		read.reserveCapacity(parts.count)
@@ -460,7 +460,7 @@ enum HistoryRecorder {
 	static func finishRunning(_ storage: some HistoryStorage, vaultId: String, known: [Int: SecretBytes] = [:]) throws {
 		guard let head = try storage.historyRecord(account("history-head", vaultId)).map(secret),
 			let key = try storage.historyRecord(account("key", vaultId)).map(secret)
-		else { throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head or key can't be read.") }
+		else { throw HistoryEngine.Failure(code: "history.damaged", message: "This project’s history head or key can’t be read.") }
 		try finishRunning(storage, vaultId: vaultId, opened: Opened(head: head, key: key, tail: nil), known: known)
 	}
 

@@ -34,9 +34,9 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 		case .vaultChanged:
 			"lpm.json changed. Check the link and try again."
 		case .unsafeStateDirectory:
-			".lpm in this folder is a symbolic link or not a folder, so the CLI won't use it. Remove it or copy the JSON instead."
+			".lpm in this folder is a symbolic link or not a folder, so the CLI won’t use it. Remove it or copy the JSON instead."
 		case .folderIsLPMHome:
-			"This folder's .lpm is where LPM keeps your login and env secrets, so it can't hold a project. Choose the folder that contains your project's package.json."
+			"This folder’s .lpm is where LPM keeps your login and env secrets, so it can’t hold a project. Choose the folder that contains your project’s package.json."
 		}
 	}
 }
@@ -196,7 +196,7 @@ struct ProjectCLICommands: Equatable, Sendable {
 			}
 		}
 		warning = configuration.mayHideAliases
-			? "Check lpm.json aliases before running. The project configuration has not been verified."
+			? "lpm.json hasn’t been verified on this Mac yet. Check its environment aliases before running these."
 			: nil
 		let flag = "--env=\(environment)"
 		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
@@ -228,7 +228,7 @@ struct ProjectCLITaskExample: Equatable, Sendable {
 		}
 		"""
 		warning = configuration.mayHideAliases
-			? "Check lpm.json aliases before using the example. The project configuration has not been verified."
+			? "lpm.json hasn’t been verified on this Mac yet. Check its environment aliases before using the example."
 			: nil
 	}
 }

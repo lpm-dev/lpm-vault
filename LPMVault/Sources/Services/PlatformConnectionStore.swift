@@ -18,7 +18,7 @@ enum PlatformConnectionStoreError: Error, Equatable, Sendable, CustomStringConve
 	var description: String {
 		switch self {
 		case .keychain(let error): error.description
-		case .unreadable: "The platform connection can't be read. Connect it again."
+		case .unreadable: "The platform connection can’t be read. Connect it again."
 		case .newerVersion: "A newer LPM Vault saved this platform connection."
 		case .notFound: "The platform connection was removed."
 		case .cancelled: "Connecting was cancelled."

@@ -156,7 +156,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(items.map(\.subject) == ["2 keys", "1 key"])
 		#expect(items.first?.detail == "PORT, TOKEN · inspector edits")
 		#expect(items.map(\.badge) == ["2 edits", "1 edit"])
-		#expect(VaultQuitSheet.summary(of: items) == "3 edits in 2 projects haven't been saved to the Keychain.")
+		#expect(VaultQuitSheet.summary(of: items) == "3 edits in 2 projects haven’t been saved to the Keychain.")
 
 		fixture.coordinator.saveAndQuit()
 		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
@@ -182,7 +182,7 @@ struct VaultQuitCoordinatorTests {
 		)
 		let items = VaultQuitCoordinator.items(for: work)
 		#expect(items.map(\.id) == ["keys:a", "review:a", "schema:a", "keys:b", "schema:b", "sheet:" + sheet.id.uuidString])
-		#expect(VaultQuitSheet.summary(of: items) == "4 edits in 2 projects haven't been saved to the Keychain, 2 schema drafts haven't been written to lpm.json, and a sheet is still open.",
+		#expect(VaultQuitSheet.summary(of: items) == "4 edits in 2 projects haven’t been saved to the Keychain, 2 schema drafts haven’t been written to lpm.json, and a sheet is still open.",
 			"An edit that needs a review counts once")
 		#expect(items.last?.subject == "Add variable")
 		#expect(items.last?.detail == "NEW_KEY")
@@ -207,7 +207,7 @@ struct VaultQuitCoordinatorTests {
 			Issue.record("PORT didn't fail")
 			return
 		}
-		#expect(reason.hasPrefix("PORT couldn't be saved: "))
+		#expect(reason.hasPrefix("PORT couldn’t be saved: "))
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "two")
 		#expect(fixture.outcome.terminations == 0)
 		fixture.coordinator.saveAndQuit()
@@ -319,7 +319,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.items.map(\.subject) == ["1 key", "1 key needs review"])
 		#expect(fixture.coordinator.needsReviewCount == 1)
-		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "2 edits in 1 project haven't been saved to the Keychain.")
+		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "2 edits in 1 project haven’t been saved to the Keychain.")
 		fixture.coordinator.saveAndQuit()
 		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["PORT"] == "81")
@@ -391,7 +391,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(try await waitUntil { coordinator.phase == .reviewing })
 		#expect(coordinator.items.map(\.subject) == ["Schema draft"])
 		#expect(coordinator.items.first?.detail == "1 rule change · lpm.json not written")
-		#expect(VaultQuitSheet.summary(of: coordinator.items) == "A schema draft hasn't been written to lpm.json.")
+		#expect(VaultQuitSheet.summary(of: coordinator.items) == "A schema draft hasn’t been written to lpm.json.")
 		coordinator.saveAndQuit()
 		#expect(try await waitUntil { outcome.terminations == 1 })
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRY""#))
@@ -407,7 +407,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.items.map(\.subject) == ["Project settings"])
 		#expect(fixture.coordinator.items.first?.detail == "Name first-renamed · not saved")
-		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "Project settings for 1 project haven't been saved.")
+		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "Project settings for 1 project haven’t been saved.")
 		fixture.coordinator.saveAndQuit()
 		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.name == "first-renamed")

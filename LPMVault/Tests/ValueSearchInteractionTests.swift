@@ -50,7 +50,7 @@ extension SheetInteractionTests {
 			#expect(fixture.store.selectedProjectId == "bravo")
 			#expect(try await host.waitForText("Value search · 3 places in 2 projects"))
 			#expect(try await host.waitForText("PAYMENTS, value hidden, found by value search"))
-			#expect(try await host.waitForText("Find where the .env value is used"), "The inspector shows the key")
+			#expect(try await host.waitForText("More for the .env value"), "The inspector shows the key")
 			#expect(fixture.store.valueSearch.term.text.isEmpty, "The term goes as the sheet closes")
 
 			try await host.click("Show Results")
@@ -79,7 +79,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 
 			try await host.click("PORT")
-			#expect(try await host.waitForText("Find where the .env.production value is used"))
+			#expect(try await host.waitUntil { offers(host, "Find where the .env.production value is used", for: ".env.production") })
 			// Whether a value looks secret is judged off the main actor; nothing says the judging is over.
 			try await quietPeriod()
 			#expect(try await !host.text().contains("Warning: same value"), "A port shared by environments is configuration")
@@ -97,13 +97,12 @@ extension SheetInteractionTests {
 			let generator = try await host.generatorWindow()
 			try await host.click("Password", in: generator)
 			#expect(try await host.waitForText("1 unsaved change"))
-			#expect(try await host.waitUntil {
-				AccessibilityTree.elements(in: host.window).first { $0.says("Find where the .env.production value is used") }?.isEnabled == false
-			}, "A card showing an edit doesn't search for the saved value")
+			#expect(try await host.waitUntil { !offers(host, "Find where the .env.production value is used", for: ".env.production") },
+				"A card showing an edit doesn't search for the saved value")
 			#expect(try await host.waitForTextToDisappear("Warning: same value"), "A new value isn't the same value")
 			#expect(fixture.keychain.envStorage["alpha"]?.environments["production"]?["SESSION_SECRET"] == "s3cret-session", "Nothing is saved until Save")
 
-			try await host.click("Find where the .env value is used")
+			#expect(try await host.perform("Find where the .env value is used", on: "More for the .env value"))
 			let sheet = try await fixture.sheet(of: host)
 			#expect(try await host.waitForText("3 places in 2 projects in Personal vault.", in: sheet))
 			#expect(try await host.waitForText("Bravo, .env, COOKIE_SECRET, exact match", in: sheet))
@@ -209,7 +208,7 @@ extension SheetInteractionTests {
 			try await host.click("Done", in: sheet)
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
 
-			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.click(".env", region: host.sidebarRegion)
 			let row = try await contextMenu(ofRowSaying: "TOKEN, value hidden", in: host)
 			#expect(row.items.map(\.title).contains("Find Where This Value Is Used"))
 		}
@@ -314,8 +313,8 @@ extension SheetInteractionTests {
 			let host = try await fixture.host()
 			defer { host.window.close() }
 
-			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
-			try await host.click("Raw text")
+			try await host.click(".env", region: host.sidebarRegion)
+			try await host.click("Raw Text")
 			NotificationCenter.default.post(name: .findValue, object: nil)
 			let sheet = try await fixture.sheet(of: host)
 			let field = try #require(secureField(in: sheet))
@@ -325,7 +324,7 @@ extension SheetInteractionTests {
 			#expect(fixture.store.selectedEnvironment == "production")
 			let row = try await host.waitForElement(saying: "STRIPE_KEY, value hidden, found by value search")
 			#expect(row.isSelected, "The table shows, with the key selected")
-			#expect(try await host.waitForText("Find where the .env.production value is used"), "The inspector shows the key")
+			#expect(try await host.waitForText("More for the .env.production value"), "The inspector shows the key")
 		}
 
 		@Test("with organizations, the scope menu says what it chooses, and switching accounts closes the sheet")
@@ -529,6 +528,12 @@ private struct ValueSearchWorkspace {
 		store.lock()
 		UserDefaults().removePersistentDomain(forName: domain)
 	}
+}
+
+/// Whether the More button of `environment`'s value offers the action `action` now.
+@MainActor
+private func offers<V: View>(_ host: SheetTestHost<V>, _ action: String, for environment: String) -> Bool {
+	AccessibilityTree.elements(in: host.window).first { $0.says("More for the \(environment) value") }?.actionNames.contains(action) == true
 }
 
 /// The sidebar's search field: the one editable field over the sidebar.

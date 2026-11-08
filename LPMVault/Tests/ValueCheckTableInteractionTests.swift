@@ -40,7 +40,7 @@ extension SheetInteractionTests {
 					showsInspector: $state.showsInspector,
 					columnWidths: .constant(VaultProjectTableColumnWidths()),
 					isCopyingAll: false,
-					cliAccess: nil, isChangingCliAccess: false, onChangeCliAccess: { _ in },
+					cliAccess: nil,
 					onCopyAll: {}, onImport: {}, onExport: {},
 					valueChecks: VaultValueCheckPresentation(
 						check: state.check, rules: nil, project: state.project),
@@ -172,7 +172,7 @@ extension SheetInteractionTests {
 					showsInspector: .constant(false),
 					columnWidths: .constant(VaultProjectTableColumnWidths()),
 					isCopyingAll: false, cliAccess: nil,
-					isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+					onCopyAll: {},
 					onImport: {}, onExport: {},
 					valueChecks: presentation, onAddSecret: {}, onCopySecret: { _, _ in },
 					onDeleteSecret: { _, _ in }, onResizeColumns: {}
@@ -204,7 +204,7 @@ extension SheetInteractionTests {
 					showsInspector: .constant(false),
 					columnWidths: .constant(VaultProjectTableColumnWidths()),
 					isCopyingAll: false, cliAccess: nil,
-					isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+					onCopyAll: {},
 					onImport: {}, onExport: {},
 					valueChecks: presentation, onAddSecret: {}, onCopySecret: { _, _ in },
 					onDeleteSecret: { _, _ in }, onResizeColumns: {}
@@ -242,7 +242,7 @@ extension SheetInteractionTests {
 					showsInspector: .constant(false),
 					columnWidths: .constant(VaultProjectTableColumnWidths()),
 					isCopyingAll: false, cliAccess: nil,
-					isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+					onCopyAll: {},
 					onImport: {}, onExport: {},
 					valueChecks: VaultValueCheckPresentation(check: check, rules: nil, project: project),
 					onAddSecret: {}, onCopySecret: { _, _ in },
@@ -255,8 +255,8 @@ extension SheetInteractionTests {
 			case "search":
 				#expect(try await host.waitForText("No keys match your search"))
 			case "fallback":
-				#expect(try await host.waitForText("The LPM CLI reads values from .env and checks this environment's rules."))
-				#expect(try await host.waitForText("No values here. The LPM CLI uses .env's values for this environment."))
+				#expect(try await host.waitForText("The LPM CLI reads values from .env and checks this environment’s rules."))
+				#expect(try await host.waitForText("No values here. The LPM CLI uses .env’s values for this environment."))
 			default:
 				#expect(try await host.waitForText("Group credentials fails"))
 				#expect(try await host.waitForText("SAVED"), "The keys still show under the note")
@@ -300,11 +300,11 @@ extension SheetInteractionTests {
 
 			// The matrix says a row's key and how many environments set it; the
 			// environment table below says each value's Required or default.
-			#expect(try await host.waitForText("4 invalid", footer: VaultMetrics.statusBar + 4))
+			#expect(try await host.waitForText("Invalid, 4"))
 			var text = try await host.text()
 			#expect(text.contains("API_TOKEN"))
 
-			try await host.click("4 invalid")
+			try await host.click("Invalid, 4")
 			#expect(try await host.waitForTextToDisappear("NODE_ENV"))
 			text = try await host.text()
 			for expected in ["API_TOKEN", "DATABASE_URL", "PASSWORD", "OAUTH_TOKEN"] {

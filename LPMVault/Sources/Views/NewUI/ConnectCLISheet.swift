@@ -24,14 +24,16 @@ struct ConnectCLISheet: View {
 	@State private var statusGeneration = 0
 	@State private var configuration = ProjectCLIConfiguration.pending
 	@State var showsTaskExample = false
+	/// Shows every terminal command, not just the first.
+	@State private var showsAllCommands = false
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
 
 		var title: String {
 			switch self {
-			case .copyJSON: "lpm.json"
-			case .writeFile: "write file"
+			case .copyJSON: "Manual Setup"
+			case .writeFile: "Write File"
 			}
 		}
 	}
@@ -52,7 +54,10 @@ struct ConnectCLISheet: View {
 		max(1, ((NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 80)
 	}
 
-	private var preferredHeight: CGFloat { min(showsTaskExample ? 720 : 560, availableHeight) }
+	/// Tall enough for what's open, so nothing needs scrolling: the task example and the other commands add their own room.
+	private var preferredHeight: CGFloat {
+		min(640 + (showsTaskExample ? 120 : 0) + (showsAllCommands ? 68 : 0), availableHeight)
+	}
 
 	private var configJSON: String {
 		"{\n  \"vault\": \"\(projectId)\"\n}"
@@ -63,15 +68,23 @@ struct ConnectCLISheet: View {
 			header
 			VaultHairline()
 			ScrollView {
-				VStack(alignment: .leading, spacing: 20) {
-					vaultIDSection
-					projectSection
-					terminalSection
+				// Numbered steps, in the order they're done: the folder only while none is linked.
+				VStack(alignment: .leading, spacing: 22) {
+					if status == .noFolder {
+						stepGroup {
+							step(1, "Choose the project folder")
+						} content: {
+							missingFolderNotice
+						}
+					}
+					projectSection(number: status == .noFolder ? 2 : 1)
+					terminalSection(number: status == .noFolder ? 3 : 2)
 				}
 				.padding(.horizontal, 24)
-				.padding(.top, 20)
-				.padding(.bottom, 20)
-			}.frame(maxHeight: 620)
+				.padding(.top, 18)
+				// Room after the last step, so nothing sits half under the footer's line.
+				.padding(.bottom, 24)
+			}.frame(maxHeight: 720)
 			footer
 		}
 		.frame(width: 600)
@@ -91,15 +104,9 @@ struct ConnectCLISheet: View {
 
 	private var header: some View {
 		HStack(alignment: .top, spacing: 14) {
-			Image(systemName: "terminal")
-				.font(.system(size: 16, weight: .semibold))
-				.foregroundStyle(VaultPalette.accentForeground)
-				.frame(width: 38, height: 38)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
-				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Connect to the LPM CLI")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("Link \(Text(project?.name ?? "this project").fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) so the LPM CLI can use this vault.")
 					.font(.system(size: 12.5))
@@ -114,62 +121,81 @@ struct ConnectCLISheet: View {
 		.padding(.bottom, 16)
 	}
 
-	private var vaultIDSection: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			HStack(alignment: .firstTextBaseline, spacing: 8) {
-				sectionTitle("Vault ID")
-				Text("Identifies this project. Safe to commit.")
+	private var missingFolderNotice: some View {
+		HStack(spacing: 12) {
+			VaultCardIcon(systemImage: "folder.badge.questionmark", size: 28)
+			VStack(alignment: .leading, spacing: 1) {
+				Text("No project folder on this Mac yet")
+					.font(.system(size: 12.5, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text("Choose the folder that holds its package.json.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
 			}
-			HStack(spacing: 8) {
+			Spacer(minLength: 8)
+			VaultBarButton(systemImage: "folder", title: "Choose Folder…", filled: true, disabled: isLinking) {
+				setupMode = .writeFile
+				chooseFolder()
+			}
+		}
+		.padding(.leading, 12)
+		.padding(.trailing, 10)
+		.padding(.vertical, 10)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		.accessibilityElement(children: .contain)
+	}
+
+	private var vaultIDSection: some View {
+		// A labeled value, with what it is under it: the ID is in the JSON below too, so it needs no box of its own.
+		VStack(alignment: .leading, spacing: 3) {
+			HStack(alignment: .firstTextBaseline, spacing: 8) {
+				Text("Vault ID")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
 				Text(projectId)
-					.font(VaultTypography.tabular(12.5))
+					.font(VaultTypography.code(12.5))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
 					.textSelection(.enabled)
-					.frame(maxWidth: .infinity, alignment: .leading)
-				CopyButton(isCopied: copiedItem == "vault-id") {
-					copy(projectId, as: "vault-id")
-				}
-				.accessibilityLabel("Copy vault ID")
 			}
-			.padding(.leading, 12)
-			.padding(.trailing, 4)
-			.frame(height: 38)
-			.vaultInputField(focused: false, background: VaultPalette.headerRow)
+			Text("Identifies this project. Safe to commit.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
 		}
 	}
 
-	private var projectSection: some View {
-		VStack(alignment: .leading, spacing: 8) {
+	private func projectSection(number: Int) -> some View {
+		stepGroup {
 			HStack(spacing: 8) {
-				sectionTitle("Add it to your project")
+				step(number, "Add the vault field to lpm.json")
 				Spacer()
-				SegmentedPicker(selection: $setupMode, options: SetupMode.allCases, title: \.title)
+				VaultSegmentedPicker(title: "How to add the vault field", options: SetupMode.allCases.map { ($0, $0.title) }, selection: $setupMode)
 			}
+		} content: {
+			vaultIDSection
 			VStack(alignment: .leading, spacing: 0) {
 				HStack(spacing: 8) {
 					Text(setupMode == .copyJSON ? "./lpm.json" : displayPath)
 						.font(VaultTypography.code(11))
-						.foregroundStyle(Color(hex: 0xAEAEB2))
+						.foregroundStyle(VaultPalette.textTertiary)
 						.lineLimit(1)
 						.truncationMode(.head)
 					Spacer(minLength: 8)
 					switch setupMode {
 					case .copyJSON:
-						TerminalBarButton(
-							title: copiedItem == "json" ? "Copied" : "Copy JSON",
-							systemImage: copiedItem == "json" ? "checkmark" : "doc.on.doc"
-						) { copy(configJSON, as: "json") }
+						// One copy control throughout the sheet: its name says what it copies.
+						CopyButton(isCopied: copiedItem == "json") { copy(configJSON, as: "json") }
+							.accessibilityLabel(copiedItem == "json" ? "Copied JSON" : "Copy JSON")
 					case .writeFile:
 						writeFileAction
 					}
 				}
-				.padding(.horizontal, 12)
-				.padding(.vertical, 7)
-				Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+				.padding(.horizontal, Self.copyInset)
+				.frame(height: 32)
+				VaultHairline()
 				Group {
 					switch setupMode {
 					case .copyJSON: jsonPreview
@@ -180,8 +206,15 @@ struct ConnectCLISheet: View {
 				.padding(.vertical, 12)
 				.frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
 			}
-			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			if setupMode == .copyJSON {
+				Text("Create lpm.json if it’s missing, and keep any fields it has.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
 			taskExample
 		}
 	}
@@ -190,12 +223,12 @@ struct ConnectCLISheet: View {
 		Text(
 			"""
 			{
-			  \(Text("\"vault\"").foregroundStyle(Color(hex: 0x9FD4FF))): \(Text("\"\(projectId)\"").foregroundStyle(Color(hex: 0xC3E88D)))
+			  \(Text("\"vault\"").foregroundStyle(VaultPalette.codeKey)): \(Text("\"\(projectId)\"").foregroundStyle(VaultPalette.codeString))
 			}
 			"""
 		)
 		.font(VaultTypography.code(12))
-		.foregroundStyle(VaultPalette.terminalText)
+		.foregroundStyle(VaultPalette.codeText)
 		.lineSpacing(4)
 		.textSelection(.enabled)
 	}
@@ -205,31 +238,31 @@ struct ConnectCLISheet: View {
 		if let example = ProjectCLITaskExample(vaultId: projectId, environments: project?.environmentNames ?? [], selectedEnvironment: store.selectedEnvironment, configuration: configuration) {
 			VStack(alignment: .leading, spacing: 0) {
 				Button { showsTaskExample.toggle() } label: {
-					Label("Optional task environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
+					Label("Optional Task Environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
 						.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-				}.buttonStyle(.plain).foregroundStyle(VaultPalette.accentForeground)
+				}.buttonStyle(.plain).foregroundStyle(VaultPalette.textSecondary)
 					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
 				if showsTaskExample {
 					VStack(alignment: .leading, spacing: 10) {
-						Text("Example using this vault's environments. Merge the env fields into your existing tasks and keep their other settings.")
+						Text("Example using this vault’s environments. Merge the env fields into your existing tasks and keep their other settings.")
 							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
 						VStack(alignment: .leading, spacing: 8) {
 							HStack {
 								Text("Example · lpm.json").font(VaultTypography.tabular(11))
 								Spacer()
-								TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
-									copy(example.json, as: "task-example")
-								}
+								CopyButton(isCopied: copiedItem == "task-example") { copy(example.json, as: "task-example") }
+									.accessibilityLabel(copiedItem == "task-example" ? "Copied example" : "Copy example")
 							}
 							Text(example.json).font(VaultTypography.code(12)).textSelection(.enabled)
 						}
-						.padding(12).foregroundStyle(VaultPalette.terminalText)
+						.padding(12).foregroundStyle(VaultPalette.codeText)
 						.frame(maxWidth: .infinity, alignment: .leading)
-						.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
+						.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
+						.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 						if let warning = example.warning {
-							Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
+							VaultInlineWarning(text: warning)
 						}
-						Text("Write file only updates the vault ID. An explicit --env overrides a task's environment.")
+						Text("Write file only updates the vault ID. An explicit --env overrides a task’s environment.")
 							.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 					}.padding(.top, 8)
 				}
@@ -240,17 +273,19 @@ struct ConnectCLISheet: View {
 	@ViewBuilder
 	private var writeFileAction: some View {
 		HStack(spacing: 12) {
-			TerminalBarButton(title: "Choose folder…", systemImage: "folder") { chooseFolder() }
-				.disabled(isLinking)
+			if status != .noFolder {
+				TerminalBarButton(title: "Choose Folder…", systemImage: "folder") { chooseFolder() }
+					.disabled(isLinking)
+			}
 			switch status {
 			case .linked:
 				Label("Linked", systemImage: "checkmark")
 					.font(.system(size: 11, weight: .semibold))
-					.foregroundStyle(Color(hex: 0x75DB94))
+					.foregroundStyle(VaultPalette.greenTintText)
 			case .noFolder:
 				EmptyView()
 			case .linkedToOtherVault(let other):
-				TerminalBarButton(title: "Replace vault ID", systemImage: "square.and.pencil") { link(folder: folder, replacingVaultId: other) }
+				TerminalBarButton(title: "Replace Vault ID", systemImage: "square.and.pencil") { link(folder: folder, replacingVaultId: other) }
 					.disabled(isLinking)
 			case .notLinked:
 				TerminalBarButton(title: isLinking ? "Writing…" : "Write lpm.json", systemImage: "square.and.pencil") {
@@ -266,7 +301,7 @@ struct ConnectCLISheet: View {
 	private var writeFileMessage: some View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(writeFileExplanation)
-				.foregroundStyle(VaultPalette.terminalText)
+				.foregroundStyle(VaultPalette.textSecondary)
 			if case .linkedToOtherVault(let other) = status, let linked = store.openableProject(id: other) {
 				TerminalBarButton(title: "Open \(linked.name)", systemImage: "arrow.right.circle") {
 					store.openProject(id: linked.id)
@@ -276,11 +311,11 @@ struct ConnectCLISheet: View {
 			}
 			if let choiceInsideProject, linkError == nil {
 				Text("Using the project folder around \(choiceInsideProject.lastPathComponent), as the LPM CLI does.")
-					.foregroundStyle(VaultPalette.terminalText)
+					.foregroundStyle(VaultPalette.textSecondary)
 			}
 			if let linkError {
 				Text(linkError.localizedDescription)
-					.foregroundStyle(Color(hex: 0xFF847D))
+					.foregroundStyle(VaultPalette.redText)
 			}
 		}
 		.font(.system(size: 12))
@@ -303,62 +338,99 @@ struct ConnectCLISheet: View {
 		case .unreadable:
 			"lpm.json in this folder cannot be read safely. Copy the JSON and add it yourself."
 		case .noFolder:
-			"This project has no folder on this Mac. Choose the folder that contains your package.json."
+			"This project has no folder on this Mac yet. Once you choose it, LPM Vault adds \"vault\" to its lpm.json."
 		case nil:
 			"Checking lpm.json…"
 		}
 	}
 
-	private var terminalSection: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			sectionTitle("Use it from the terminal")
-			Text("Run from the linked project folder · \(VaultProject.displayName(for: guidance.environment))")
-				.font(.system(size: 11.5))
-				.foregroundStyle(VaultPalette.textSecondary)
-			HStack(alignment: .top, spacing: 8) {
-				ForEach(guidance.commands, id: \.self) { command in
-					CommandCard(
-						command: command,
-						detail: copiedItem == command ? "Copied to the clipboard" : "Copy command"
-					) { copy(command, as: command) }
+	private func terminalSection(number: Int) -> some View {
+		stepGroup {
+			HStack(alignment: .center, spacing: 8) {
+				step(number, "Use it from the terminal")
+				Text(status == .noFolder ? "Runs once the folder is linked" : "Runs in the linked folder")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+			}
+		} content: {
+			let commands = showsAllCommands ? guidance.commands : Array(guidance.commands.prefix(1))
+			VStack(spacing: 0) {
+				ForEach(Array(commands.enumerated()), id: \.element) { index, command in
+					if index > 0 { VaultHairline() }
+					CommandRow(command: command, isCopied: copiedItem == command) { copy(command, as: command) }
 				}
 			}
-			if let warning = guidance.warning {
-				Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
-					.fixedSize(horizontal: false, vertical: true)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
+			.clipShape(RoundedRectangle(cornerRadius: 8))
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			// Until a folder is linked there's no lpm.json to check them against; the line under the step's title says they wait on it.
+			if status != .noFolder, let warning = guidance.warning {
+				VaultInlineWarning(text: warning)
 			}
-			Text(
-				"Explicit selection overrides script settings. Choose a configured environment or its script alias when running commands. Linking does not install the CLI."
-			)
-				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+			// The commands' caption, under them as step 2's is under its JSON, before the disclosure that opens more.
+			// The flag in code type, as in the commands above it.
+			(Text("These use \(VaultProject.displayName(for: guidance.environment)). An explicit ")
+				+ Text("--env").font(VaultTypography.code(11)).foregroundStyle(VaultPalette.codeText)
+				+ Text(" overrides a script’s own environment."))
+				.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
+			let more = guidance.commands.count - 1
+			if more > 0 {
+				// A disclosure, as Optional Task Environments is, so it reads as something that opens.
+				Button { showsAllCommands.toggle() } label: {
+					Label(showsAllCommands ? "Show Fewer" : "Show \(more) More \(more == 1 ? "Command" : "Commands")",
+						systemImage: showsAllCommands ? "chevron.down" : "chevron.right")
+						.font(.system(size: 12, weight: .medium))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.contentShape(Rectangle())
+				}
+				.buttonStyle(.plain)
+				.accessibilityValue(showsAllCommands ? "Expanded" : "Collapsed")
+			}
 		}
 	}
 
 	private var footer: some View {
 		VaultSheetFooter {
 			HStack(spacing: 7) {
-				VaultStatusDot(color: statusColor, size: 7)
-				Text(statusText)
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineLimit(1)
-					.truncationMode(.tail)
-				if status == .notLinked || status == .noFolder {
-					Text("·").foregroundStyle(VaultPalette.textTertiary)
-					Button("Install LPM CLI") { openURL(Self.installURL) }
-						.buttonStyle(.plain)
-						.font(.system(size: 11.5, weight: .semibold))
-						.foregroundStyle(VaultPalette.accentForeground)
-						.vaultPointingHand()
+				// The notice above the vault ID already says a folder is missing.
+				if status != .noFolder {
+					if let statusColor { VaultStatusDot(color: statusColor, size: 7) }
+					Text(statusText)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
+						.truncationMode(.tail)
 				}
+				if status != .noFolder {
+					Text("·").foregroundStyle(VaultPalette.textTertiary).accessibilityHidden(true)
+				}
+				// Both go to lpm.dev's pages, so they're the same kind of link.
+				if status == .notLinked || status == .noFolder {
+					footerLink("Install LPM CLI", help: "Linking doesn’t install the LPM CLI. This opens how to install it.", url: Self.installURL)
+					Text("·").foregroundStyle(VaultPalette.textTertiary).accessibilityHidden(true)
+				}
+				footerLink("Docs", help: "How the LPM CLI reads lpm.json", url: Self.docsURL)
 			}
 			.help(folder.isEmpty ? "" : Self.configURL(folder).path)
 		} actions: {
-			VaultBarButton(title: "Docs", height: 30) { openURL(Self.docsURL) }
-			VaultBarButton(title: "Done", filled: true, height: 30) { dismiss() }
-				.keyboardShortcut(.defaultAction)
+			// Without a folder nothing is connected yet, so the header's close is the only way out; Done comes with a folder.
+			if status != .noFolder {
+				VaultBarButton(title: "Done", filled: true, height: 30) { dismiss() }
+					.keyboardShortcut(.defaultAction)
+			}
 		}
+	}
+
+	private func footerLink(_ title: String, help: String, url: URL) -> some View {
+		Button(title) { openURL(url) }
+			.help(help)
+			.buttonStyle(.plain)
+			.font(.system(size: 11.5, weight: .semibold))
+			.foregroundStyle(VaultPalette.accentForeground)
+			.vaultPointingHand()
+			.fixedSize()
 	}
 
 	// MARK: - Status
@@ -374,11 +446,12 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	private var statusColor: Color {
+	/// Only a state worth noticing gets a dot.
+	private var statusColor: Color? {
 		switch status {
 		case .linked: VaultPalette.green
 		case .linkedToOtherVault, .unreadable: VaultPalette.orange
-		case .notLinked, .noFolder, nil: VaultPalette.textFaint.opacity(0.5)
+		case .notLinked, .noFolder, nil: nil
 		}
 	}
 
@@ -388,6 +461,34 @@ struct ConnectCLISheet: View {
 	}
 
 	// MARK: - Actions
+
+	/// A step's number and title, in the order the steps are done.
+	/// A step: its numbered title, then what it holds, indented to the title's
+	/// edge so each step plainly owns what's under it.
+	private func stepGroup<Header: View, Content: View>(@ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			header()
+			VStack(alignment: .leading, spacing: 8) { content() }
+				.padding(.leading, Self.stepIndent)
+		}
+	}
+
+	/// The step number's badge and the gap after it, where the step's title starts.
+	private static let stepIndent: CGFloat = 18 + 8
+
+	private func step(_ number: Int, _ title: String) -> some View {
+		HStack(spacing: 8) {
+			Text("\(number)")
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(VaultPalette.accentText)
+				.frame(width: 18, height: 18)
+				.background(Circle().fill(VaultPalette.accentTint))
+				.accessibilityHidden(true)
+			sectionTitle(title)
+				.accessibilityLabel("Step \(number): \(title)")
+				.accessibilityAddTraits(.isHeader)
+		}
+	}
 
 	private func sectionTitle(_ title: String) -> some View {
 		Text(title)
@@ -462,7 +563,7 @@ struct ConnectCLISheet: View {
 		panel.canChooseDirectories = true
 		panel.allowsMultipleSelection = false
 		panel.prompt = "Choose Folder"
-		panel.message = "Choose the folder that contains your project's package.json"
+		panel.message = "Choose the folder that contains your project’s package.json"
 		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
 		return panel.url
 	}
@@ -482,6 +583,9 @@ struct ConnectCLISheet: View {
 		ProjectCLILink.configURL(inFolder: folder)
 	}
 
+	/// How far in from the content's edge each Copy button's box ends.
+	fileprivate static let copyInset: CGFloat = 12
+
 	private static func shortID(_ id: String) -> String {
 		id.count > 16 ? "\(id.prefix(8))…\(id.suffix(6))" : id
 	}
@@ -497,19 +601,18 @@ private struct CopyButton: View {
 		Button(action: action) {
 			HStack(spacing: 6) {
 				Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-					.font(.system(size: 11, weight: .medium))
+					.font(.system(size: 11))
 				Text(isCopied ? "Copied" : "Copy")
-					.font(.system(size: 12, weight: .semibold))
+					.font(.system(size: 12, weight: .medium))
 			}
-			.foregroundStyle(isCopied ? VaultPalette.greenTintText : VaultPalette.textSecondary)
-			.padding(.horizontal, 10)
-			.frame(height: 30)
-			.background(RoundedRectangle(cornerRadius: 6).fill(hovering ? VaultPalette.sidebar : VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+			.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
+			.padding(.horizontal, 8)
+			.frame(height: 28)
+			.background(RoundedRectangle(cornerRadius: 7).fill(hovering ? VaultPalette.controlHover : .clear))
+			.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle())
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 	}
 }
 
@@ -524,89 +627,62 @@ private struct TerminalBarButton: View {
 	var body: some View {
 		Button(action: action) {
 			HStack(spacing: 5) {
-				Image(systemName: systemImage).font(.system(size: 10, weight: .semibold))
-				Text(title).font(.system(size: 11, weight: .semibold))
+				Image(systemName: systemImage).font(.system(size: 10.5, weight: .medium))
+				Text(title).font(.system(size: 11.5, weight: .medium))
 			}
-			.foregroundStyle(hovering && isEnabled ? .white : Color(hex: 0xC7C7CC))
+			.foregroundStyle(hovering && isEnabled ? VaultPalette.textPrimary : VaultPalette.textSecondary)
 			.opacity(isEnabled ? 1 : 0.5)
+			.padding(.horizontal, 7)
+			.frame(height: 24)
+			.background(RoundedRectangle(cornerRadius: 6).fill(hovering && isEnabled ? VaultPalette.controlHover : .clear))
+			.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 	}
 }
 
-private struct CommandCard: View {
+/// A command on one line, never wrapped inside a flag, that copies itself.
+private struct CommandRow: View {
 	let command: String
-	let detail: String
+	let isCopied: Bool
 	let action: () -> Void
 
 	@State private var hovering = false
 
 	var body: some View {
 		Button(action: action) {
-			VStack(alignment: .leading, spacing: 6) {
+			HStack(spacing: 10) {
+				Text("$")
+					.font(.system(size: 12, weight: .medium))
+					.foregroundStyle(VaultPalette.textFaint)
+					.accessibilityHidden(true)
 				Text(command)
-					.font(VaultTypography.code(12, .bold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.fixedSize(horizontal: false, vertical: true)
-				Text(detail)
-					.font(.system(size: 11))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineSpacing(1.5)
-					.fixedSize(horizontal: false, vertical: true)
+					.font(VaultTypography.code(12))
+					.foregroundStyle(VaultPalette.codeText)
+					.lineLimit(1)
+					.truncationMode(.middle)
+				Spacer(minLength: 8)
+				// Said the way every copy control in the sheet says it.
+				HStack(spacing: 6) {
+					Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+						.font(.system(size: 11))
+					Text(isCopied ? "Copied" : "Copy")
+						.font(.system(size: 12, weight: .medium))
+				}
+				.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
+				// Where a Copy button's title ends, inside its box.
+				.padding(.trailing, 8)
 			}
-			.padding(.horizontal, 11)
-			.padding(.vertical, 10)
-			.frame(maxWidth: .infinity, minHeight: 66, alignment: .topLeading)
+			.padding(.horizontal, ConnectCLISheet.copyInset)
+			.frame(height: 34)
+			.background(hovering ? VaultPalette.controlHover : .clear)
+			.vaultHoverAnimation(hovering)
 			.contentShape(Rectangle())
-			.background(RoundedRectangle(cornerRadius: 8).fill(hovering ? VaultPalette.headerRow : VaultPalette.control))
-			.overlay {
-				RoundedRectangle(cornerRadius: 8)
-					.stroke(hovering ? VaultPalette.accent.opacity(0.4) : VaultPalette.border, lineWidth: 1)
-			}
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(shape: Rectangle()))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help("Copy \(command)")
 		.accessibilityLabel("Copy \(command)")
-	}
-}
-
-private struct SegmentedPicker<Option: Hashable>: View {
-	@Binding var selection: Option
-	let options: [Option]
-	let title: (Option) -> String
-
-	init(selection: Binding<Option>, options: [Option], title: @escaping (Option) -> String) {
-		_selection = selection
-		self.options = options
-		self.title = title
-	}
-
-	var body: some View {
-		HStack(spacing: 0) {
-			ForEach(Array(options.enumerated()), id: \.element) { index, option in
-				if index > 0 {
-					Rectangle().fill(VaultPalette.border).frame(width: 1)
-				}
-				let selected = option == selection
-				Button { selection = option } label: {
-					Text(title(option))
-						.font(VaultTypography.tabular(11, selected ? .bold : .regular))
-						.foregroundStyle(selected ? .white : VaultPalette.masked)
-						.padding(.horizontal, 9)
-						.padding(.vertical, 3)
-						.background(selected ? VaultPalette.strongFill : .clear)
-						.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-				.accessibilityAddTraits(selected ? .isSelected : [])
-			}
-		}
-		.fixedSize()
-		.clipShape(RoundedRectangle(cornerRadius: 6))
-		.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
 	}
 }

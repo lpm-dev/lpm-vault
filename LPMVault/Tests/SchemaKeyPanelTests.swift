@@ -91,7 +91,7 @@ struct SchemaDraftHistoryTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"vars":{"API_TOKEN":{"secret":true,"required":true}}}}"#, environments: ["default": ["API_TOKEN": "t"]])
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.projects = [VaultProject(metadata: .init(id: "project", name: "Project", path: folder, environmentSummaries: []))]
-		await #expect(throws: VaultKeyEditError.refused("Project's values are still loading. Rename the key once they've loaded.")) {
+		await #expect(throws: VaultKeyEditError.refused("Project’s values are still loading. Rename the key once they’ve loaded.")) {
 			try await store.renameDeclaredKey("API_TOKEN", to: "ADMIN_TOKEN", in: "project")
 		}
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""API_TOKEN""#))
@@ -193,6 +193,21 @@ extension SheetInteractionTests {
 			}}
 			"""#
 
+		@Test("with no groups, the groups band says none yet, rather than a row of its own, and the selected key's description is labeled above it")
+		func noGroupsAndDescriptionLabel() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			#expect(try await host.waitForText("none yet", exactly: true))
+			#expect(try await !host.text().contains("No groups yet"))
+			try await host.click("RETRY_COUNT")
+			#expect(try await host.waitUntil { host.textField(placeholder: "Add a description") != nil },
+				"The description's prompt is short; its label and where it shows stay outside it")
+			let field = try #require(host.textField(placeholder: "Add a description"))
+			#expect(field.accessibilityLabel() == "Description")
+			let element = AccessibilityTree.elements(in: host.window).first { $0.label == "Description" && $0.isInteractive }
+			#expect(element?.help == "Shown in CLI errors and .env.example", "VoiceOver hears where it shows: \(String(describing: element))")
+		}
+
 		@Test("selecting a key opens its rules for editing; an edit marks the row and saving writes lpm.json")
 		func editAndSave() async throws {
 			let (store, host, folder) = try await workspace()
@@ -205,7 +220,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("1 unsaved change"))
 			#expect(try await host.waitForText("Draft"))
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-panel") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
@@ -240,10 +255,10 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","default":"3000","description":"HTTP port the server listens on.","secret":true}"#.utf8))), for: .key("PORT"))
 			}
-			#expect(try await host.waitForText("Secret keys can't have a default."))
+			#expect(try await host.waitForText("Secret keys can’t have a default."))
 			try await host.click("Turn off Secret")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil }, "Turning Secret off restores the saved rule")
-			#expect(try await host.waitForTextToDisappear("Secret keys can't have a default."))
+			#expect(try await host.waitForTextToDisappear("Secret keys can’t have a default."))
 		}
 
 		@Test("⌘Z undoes the last rule change while the panel is open")
@@ -299,7 +314,7 @@ extension SheetInteractionTests {
 			try await host.click("PORT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("abc", placeholder: "value")
-			#expect(try await host.waitForText("The default doesn't match the format."))
+			#expect(try await host.waitForText("The default doesn’t match the format."))
 			#expect(try await !host.text().contains("env.invalid_format"))
 			#expect(try await host.waitForText("Fix the problem above to save."))
 		}
@@ -313,17 +328,32 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#.utf8))), for: .key("PORT"))
 			}
-			#expect(try await host.waitForText("An empty scoped default can't be used"))
+			#expect(try await host.waitForText("An empty scoped default can’t be used"))
 		}
 
 		@Test("adding the CI storage row writes nothing until a storage is chosen")
 		func addingCIStorageWritesNothing() async throws {
-			let (store, host, folder) = try await workspace()
+			// A window that fits CI's 1024 × 768 screen, so the button is on screen, where a menu can line up with it.
+			let (store, host, folder) = try await workspace(size: NSSize(width: 1000, height: 640))
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
-			try await host.click("Add rule")
-			try await host.click("CI storage", in: try await host.popoverWindow())
+			let button = try await host.waitForElement(saying: "Add Rule")
+			try await host.click("Add Rule")
+			let menu = try await host.popoverWindow()
+			// Two columns, so every rule shows at once, CI storage, the last, too, and the menu hangs from its button, as its chevron says.
+			let storage = try await host.waitForElement(saying: "CI storage", in: menu)
+			#expect(menu.frame.contains(CGPoint(x: storage.frame.midX, y: storage.frame.midY)), "Shown without scrolling")
+			#expect(menu.frame.height < 360, "Half a one-column menu's height: \(menu.frame.height)")
+			let screen = try #require(host.window.screen?.visibleFrame)
+			try #require(screen.contains(button.frame), "A menu stays on screen, so its button must be: \(button.frame) on \(screen)")
+			let below = abs(menu.frame.maxY - (button.frame.minY - VaultPopoverPresenter.gap)) < 1
+			let above = abs(menu.frame.minY - (button.frame.maxY + VaultPopoverPresenter.gap)) < 1
+			#expect(below || above, "Against the button: menu \(menu.frame), button \(button.frame)")
+			#expect(abs(menu.frame.maxX - button.frame.maxX) < 1 || abs(menu.frame.minX - button.frame.minX) < 1,
+				"Lined up with one of its edges: menu \(menu.frame), button \(button.frame)")
+			try await host.click("CI storage", in: menu)
+			#expect(try await host.waitUntil { !menu.isVisible })
 			#expect(try await host.waitForText("variable"))
 			#expect(store.schemaDraft(for: "schema-panel") == nil)
 		}
@@ -339,7 +369,7 @@ extension SheetInteractionTests {
 			try await host.click("API_TOKEN")
 			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "API_TOKEN" })
 			try host.enterText("NEXT_PUBLIC_TOKEN", placeholder: "KEY_NAME")
-			#expect(try await host.waitForText("Secret keys can't start with NEXT_PUBLIC_"))
+			#expect(try await host.waitForText("Secret keys can’t start with NEXT_PUBLIC_"))
 		}
 
 		@Test("a rename from the panel follows the key to its new name")
@@ -353,7 +383,8 @@ extension SheetInteractionTests {
 			try host.pressWhileEditing("\r", code: 36)
 			#expect(try await host.waitUntil { store.projects.first?.environments["default"]?["RETRIES"] == "7" })
 			#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRIES""#))
-			#expect(try await host.waitForText("checked against these rules"))
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil })
+			#expect(try await host.waitForTextToDisappear("with your draft"), "Saved, the values are checked against the rules as they are")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
 		}
 
@@ -366,7 +397,7 @@ extension SheetInteractionTests {
 			try await host.click("Reset to original")
 			#expect(try await host.waitForText("Keep override"))
 			#expect(try await host.waitForText("postgres only"))
-			#expect(try await !host.text().contains("isn't declared"))
+			#expect(try await !host.text().contains("isn’t declared"))
 			try await host.click("Keep override")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil })
 			#expect(try await host.waitForText("Reset to original"))
@@ -394,7 +425,7 @@ extension SheetInteractionTests {
 			try await host.click("MODE")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") { $0.set(.declared(.object([.init(key: "secret", value: .bool(true))])), for: .key("MODE")) }
-			#expect(try await host.waitForText("X compares this key's value"))
+			#expect(try await host.waitForText("X compares this key’s value"))
 			#expect(try await host.waitForText("X has a problem"))
 		}
 
@@ -414,7 +445,9 @@ extension SheetInteractionTests {
 			}}
 			"""#
 
-		private func workspace(_ sample: String = Self.sample) async throws -> (VaultStore, SheetTestHost<some View>, String) {
+		private func workspace(_ sample: String = Self.sample, size: NSSize = NSSize(width: 1400, height: 760))
+			async throws -> (VaultStore, SheetTestHost<some View>, String)
+		{
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-panel-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
@@ -434,7 +467,7 @@ extension SheetInteractionTests {
 			let defaults = try #require(UserDefaults(suiteName: "schema-panel-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
-				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
+				size: size, keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			try await host.click("Schema")
 			#expect(try await host.waitForText("enforced by LPM CLI"))

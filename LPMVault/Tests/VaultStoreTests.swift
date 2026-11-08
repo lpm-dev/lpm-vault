@@ -54,7 +54,8 @@ struct VaultStoreTests {
 		biometricShouldSucceed: Bool = true,
 		apiService: MockAPIService? = nil,
 		envFileImportService: any EnvFileImportServiceProtocol = MockEnvFileImportService(),
-		preferences: UserDefaults = .standard
+		preferences: UserDefaults = .standard,
+		layout: VaultLayoutPreferences? = nil
 	) -> (VaultStore, MockKeychainService, MockBiometricService, MockAPIService) {
 		let keychain = MockKeychainService()
 		for p in projects {
@@ -69,6 +70,7 @@ struct VaultStoreTests {
 			apiService: api,
 			envFileImportService: envFileImportService,
 			preferences: preferences,
+			layout: layout,
 			authTokenProvider: { _, _ in "session-token" },
 			authSessionClearer: { _ in }
 		)
@@ -1602,18 +1604,25 @@ struct VaultStoreTests {
 		#expect(store.orderedEnvironmentNames(for: store.projects[0]) == ["default", "local"])
 	}
 
-	@Test("removing a vault forgets its environment order and CLI folder", arguments: ["delete", "sidebar"])
+	private static var resizedColumns: VaultProjectTableColumnWidths {
+		var widths = VaultProjectTableColumnWidths()
+		widths.matrix.resize(.key, to: 320, in: VaultTableColumnLayout(columns: [.key, .environment("default")], available: 800))
+		return widths
+	}
+
+	@Test("removing a vault forgets its environment order, CLI folder and column widths", arguments: ["delete", "sidebar"])
 	func removingVaultForgetsPreferences(removal: String) async throws {
 		let (defaults, domain) = try isolatedPreferences()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "removed", name: "Removed", path: "", secrets: [:]),
 			(id: "kept", name: "Kept", path: "", secrets: [:]),
-		], preferences: defaults)
+		], preferences: defaults, layout: VaultLayoutPreferences(defaults: defaults))
 		store.isUnlocked = true
 		for id in ["removed", "kept"] {
 			store.saveEnvironmentOrder(for: id, order: ["default"])
 			ProjectCLILink.rememberFolder("/tmp/\(id)", vaultId: id, defaults: defaults)
+			store.layout.setColumnWidths(Self.resizedColumns, for: id)
 		}
 		let removed = try #require(store.projects.first { $0.id == "removed" })
 		if removal == "delete" {
@@ -1626,6 +1635,9 @@ struct VaultStoreTests {
 		#expect(ProjectCLILink.folder(vaultId: "removed", projectPath: "", defaults: defaults) == "")
 		#expect(defaults.stringArray(forKey: "lpm-vault-env-order-kept") == ["default"])
 		#expect(ProjectCLILink.folder(vaultId: "kept", projectPath: "", defaults: defaults) == "/tmp/kept")
+		#expect(store.layout.columnWidths(for: "removed") == VaultProjectTableColumnWidths())
+		#expect(defaults.object(forKey: VaultLayoutPreferences.columnWidthsPrefix + "removed") == nil)
+		#expect(VaultLayoutPreferences(defaults: defaults).columnWidths(for: "kept") == Self.resizedColumns)
 		store.lock()
 	}
 
@@ -1633,8 +1645,12 @@ struct VaultStoreTests {
 	func unlockForgetsRemovedVaultPreferences() async throws {
 		let (defaults, domain) = try isolatedPreferences()
 		defer { defaults.removePersistentDomain(forName: domain) }
+		for id in ["kept", "removed-by-cli"] {
+			VaultLayoutPreferences(defaults: defaults).setColumnWidths(Self.resizedColumns, for: id)
+		}
 		let (store, _, _, _) = makeStore(
-			projects: [(id: "kept", name: "Kept", path: "", secrets: [:])], preferences: defaults)
+			projects: [(id: "kept", name: "Kept", path: "", secrets: [:])], preferences: defaults,
+			layout: VaultLayoutPreferences(defaults: defaults))
 		for id in ["kept", "removed-by-cli"] {
 			defaults.set(["default"], forKey: "lpm-vault-env-order-\(id)")
 			ProjectCLILink.rememberFolder("/tmp/\(id)", vaultId: id, defaults: defaults)
@@ -1648,6 +1664,9 @@ struct VaultStoreTests {
 		#expect(store.environmentOrders["kept"] == ["default"])
 		#expect(ProjectCLILink.folder(vaultId: "kept", projectPath: "", defaults: defaults) == "/tmp/kept")
 		#expect(defaults.string(forKey: "lpm-vault-environment") == "unrelated")
+		#expect(store.layout.columnWidths(for: "removed-by-cli") == VaultProjectTableColumnWidths())
+		#expect(defaults.object(forKey: VaultLayoutPreferences.columnWidthsPrefix + "removed-by-cli") == nil)
+		#expect(store.layout.columnWidths(for: "kept") == Self.resizedColumns)
 		store.lock()
 	}
 

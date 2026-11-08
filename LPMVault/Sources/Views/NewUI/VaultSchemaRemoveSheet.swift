@@ -93,7 +93,7 @@ struct VaultSchemaRemoveSheet: View {
 				.padding(20)
 			case .rejected:
 				VaultHairline()
-				Text("Your draft has a problem the LPM CLI would reject, so what refers to \(key.escapingDirectionControls) in imported schemas can't be found yet. Fix the problem first.")
+				Text("Your draft has a problem the LPM CLI would reject, so what refers to \(key.escapingDirectionControls) in imported schemas can’t be found yet. Fix the problem first.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.redText)
 					.fixedSize(horizontal: false, vertical: true)
@@ -155,7 +155,7 @@ struct VaultSchemaRemoveSheet: View {
 					.buttonStyle(.plain)
 					.font(.system(size: 11, weight: .semibold))
 					.foregroundStyle(VaultPalette.accentForeground)
-					.help("Choose each reference's first fix")
+					.help("Choose each reference’s first fix")
 					.vaultPointingHand()
 				}
 			}
@@ -173,7 +173,7 @@ struct VaultSchemaRemoveSheet: View {
 			}
 			.frame(height: min(max(listHeight, 1), Self.maximumListHeight))
 			.onPreferenceChange(ListHeightKey.self) { listHeight = $0 }
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 		.padding(20)
 	}
@@ -308,7 +308,7 @@ struct VaultSchemaElsewhereSheet: View {
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
 					.accessibilityHidden(true)
 				VStack(alignment: .leading, spacing: 5) {
-					(Text(name.escapingDirectionControls).font(VaultTypography.tabular(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
+					(Text(name.escapingDirectionControls).font(VaultTypography.tabular(14, .bold)) + Text(" can’t be removed here").font(.system(size: 14, weight: .bold)))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.fixedSize(horizontal: false, vertical: true)
 					Text(explanation)
@@ -363,22 +363,22 @@ struct VaultSchemaElsewhereSheet: View {
 		if elsewhere.isOverridden {
 			if let blocker = elsewhere.resetBlocker {
 				return editable
-					? "It's declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source). \(blocker)"
-					: "It's declared in \(source), which can't be edited here, and lpm.json overrides \(what). \(blocker)"
+					? "It’s declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source). \(blocker)"
+					: "It’s declared in \(source), which can’t be edited here, and lpm.json overrides \(what). \(blocker)"
 			}
 			let original = elsewhere.isGroup ? "the original group" : "the original rules"
 			return editable
-				? "It's declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source) and reset the override here: lpm.json can't override \(elsewhere.isGroup ? "a group" : "a key") its imports don't declare."
-				: "It's declared in \(source), which can't be edited here, and lpm.json overrides \(what). Reset the override to bring back \(original)."
+				? "It’s declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source) and reset the override here: lpm.json can’t override \(elsewhere.isGroup ? "a group" : "a key") its imports don’t declare."
+				: "It’s declared in \(source), which can’t be edited here, and lpm.json overrides \(what). Reset the override to bring back \(original)."
 		}
 		if let overriddenBy = elsewhere.overriddenBy {
 			return editable
-				? "It's declared in \(source), and \(overriddenBy) overrides \(what). Remove it from both, or override \(what) in lpm.json."
-				: "It's declared in \(source), which can't be edited here, and \(overriddenBy) overrides \(what). Override \(what) in lpm.json instead."
+				? "It’s declared in \(source), and \(overriddenBy) overrides \(what). Remove it from both, or override \(what) in lpm.json."
+				: "It’s declared in \(source), which can’t be edited here, and \(overriddenBy) overrides \(what). Override \(what) in lpm.json instead."
 		}
 		return editable
-			? "It's declared in \(source), which lpm.json imports. Remove it there, or override \(what) in lpm.json."
-			: "It's declared in \(source), which can't be edited here. Override \(what) in lpm.json instead."
+			? "It’s declared in \(source), which lpm.json imports. Remove it there, or override \(what) in lpm.json."
+			: "It’s declared in \(source), which can’t be edited here. Override \(what) in lpm.json instead."
 	}
 }
 

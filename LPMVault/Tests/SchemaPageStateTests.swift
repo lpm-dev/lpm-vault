@@ -118,7 +118,7 @@ struct SchemaPageStateTests {
 		let rejected = try #require(VaultSchemaEditorFooter.blocker(store: store, projectID: "schema-page-state", item: nil))
 		#expect(rejected.blocksReview)
 		#expect(rejected.show == .key("API_TOKEN"))
-		#expect(rejected.message.hasPrefix("Can't save: API_TOKEN has a problem."))
+		#expect(rejected.message.hasPrefix("Can’t save: API_TOKEN has a problem."))
 		let panel = try #require(VaultSchemaEditorFooter.blocker(store: store, projectID: "schema-page-state", item: .key("API_TOKEN")))
 		#expect(panel.message == "Fix the problem above to save.", "The panel showing the key points at it instead")
 	}
@@ -225,15 +225,15 @@ extension SheetInteractionTests {
 			#expect(try await waitForTable(in: host) { $0.contains("KEY_00") }, "The first row scrolls back into view, below the header")
 		}
 
-		@Test("with the panel closed, the status bar offers Review & save and Discard; ⌘Z brings a discarded draft back")
+		@Test("with the panel closed, the status bar offers Review & Save and Discard; ⌘Z brings a discarded draft back")
 		func statusBarActions() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			#expect(try await !host.text().contains("Review & save"), "Nothing to review without a draft")
+			#expect(try await !host.text().contains("Review & Save"), "Nothing to review without a draft")
 			store.editSchemaDraft(in: "schema-keys") { $0.set(.declared(.object([.init(key: "format", value: .string("port"))])), for: .key("PORT")) }
 			#expect(try await host.waitForText("1 unsaved change", footer: 30))
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
@@ -283,7 +283,7 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("3000")),
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") })
 			try host.shortcut("s", code: 1)
 			try await host.settle()
 			#expect(host.window.sheets.isEmpty, "Saving is blocked")
@@ -291,11 +291,14 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "PORT" })
 		}
 
-		@Test("a failing stored value shows a dot on its row and a count in the status bar")
+		@Test("a failing stored value's row says where it fails, first among its rules, and the status bar counts it")
 		func failures() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("1 key fails in .env", footer: 30))
+			// The row reads as one line: its key, then where it fails, then its rules.
+			let row = try await host.waitForElement(saying: "RETRY_COUNT, Fails its rules in .env, Integer, 0–10")
+			#expect(row.texts == ["RETRY_COUNT, Fails its rules in .env, Integer, 0–10"])
 		}
 
 		@Test("with no rules, one button declares every stored key in one change")
@@ -317,7 +320,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			store.editSchemaDraft(in: "schema-keys") { $0.set(.declared(.object([.init(key: "format", value: .string("port"))])), for: .key("PORT")) }
 			try #"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			#expect(try await host.waitForText("Schema can't be read"))
+			#expect(try await host.waitForText("Schema can’t be read"))
 			#expect(try await host.waitForText("1 unsaved change", footer: 30))
 			try await host.click("Discard")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Discarding that can't be undone asks first")
@@ -335,7 +338,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys") != nil })
 			for _ in 0..<2 { try host.press(.down) }
 			#expect(try await panelShows("Override rules", in: host), "DATABASE_URL is imported, so its panel is read-only")
-			#expect(try await panelShows("Review & save", in: host))
+			#expect(try await panelShows("Review & Save", in: host))
 			try host.shortcut("s", code: 1)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 		}
@@ -349,7 +352,7 @@ extension SheetInteractionTests {
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys")?.rejection != nil })
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") && $0.contains("Show") && $0.contains("1 unsaved change") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") && $0.contains("Show") && $0.contains("1 unsaved change") })
 			#expect(try await statusBarText(in: host).contains("1 key fails"), "A rejected draft still shows the failures lpm.json's rules find")
 		}
 
@@ -361,17 +364,17 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("3000")),
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") })
 			try #"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			#expect(try await host.waitForText("Schema can't be read"))
-			#expect(try await waitForStatusBar(in: host) { !$0.contains("Can't save") && !$0.contains("Show") && $0.contains("Discard") })
+			#expect(try await host.waitForText("Schema can’t be read"))
+			#expect(try await waitForStatusBar(in: host) { !$0.contains("Can’t save") && !$0.contains("Show") && $0.contains("Discard") })
 		}
 
 		@Test("the arrows leave a key being added in its panel, with what's typed")
 		func arrowsKeepNewKey() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
 			try host.typeText("api-token", placeholder: "KEY_NAME")
 			host.window.makeFirstResponder(nil)
@@ -408,8 +411,8 @@ extension SheetInteractionTests {
 		func accountSwitcherTakesKeys() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Personal vault")
-			#expect(try await host.waitForText("Lock vault"))
+			try await host.click("Account menu")
+			#expect(try await host.waitForText("Sign In…"))
 			try host.press(.down)
 			try await host.settle()
 			#expect(!host.hasField(placeholder: "KEY_NAME"), "↓ didn't select a row under the switcher")

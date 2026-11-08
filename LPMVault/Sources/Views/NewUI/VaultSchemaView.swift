@@ -118,7 +118,7 @@ struct VaultSchemaView: View {
 		guard !canEdit else { return nil }
 		if saving { return "Saving the rules to lpm.json…" }
 		return switch state {
-		case .noFolder?: "Connect the CLI to link the project's folder first"
+		case .noFolder?: "Connect the CLI to link the project’s folder first"
 		case .unreadable?: "Rules can be edited once lpm.json can be read"
 		case .loaded?, nil: "Reading lpm.json…"
 		}
@@ -138,40 +138,54 @@ struct VaultSchemaView: View {
 	private var header: some View {
 		HStack(spacing: 10) {
 			Text("Schema")
-				.font(.system(size: 19, weight: .bold))
-				.tracking(-0.28)
-				.foregroundStyle(VaultPalette.textPrimary)
+				.vaultPageTitle()
 			if case .noFolder? = state {
 				Text("no project folder linked")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
-				HStack(spacing: 5) {
-					Image(systemName: "doc").font(.system(size: 11))
-					Text("lpm.json › envSchema").font(VaultTypography.tabular(11.5))
-					Text("· plain text, shared with the team").font(.system(size: 12.5))
+				// Whole parts go as the header narrows, the note first, never part of a word.
+				ViewThatFits(in: .horizontal) {
+					location(path: "lpm.json › envSchema", note: "plain text, shared with the team")
+					location(path: "lpm.json › envSchema", note: nil)
+					location(path: "lpm.json", note: nil)
+					Color.clear.frame(width: 0, height: 0)
 				}
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
+				.help("lpm.json › envSchema, in plain text, shared with the team through the repository")
 			}
 			Spacer(minLength: 8)
 			if state != nil {
 				// Shown in every state, and off while they can't be used, so the page keeps its shape.
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
-				VaultOutlineButton(systemImage: "globe", title: "Client prefixes \(clientPrefixCount)", help: "Prefixes that make keys public",
-					active: showsClientPrefixes, disabled: !showsPrefixes) { showsClientPrefixes.toggle() }
+				// A count of none reads as a stray number, so the title only counts what there is.
+				VaultOutlineButton(systemImage: "globe", title: clientPrefixCount == 0 ? "Client Prefixes" : "Client Prefixes · \(clientPrefixCount)",
+					help: "Prefixes that make keys public",
+					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
 					.fixedSize()
-					.popover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil) {
+					.vaultPopover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
+				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil,
+					borderless: true) {
 					if let configFile { ProjectConfigOpener.open(configFile) }
 				}
 				.fixedSize()
-				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, disabled: !canEdit, height: 27, action: onAddKey)
+				VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, disabled: !canEdit, action: onAddKey)
+					.padding(.leading, 4)
 					.help(editingUnavailable ?? "Declare a new key in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
-		.frame(height: 64)
+		.frame(height: 60)
+	}
+
+	private func location(path: String, note: String?) -> some View {
+		HStack(spacing: 5) {
+			Image(systemName: "doc").font(.system(size: 11)).accessibilityHidden(true)
+			// One run of text, so the note's " · " is spaced as every other line's is.
+			Text(path).font(VaultTypography.tabular(11.5)) + Text(note.map { " · \($0)" } ?? "").font(.system(size: 12.5))
+		}
+		.foregroundStyle(VaultPalette.textTertiary)
+		.lineLimit(1)
+		.fixedSize()
 	}
 
 	// MARK: - Changes on disk
@@ -200,7 +214,7 @@ struct VaultSchemaView: View {
 			.padding(.trailing, 4)
 			.frame(height: 36)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.headerRow))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.padding(.horizontal, 20)
 			.padding(.top, 12)
 			.accessibilityElement(children: .combine)
@@ -250,7 +264,7 @@ struct VaultSchemaView: View {
 				}
 			}
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.content))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 		.padding(12)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.orangeTint))
@@ -271,8 +285,8 @@ struct VaultSchemaView: View {
 		case .noFolder?:
 			emptyState(
 				symbol: "terminal",
-				title: "Rules live in your project's lpm.json",
-				message: "This project isn't linked to a folder yet, so LPM Vault can't read or edit its schema. Connect the CLI to link the folder."
+				title: "Rules live in your project’s lpm.json",
+				message: "This project isn’t linked to a folder yet, so LPM Vault can’t read or edit its schema. Connect the CLI to link the folder."
 			) {
 				VaultBarButton(systemImage: "link", title: "Connect CLI", filled: true, height: 28, action: onConnectCLI)
 				VaultBarButton(title: "Learn about envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -286,12 +300,12 @@ struct VaultSchemaView: View {
 					: "Declare your first key to give the LPM CLI something to enforce: formats, defaults, and required keys."
 			) {
 				if canEdit {
-					VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 28, action: onAddKey)
+					VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, height: 28, action: onAddKey)
 					if declarableCount > 0 {
 						let tooMany = declarableCount > ProjectEnvSchemaRule.maximumKeys
 						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", disabled: tooMany, height: 28,
 							action: onDeclareAll)
-							.help(tooMany ? "lpm.json can declare at most \(ProjectEnvSchemaRule.maximumKeys) keys, so these can't all be declared at once." : "")
+							.help(tooMany ? "lpm.json can declare at most \(ProjectEnvSchemaRule.maximumKeys) keys, so these can’t all be declared at once." : "")
 					}
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -371,7 +385,7 @@ struct VaultSchemaView: View {
 				.foregroundStyle(VaultPalette.red)
 				.padding(.top, 1)
 			VStack(alignment: .leading, spacing: 4) {
-				Text("Schema can't be read")
+				Text("Schema can’t be read")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				(Text(problem.location).font(VaultTypography.tabular(11.5)).foregroundColor(VaultPalette.accentForeground)
@@ -403,15 +417,12 @@ struct VaultSchemaView: View {
 		// scrolling a row into view never leaves it under the header.
 		return VStack(spacing: 0) {
 			HStack(spacing: 0) {
+				// No line between the columns: the rows below have none.
 				VaultKeySortHeader(order: $sortOrder)
 					.frame(width: Self.keyWidth, height: VaultMetrics.tableHeader)
-				VaultHairline(axis: .vertical)
-				HStack(spacing: 8) {
-					Text("RULES").vaultSectionLabel()
-					Text("only what differs from the default")
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textFaint)
-				}
+				Text("Rules").vaultColumnHeader()
+					.help("Only what differs from the default")
+					.accessibilityHint("Only what differs from the default")
 				.padding(.horizontal, 14)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
@@ -476,7 +487,7 @@ struct VaultSchemaView: View {
 		return rows[min(max(index + offset, 0), rows.count - 1)]
 	}
 
-	private static let keyWidth: CGFloat = 260
+	private static let keyWidth: CGFloat = 320
 
 	/// What the page lists: the rules with the draft applied, from A to Z.
 	private struct Listed {
@@ -603,15 +614,8 @@ struct VaultSchemaView: View {
 		HStack(alignment: .top, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 7) {
-					if let environments = failures[rule.key], state != .removed {
-						Circle().fill(VaultPalette.red).frame(width: 6, height: 6)
-							.help("Fails its rules in \(environments.joined(separator: ", "))")
-							.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")
-							// Read after the key, so the row says its key first.
-							.accessibilitySortPriority(-1)
-					}
 					Text(rule.key)
-						.font(VaultTypography.tabular(12.5, .semibold))
+						.font(VaultTypography.tabular(13, .medium))
 						.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
 						.strikethrough(state == .removed)
 						.lineLimit(1)
@@ -626,6 +630,10 @@ struct VaultSchemaView: View {
 						VaultTagBadge(text: "Renamed", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 							.help("Renamed from \(original) in your draft")
 					}
+				}
+				// Where the key's values fail sits with the key, as a status; the Rules column holds only rules.
+				if state != .removed, let failing = failures[rule.key] {
+					VaultRuleFailureBadge(environments: failing)
 				}
 				if let description, !description.isEmpty {
 					Text(description)
@@ -655,11 +663,8 @@ struct VaultSchemaView: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.opacity(state == .removed ? 0.6 : 1)
 		}
-		.padding(.vertical, 10)
-		.background(selected ? VaultPalette.schemaRowSelected : .clear)
-		.overlay(alignment: .leading) {
-			if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-		}
+		.padding(.vertical, 8)
+		.vaultRowBackground(selected: selected)
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}
@@ -677,23 +682,23 @@ struct VaultSchemaView: View {
 	private var undeclaredHeader: some View {
 		HStack(spacing: 8) {
 			Text("STORED, NOT DECLARED · \(undeclared.count)").vaultSectionLabel()
-			Text("in the Keychain but not in lpm.json — the LPM CLI doesn't check them")
+			Text("in the Keychain but not in lpm.json — the LPM CLI doesn’t check them")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textFaint)
 				.lineLimit(1)
 		}
 		.padding(.horizontal, 20)
-		.padding(.vertical, 8)
+		// As tall as the groups' band, which holds a button, so the bands keep one rhythm.
+		.frame(minHeight: Self.bandHeight)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(VaultPalette.headerRow)
-		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+		.vaultSectionBand()
 	}
 
 	private func undeclaredRow(_ stored: VaultStore.StoredSchemaKey) -> some View {
 		HStack(spacing: 0) {
 			HStack(spacing: 8) {
 				Text(stored.key.escapingDirectionControls)
-					.font(VaultTypography.tabular(12.5))
+					.font(VaultTypography.tabular(13, .medium))
 					.foregroundStyle(VaultPalette.textSecondary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -716,58 +721,57 @@ struct VaultSchemaView: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.lineLimit(1)
-						.help("Windows reads both as one name, so the LPM CLI can't tell them apart there. Rename the stored key to match.")
-				} else {
-					Text("Not in schema")
-						.font(.system(size: 11.5).italic())
-						.foregroundStyle(VaultPalette.textFaint)
+						.help("Windows reads both as one name, so the LPM CLI can’t tell them apart there. Rename the stored key to match.")
 				}
 				Spacer(minLength: 8)
 				if let conflict = stored.conflict, !stored.isIgnored {
-					VaultBarButton(title: "Open \(conflict)", height: 24) { onSelect(.key(conflict)) }
+					VaultBarButton(title: "Open \(conflict)", borderless: true, height: 26) { onSelect(.key(conflict)) }
 						.accessibilityLabel("Open \(conflict.escapingDirectionControls)")
 				} else if canEdit, storedKeysChecked, !stored.isIgnored {
-					VaultBarButton(systemImage: "plus", title: "Declare", height: 24) { onDeclare(stored.key) }
+					VaultBarButton(systemImage: "plus", title: "Declare", borderless: true, height: 26) { onDeclare(stored.key) }
 						.accessibilityLabel("Declare \(stored.key.escapingDirectionControls)")
 				}
 			}
-			.padding(.horizontal, 14)
+			.padding(.leading, 14)
+			.padding(.trailing, Self.bandActionInset)
 		}
 		.frame(height: Self.undeclaredRowHeight)
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 	}
 
-	private static let undeclaredRowHeight: CGFloat = 42
+	private static let undeclaredRowHeight: CGFloat = 36
+	/// A borderless action's trailing inset, so its title ends where the page's bordered buttons' edges do: their 20-point inset, less its own padding.
+	private static let bandActionInset: CGFloat = 20 - 9
+	/// Every section band's height: its 26-point action and 7 points above and below.
+	private static let bandHeight: CGFloat = 40
+	private static let groupsExplanation = "Keys the LPM CLI checks together: all, one or none of a group’s keys"
 
+	/// The groups' band, which says "none yet" while there are none, rather than a row of its own; what a group is, its tooltip says.
 	private func groupsHeader(count: Int) -> some View {
 		HStack(spacing: 8) {
-			Text("GROUPS · \(count)").vaultSectionLabel()
-			Text("keys the LPM CLI checks together")
-				.font(.system(size: 11))
-				.foregroundStyle(VaultPalette.textFaint)
-				.lineLimit(1)
+			Text(count == 0 ? "GROUPS" : "GROUPS · \(count)").vaultSectionLabel()
+				.help(Self.groupsExplanation)
+				.accessibilityHint(Self.groupsExplanation)
+			if count == 0 {
+				Text("none yet")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textFaint)
+					.lineLimit(1)
+			}
 			Spacer(minLength: 8)
 			if canEdit {
 				let full = count >= ProjectEnvSchemaGroup.maximumGroups
-				Button(action: onAddGroup) {
-					HStack(spacing: 4) {
-						Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
-						Text("Add group").font(.system(size: 11.5, weight: .semibold))
-					}
-					.foregroundStyle(VaultPalette.accentForeground)
-				}
-				.buttonStyle(.plain)
-				.disabled(full)
-				.opacity(full ? 0.4 : 1)
-				.vaultPointingHand()
-				.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
+				// The same borderless button as Declare on the stored keys below.
+				VaultBarButton(systemImage: "plus", title: "Add Group", borderless: true, disabled: full, height: 26, action: onAddGroup)
+					.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
-		.padding(.horizontal, 20)
-		.padding(.vertical, 8)
+		.padding(.leading, 20)
+		// The borderless button's title ends where the bordered buttons' edges above do.
+		.padding(.trailing, Self.bandActionInset)
+		.frame(minHeight: Self.bandHeight)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(VaultPalette.headerRow)
-		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+		.vaultSectionBand()
 	}
 
 	private func groupRow(_ group: ProjectEnvSchemaOverview.Group, state: RowState) -> some View {
@@ -801,11 +805,8 @@ struct VaultSchemaView: View {
 				Spacer(minLength: 0)
 			}
 			.padding(.horizontal, 20)
-			.frame(minHeight: 38)
-			.background(selected ? VaultPalette.schemaRowSelected : .clear)
-			.overlay(alignment: .leading) {
-				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-			}
+			.frame(minHeight: 40)
+			.vaultRowBackground(selected: selected)
 			.contentShape(Rectangle())
 			.accessibilityElement(children: .combine)
 		}
@@ -815,11 +816,25 @@ struct VaultSchemaView: View {
 
 	// MARK: - Status bar
 
-	/// A narrow bar names only the smart views' counts.
+	/// How much the status bar says: as it narrows, whole parts go, the
+	/// least needed first, so no count or word is ever cut.
+	private enum StatusDetail: Comparable {
+		/// Everything, with the note that the LPM CLI enforces the rules.
+		case full
+		/// Without the note.
+		case counts
+		/// The declared keys, the failing ones and the draft, and the smart views by name.
+		case essential
+		/// The failing keys and the draft, and only the smart views' counts.
+		case compact
+	}
+
 	private func statusBar(_ listed: Listed?) -> some View {
 		ViewThatFits(in: .horizontal) {
-			statusLine(listed, compactLinks: false)
-			statusLine(listed, compactLinks: true)
+			statusLine(listed, detail: .full)
+			statusLine(listed, detail: .counts)
+			statusLine(listed, detail: .essential)
+			statusLine(listed, detail: .compact)
 		}
 		.font(.system(size: 11))
 		.foregroundStyle(VaultPalette.textTertiary)
@@ -831,19 +846,19 @@ struct VaultSchemaView: View {
 			VaultConfirmation(
 				symbol: "exclamationmark.triangle",
 				title: "Discard your unsaved changes?",
-				message: "lpm.json can't be read, so discarding can't be undone.",
+				message: "lpm.json can’t be read, so discarding can’t be undone.",
 				cancelTitle: "Keep Editing",
 				actions: [.init(title: "Discard", perform: onDiscardAll)])
 		}
 	}
 
-	private func statusLine(_ listed: Listed?, compactLinks: Bool) -> some View {
+	private func statusLine(_ listed: Listed?, detail: StatusDetail) -> some View {
 		HStack(spacing: 12) {
 			HStack(spacing: 12) {
 				switch state {
 				case .loaded?:
 					if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
-						loadedStatus(listed)
+						loadedStatus(listed, detail: detail)
 					} else {
 						Text(storedKeyCount.counted("stored key"))
 						Text("·")
@@ -853,7 +868,7 @@ struct VaultSchemaView: View {
 				case .unreadable?:
 					Text(storedKeyCount.counted("stored key"))
 					Text("·")
-					Text("checks paused — lpm.json can't be read")
+					Text("checks paused — lpm.json can’t be read")
 						.foregroundStyle(VaultPalette.orangeTintText)
 					draftStatus
 				case .noFolder?:
@@ -868,28 +883,43 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 0)
 			if let smartViews {
-				VaultSmartViewLinks(counts: smartViews, compact: compactLinks, open: onOpenSmartView)
+				// The left side already counts the keys that fail, in the Schema's own words.
+				VaultSmartViewLinks(counts: smartViews, scope: detail <= .counts ? "Project" : nil, compact: detail == .compact,
+					omitted: failureSummary == nil ? [] : [.invalid], open: onOpenSmartView)
 			}
 			draftActions
 		}
 	}
 
+	/// What the loaded schema holds, the parts `detail` keeps, between dots.
+	/// A count of none says nothing the page doesn't, so it's left out.
 	@ViewBuilder
-	private func loadedStatus(_ listed: Listed) -> some View {
-		Text(listed.declaredCount.counted("declared key"))
-		Text("·")
-		Text(listed.groupCount.counted("group"))
-		Text("·")
-		Text("\(listed.inheritedCount) inherited")
-		draftStatus
-		if let failing = failureSummary {
-			Text("·")
-			Text(failing)
-				.fontWeight(.semibold)
-				.foregroundStyle(VaultPalette.redText)
-				.layoutPriority(1)
+	private func loadedStatus(_ listed: Listed, detail: StatusDetail) -> some View {
+		let changes = draft?.changeCount ?? 0
+		let counts: [String] = detail == .compact ? [] : [listed.declaredCount.counted("declared key")]
+			+ (detail <= .counts && listed.groupCount > 0 ? [listed.groupCount.counted("group")] : [])
+			+ (detail <= .counts && listed.inheritedCount > 0 ? ["\(listed.inheritedCount) inherited"] : [])
+		ForEach(Array(counts.enumerated()), id: \.offset) { index, count in
+			if index > 0 { Text("·") }
+			Text(count)
 		}
-		if (draft?.changeCount ?? 0) == 0 {
+		if changes > 0 {
+			if !counts.isEmpty { Text("·") }
+			draftLabel(changes)
+		}
+		if let failing = failureSummary {
+			if !counts.isEmpty || changes > 0 { Text("·") }
+			HStack(spacing: 4) {
+				Image(systemName: VaultSmartView.invalid.symbol)
+					.font(.system(size: 9.5, weight: .semibold))
+					.foregroundStyle(VaultSmartView.invalid.tint)
+					.accessibilityHidden(true)
+				Text(failing)
+					.foregroundStyle(VaultPalette.textSecondary)
+			}
+			.layoutPriority(1)
+		}
+		if changes == 0, detail == .full {
 			Text("·")
 			Text("enforced by LPM CLI")
 		}
@@ -899,14 +929,18 @@ struct VaultSchemaView: View {
 	private var draftStatus: some View {
 		if let changes = draft?.changeCount, changes > 0 {
 			Text("·")
-			Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
-				.fontWeight(.semibold)
-				.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
-				.layoutPriority(1)
+			draftLabel(changes)
 		}
 	}
 
-	/// Review & save and Discard for the whole draft, while the panel that
+	private func draftLabel(_ changes: Int) -> some View {
+		Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
+			.fontWeight(.semibold)
+			.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
+			.layoutPriority(1)
+	}
+
+	/// Review & Save and Discard for the whole draft, while the panel that
 	/// offers its own way to the review is closed. What blocks saving reads
 	/// in full on hover and opens with Show.
 	@ViewBuilder
@@ -914,7 +948,7 @@ struct VaultSchemaView: View {
 		if let changes = draft?.changeCount, changes > 0, !panelOpen {
 			let unreadable = if case .unreadable? = state { true } else { false }
 			if let blocker, blocker.blocksReview {
-				Text("Can't save")
+				Text("Can’t save")
 					.fontWeight(.semibold)
 					.foregroundStyle(VaultPalette.redText)
 					.fixedSize()
@@ -930,12 +964,12 @@ struct VaultSchemaView: View {
 						.accessibilityLabel(VaultSchemaEditorFooter.showLabel(show))
 				}
 			}
-			VaultBarButton(title: changes > 1 ? "Discard all" : "Discard", disabled: saving, height: 22) {
+			VaultBarButton(title: changes > 1 ? "Discard All" : "Discard", disabled: saving, height: 22) {
 				if unreadable { confirmsDiscard = true } else { onDiscardAll() }
 			}
-			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can't be read, this can't be undone."
+			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can’t be read, this can’t be undone."
 				: "Discard your unsaved changes to the schema. ⌘Z brings them back.")
-			VaultBarButton(title: saving ? "Saving…" : "Review & save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
+			VaultBarButton(title: saving ? "Saving…" : "Review & Save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
 				height: 22, action: onReview)
 				.help(editingUnavailable ?? "Review the changes, then save them to lpm.json")
 		}

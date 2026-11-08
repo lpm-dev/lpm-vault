@@ -106,6 +106,11 @@ enum NativeTestClick {
 	}
 }
 
+extension NSTextField {
+	/// The placeholder as drawn: SwiftUI sets a styled prompt as attributed text only.
+	var shownPlaceholder: String? { placeholderAttributedString?.string ?? placeholderString }
+}
+
 @MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView
@@ -175,6 +180,14 @@ final class SheetTestHost<V: View> {
 		try scrollToEnd(scrollView)
 	}
 
+	/// Scrolls `targetWindow`'s first scroll view to its end, as a person
+	/// scrolls a long menu down to its last rows; a menu showing whole has none.
+	func scrollToEnd(in targetWindow: NSWindow) throws {
+		let content = try #require(targetWindow.contentView)
+		content.layoutSubtreeIfNeeded()
+		if let scrollView = Self.firstScrollView(in: content) { try scrollToEnd(scrollView) }
+	}
+
 	private func scrollToEnd(_ scrollView: NSScrollView) throws {
 		let clip = scrollView.contentView
 		let documentHeight = scrollView.documentView?.frame.height ?? 0
@@ -223,11 +236,12 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// What the window says right now, for assertions that text is absent or present.
-	func text(in targetWindow: NSWindow? = nil) async throws -> AccessibleText {
+	/// `footer` limits it to the bottom points of the window.
+	func text(in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> AccessibleText {
 		let window = targetWindow ?? self.window
 		let target = try #require(targetWindow?.contentView ?? view)
 		target.layoutSubtreeIfNeeded()
-		return AccessibilityTree.text(in: target, root: window)
+		return AccessibilityTree.text(in: target, root: window, area: footer.map { bottomBand(of: target, height: $0) })
 	}
 
 	/// Returns as soon as the window says `expected`, or `false` after
@@ -269,6 +283,15 @@ final class SheetTestHost<V: View> {
 		return try #require(target.menu(for: event) ?? view.menu(for: event), "\(name) has a context menu")
 	}
 
+	/// Runs the action named `action` of the element saying `label`, as
+	/// VoiceOver's Actions rotor does, such as an item of a More menu that
+	/// offers its items as the button's own actions. Returns false when the
+	/// element offers no such action now, as when the item is unavailable.
+	@discardableResult
+	func perform(_ action: String, on label: String) async throws -> Bool {
+		try await waitForElement(saying: label).perform(action)
+	}
+
 	/// Chooses the item titled `title`, as clicking it does.
 	func choose(_ title: String, in menu: NSMenu) throws {
 		let index = try #require(menu.items.firstIndex { $0.title == title }, "Missing \(title)")
@@ -288,6 +311,12 @@ final class SheetTestHost<V: View> {
 	/// Clicks the element saying `label` once it appears, within `region` of
 	/// the view when given, in normalized coordinates from the bottom-left.
 	/// A SwiftUI control that isn't an AppKit button is pressed as VoiceOver presses it.
+	/// A workspace's sidebar below its title bar, in normalized coordinates, so a
+	/// project's or an environment's row is found apart from the breadcrumb that names it too.
+	var sidebarRegion: CGRect {
+		CGRect(x: 0, y: 0, width: 0.26, height: 1 - VaultMetrics.titleBar / max(view.bounds.height, 1))
+	}
+
 	func click(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false) async throws {
 		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive)()
 	}
@@ -510,7 +539,7 @@ final class SheetTestHost<V: View> {
 
 	/// Types into the plain text field showing `placeholder`, replacing its text.
 	func enterText(_ text: String, placeholder: String) throws {
-		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		let field = try #require(textFields(in: view).first { $0.shownPlaceholder == placeholder }, "Missing field \(placeholder)")
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -523,7 +552,7 @@ final class SheetTestHost<V: View> {
 	func typeText(_ text: String, placeholder: String, in targetWindow: NSWindow? = nil) throws {
 		let window = targetWindow ?? self.window
 		let root = try #require(window.contentView)
-		let field = try #require(textFields(in: root).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		let field = try #require(textFields(in: root).first { $0.shownPlaceholder == placeholder }, "Missing field \(placeholder)")
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -543,18 +572,18 @@ final class SheetTestHost<V: View> {
 
 	/// Whether a plain text field shows `placeholder`.
 	func hasField(placeholder: String) -> Bool {
-		textFields(in: view).contains { $0.placeholderString == placeholder }
+		textFields(in: view).contains { $0.shownPlaceholder == placeholder }
 	}
 
 	/// The text of the field showing `placeholder`.
 	func fieldText(placeholder: String) -> String? {
-		textFields(in: view).first { $0.placeholderString == placeholder }?.stringValue
+		textFields(in: view).first { $0.shownPlaceholder == placeholder }?.stringValue
 	}
 
 	/// Whether the field showing `placeholder` is being edited, in the host's window or `targetWindow`.
 	func isEditing(placeholder: String, in targetWindow: NSWindow? = nil) -> Bool {
 		let window = targetWindow ?? self.window
-		guard let root = window.contentView, let field = textFields(in: root).first(where: { $0.placeholderString == placeholder }),
+		guard let root = window.contentView, let field = textFields(in: root).first(where: { $0.shownPlaceholder == placeholder }),
 			let editor = field.currentEditor()
 		else { return false }
 		return window.firstResponder === editor
@@ -565,7 +594,7 @@ final class SheetTestHost<V: View> {
 	func popoverWindow() async throws -> NSWindow {
 		var found: NSWindow?
 		_ = try await waitUntil {
-			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") && !Self.isClosing($0) }
 			found = showing.count == 1 ? showing.first : nil
 			return found != nil
 		}
@@ -627,7 +656,6 @@ final class SheetTestHost<V: View> {
 	enum ValueFieldControl: CGFloat {
 		case reveal = 13
 		case copy = 39
-		case generate = 77
 	}
 
 	/// Clicks an icon control of the secure value field at `index`, counting from
@@ -640,49 +668,15 @@ final class SheetTestHost<V: View> {
 		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + control.rawValue, y: frame.midY))
 	}
 
-	/// Bounds, in points from the bottom-left, of everything drawn over the solid
-	/// background within the bottom `band` points, leaving out the last `trailing`
-	/// points of each row, plus the text said there.
-	func bottomInk(band: CGFloat, ignoringTrailing trailing: CGFloat = 0) async throws -> (bounds: CGRect, text: AccessibleText) {
-		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
-		let scale = CGFloat(image.width) / view.bounds.width
-		let width = image.width, height = image.height
-		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-		context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-		// Bitmap memory starts with the top row. Sample the background mid-band and
-		// skip the window's rounded corners.
-		let margin = Int(12 * scale)
-		let sample = ((height / 2) * width + margin) * 4
-		let red = Int(pixels[sample]), green = Int(pixels[sample + 1]), blue = Int(pixels[sample + 2])
-		var minX = Int.max, maxX = Int.min, minTop = Int.max, maxTop = Int.min
-		for top in 0..<height {
-			var pixel = (top * width + margin) * 4
-			for column in margin..<(width - max(margin, Int(trailing * scale))) {
-				let difference = abs(Int(pixels[pixel]) - red) + abs(Int(pixels[pixel + 1]) - green) + abs(Int(pixels[pixel + 2]) - blue)
-				if difference > 24 {
-					if column < minX { minX = column }
-					if column > maxX { maxX = column }
-					if top < minTop { minTop = top }
-					if top > maxTop { maxTop = top }
-				}
-				pixel += 4
-			}
-		}
-		try #require(minX <= maxX, "Nothing drawn in the bottom \(band) points")
-		let bounds = CGRect(
-			x: CGFloat(minX) / scale,
-			y: CGFloat(height - 1 - maxTop) / scale,
-			width: CGFloat(maxX - minX + 1) / scale,
-			height: CGFloat(maxTop - minTop + 1) / scale
-		)
-		return (bounds, AccessibilityTree.text(in: view, root: window, area: bottomBand(of: view, height: band)))
-	}
-
 	/// The line saying `label` within `rect` (view coordinates).
 	func line(containing label: String, rect: NSRect) async throws -> String {
 		let text = AccessibilityTree.text(in: view, root: window, area: rect)
 		return try #require(text.lines.first { $0.contains(label) })
+	}
+
+	/// A popover that has started to close, which may still be fading out.
+	static func isClosing(_ window: NSWindow) -> Bool {
+		(window as? VaultPopoverPanel)?.isClosing == true
 	}
 
 	func generatorWindow() async throws -> NSWindow {
@@ -701,11 +695,10 @@ final class SheetTestHost<V: View> {
 		try await waitUntil { !panel.isVisible }
 	}
 
-	/// The generator is the only popover these fixtures present. Fall back to its
-	/// heading in case a future macOS hosts popovers in another window class.
+	/// The generator's popover, told from a menu's by its heading, leaving out
+	/// popovers already closing.
 	func visibleGeneratorWindow() async throws -> NSWindow? {
-		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) }
-		if let popover = candidates.first(where: { $0.className.contains("Popover") }) { return popover }
+		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) && !Self.isClosing($0) }
 		for candidate in candidates where !window.sheets.contains(candidate) {
 			guard let content = candidate.contentView else { continue }
 			if AccessibilityTree.text(in: content, root: candidate).contains("Generate value", options: .caseInsensitive) { return candidate }
@@ -715,7 +708,7 @@ final class SheetTestHost<V: View> {
 
 	/// The editable text field showing `placeholder`.
 	func textField(placeholder: String) -> NSTextField? {
-		textFields(in: view).first { $0.placeholderString == placeholder }
+		textFields(in: view).first { $0.shownPlaceholder == placeholder }
 	}
 
 	/// Editable text fields in reading order: top to bottom, then left to right.
@@ -835,19 +828,18 @@ struct SheetInteractionTests {
 		#expect(try await host.waitUntil { store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new" })
 	}
 
-	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
-	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
+	@Test("the lock screen's encryption note sits centered just under Unlock, on the card with it", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
+	func lockScreenNote(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
 		store.lock()
 		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size, keepsRequestedSize: true)
 		defer { host.window.close() }
 		try await host.settle()
-		// Past the Settings button in the bottom-right corner.
-		let note = try await host.bottomInk(band: 60, ignoringTrailing: 48)
 		#expect(host.view.bounds.size == size)
-		#expect(note.text.contains("Values stay encrypted"))
-		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
-		#expect((15...28).contains(note.bounds.minY))
+		let note = try await host.drawnFrame(saying: "Saved values stay encrypted in this Mac’s Keychain.")
+		let button = try await host.drawnFrame(saying: "Unlock")
+		#expect(abs(note.midX - host.view.bounds.width / 2) < 3, "The note is centered: \(note)")
+		#expect(note.maxY < button.minY && button.minY - note.maxY < 60, "The note sits just under Unlock: \(note) \(button)")
 		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
 		let unlock = try await host.line(containing: "Unlock", rect: center)
 		#expect(unlock.range(of: #"Unlock\W+⌘L"#, options: .regularExpression) != nil, "The Unlock button says \(unlock)")
@@ -919,9 +911,9 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
-		#expect(try await host.waitForText("Replace vault ID"))
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
+		#expect(try await host.waitForText("Replace Vault ID"))
 		try await host.settle()
 		#expect(try Data(contentsOf: config) == original)
 	}
@@ -944,9 +936,9 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
-		#expect(try await host.waitForText("Replace vault ID"))
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
+		#expect(try await host.waitForText("Replace Vault ID"))
 		if onThisMac {
 			#expect(try await host.text().contains("lpm.json links Billing API"))
 			try await host.click("Open Billing API")
@@ -972,10 +964,10 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { source }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
 		#expect(try await host.waitForText("Using the project folder around src, as the LPM CLI does."))
-		// The "write file" segment also says Write until the folder's status loads.
+		// The "Write File" segment also says Write until the folder's status loads.
 		try #require(try await host.waitForText("Write lpm.json"))
 		try await host.click("Write lpm.json")
 		try #require(try await host.waitForText("Linked in lpm.json"))
@@ -996,9 +988,9 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { user }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
-		#expect(try await host.waitForText("so it can't hold a project"))
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
+		#expect(try await host.waitForText("so it can’t hold a project"))
 		#expect(try await !host.text().contains("Write lpm.json"))
 		#expect(ProjectCLILink.folder(vaultId: "sheet-regression", projectPath: "", defaults: defaults) != user.path)
 		#expect(try FileManager.default.contentsOfDirectory(atPath: user.path).isEmpty)
@@ -1064,10 +1056,10 @@ struct SheetInteractionTests {
 		let (store, _) = makeStore(preferences: defaults)
 		let first = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		try await first.settle()
-		try await first.click("write file")
-		try await first.click("Choose folder")
+		try await first.click("Write File")
+		try await first.click("Choose Folder")
 		try #require(try await first.waitForText("Write lpm.json"))
-		try await first.click("Write")
+		try await first.click("Write lpm.json")
 		try #require(try await first.waitForText("Linked in lpm.json"))
 		first.window.close()
 		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 560))
@@ -1201,7 +1193,7 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		#expect(host.view.fittingSize.height <= 640)
 		let rendered = try await host.text()
-		#expect(rendered.contains("Add variable"))
+		#expect(rendered.contains("New Key"))
 		#expect(rendered.contains("Cancel"))
 	}
 
@@ -1232,7 +1224,7 @@ struct SheetInteractionTests {
 		if transition == "generator" {
 			try await host.click("Generate", in: sheet)
 			_ = try await host.generatorWindow()
-			try await host.click("Add variable", in: sheet)
+			try await host.click("New Key", in: sheet)
 		} else {
 			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
 		}

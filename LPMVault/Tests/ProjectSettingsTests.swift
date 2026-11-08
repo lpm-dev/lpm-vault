@@ -242,7 +242,7 @@ struct ProjectSettingsTests {
 		(.emoji("🚀"), .notFound, false, "Emoji · 🚀", []),
 		(.monogram("DA", .teal), .notFound, false, "Monogram · DA · Teal", []),
 		(.projectFile("assets/icon.png"), .notFound, false, "Image · assets/icon.png", ["assets/icon.png"]),
-		(.projectFile("assets/icon.png"), .notFound, true, "Image · assets/icon.png · can't be read, so the automatic icon shows", ["assets/icon.png"]),
+		(.projectFile("assets/icon.png"), .notFound, true, "Image · assets/icon.png · can’t be read, so the automatic icon shows", ["assets/icon.png"]),
 		(.storedImage(file: "\(UUID().uuidString).png", name: "brand.png"), .notFound, false, "Image · brand.png", []),
 		(.storedImage(file: "\(UUID().uuidString).png", name: "brand.png"), .notFound, true, "Image · brand.png · missing, so the automatic icon shows", []),
 	])

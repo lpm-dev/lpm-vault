@@ -8,6 +8,8 @@ struct VaultHistoryInspector: View {
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
 	@State private var failure: String?
+	/// The value whose More menu is showing.
+	@State private var openMenu: String?
 
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
@@ -15,65 +17,70 @@ struct VaultHistoryInspector: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			if let entry = history.selectedEntry {
-				ScrollView {
+				// The actions follow a short change directly, and stay in reach below a long one.
+				ViewThatFits(in: .vertical) {
 					VStack(alignment: .leading, spacing: 0) {
-						header(entry)
+						details(entry)
 						VaultHairline()
-						ForEach(Array(entry.environments.enumerated()), id: \.offset) { index, environment in
-							environmentSection(entry, environment: environment, index: index)
+						footer(entry)
+						Spacer(minLength: 0)
+					}
+					VStack(spacing: 0) {
+						ScrollView {
+							details(entry).padding(.bottom, VaultMetrics.scrollEndPadding)
 						}
-						if let failure {
-							Text(failure)
-								.font(.system(size: 12))
-								.foregroundStyle(VaultPalette.redText)
-								.padding(16)
-						}
+						VaultHairline()
+						footer(entry)
 					}
 				}
-				VaultHairline()
-				footer(entry)
 			}
 		}
 		.background(VaultPalette.inspector)
 		.onChange(of: history.selectedEntryID) { _, _ in failure = nil }
 	}
 
-	private func header(_ entry: HistoryEngine.Entry) -> some View {
-		let badge = VaultHistoryText.badge(entry)
-		return VStack(alignment: .leading, spacing: 6) {
-			HStack {
-				Text("CHANGE")
-					.font(VaultTypography.sectionLabel)
-					.tracking(0.6)
-					.foregroundStyle(VaultPalette.textTertiary)
-				Spacer()
-				Button {
-					history.select(nil)
-				} label: {
-					Image(systemName: "xmark")
-						.font(.system(size: 11, weight: .semibold))
-						.foregroundStyle(VaultPalette.textTertiary)
-				}
-				.buttonStyle(.plain)
-				.accessibilityLabel("Close change details")
+	private func details(_ entry: HistoryEngine.Entry) -> some View {
+		VStack(alignment: .leading, spacing: 0) {
+			header(entry)
+			VaultHairline()
+			ForEach(Array(entry.environments.enumerated()), id: \.offset) { index, environment in
+				environmentSection(entry, environment: environment, index: index)
 			}
-			Text(text.describe(entry) { id in history.entry(id) })
-				.font(.system(size: 14, weight: .semibold))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.fixedSize(horizontal: false, vertical: true)
-			Text(text.full(VaultHistoryText.date(entry.time)))
-				.font(.system(size: 12))
-				.foregroundStyle(VaultPalette.textSecondary)
-			HStack(spacing: 6) {
-				VaultTagBadge(text: badge.text, foreground: badge.foreground, background: badge.warns ? VaultPalette.orangeTint : badge.background)
-				if let detail = detail(entry) {
-					Text(detail)
-						.font(.system(size: 12))
-						.foregroundStyle(VaultPalette.textSecondary)
-				}
+			if let failure {
+				Text(failure)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.redText)
+					.padding(16)
 			}
 		}
-		.padding(16)
+		.frame(maxWidth: .infinity, alignment: .leading)
+	}
+
+	private func header(_ entry: HistoryEngine.Entry) -> some View {
+		let badge = VaultHistoryText.badge(entry)
+		// The header every inspector has: what it shows and closing; the title; where it's from.
+		return VStack(alignment: .leading, spacing: 0) {
+			HStack(spacing: 4) {
+				Text("CHANGE").vaultSectionLabel()
+				Spacer(minLength: 4)
+				VaultRowIconButton(systemImage: "xmark", help: "Close change details", compact: true) {
+					history.select(nil)
+				}
+			}
+			Text(text.describe(entry) { id in history.entry(id) })
+				.font(.system(size: 16, weight: .semibold))
+				.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textPrimary)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.top, 4)
+			Text(([text.full(VaultHistoryText.date(entry.time)), badge.text] + [detail(entry)].compactMap { $0 }).joined(separator: " · "))
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.top, 2)
+		}
+		.padding(.horizontal, 16)
+		.padding(.top, 12)
+		.padding(.bottom, 14)
 	}
 
 	/// "lpm.dev · acme · v14", ".env.local", "Pasted text".
@@ -99,7 +106,7 @@ struct VaultHistoryInspector: View {
 		return VStack(alignment: .leading, spacing: 10) {
 			HStack(spacing: 6) {
 				VaultEnvSwatch(color: color, size: 8)
-				Text(environment.name)
+				Text(VaultProject.displayName(for: environment.name))
 					.font(.system(size: 12.5, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("· \((environment.keyCount ?? keys.count).counted("key"))")
@@ -146,7 +153,7 @@ struct VaultHistoryInspector: View {
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack {
 				Text(change.key)
-					.font(VaultTypography.tabular(12.5, .semibold))
+					.font(VaultTypography.tabular(12.5, .medium))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Spacer()
 				VaultTagBadge(text: kindTitle(change), foreground: kindForeground(change), background: kindBackground(change))
@@ -173,7 +180,7 @@ struct VaultHistoryInspector: View {
 		switch change.change {
 		case "added": VaultPalette.greenTintText
 		case "removed": VaultPalette.redText
-		default: VaultPalette.accentText
+		default: VaultPalette.textSecondary
 		}
 	}
 
@@ -181,7 +188,7 @@ struct VaultHistoryInspector: View {
 		switch change.change {
 		case "added": VaultPalette.greenTint
 		case "removed": VaultPalette.redTint
-		default: VaultPalette.accentTint
+		default: VaultPalette.neutralTint
 		}
 	}
 
@@ -202,38 +209,48 @@ struct VaultHistoryInspector: View {
 		let content: VaultHistoryValueField.Content =
 			if let unknown { .unknown(unknown) } else if absent { .absent } else if shown, let value { .shown(value) } else { .hidden }
 		let side = title.lowercased()
-		return HStack(spacing: 4) {
+		let hasValue = unknown == nil && !absent
+		return HStack(spacing: 8) {
 			Text(title)
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textSecondary)
 				.frame(width: 44, alignment: .leading)
 				.accessibilityHidden(true)
-			VaultHistoryValueField(content: content, label: "\(title) value of \(key)")
-			if unknown == nil && !absent {
-				VaultRowIconButton(
-					systemImage: shown ? "eye.slash" : "eye",
-					help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
-					disabled: obscured, compact: true
-				) {
-					if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
-				}
-				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true) {
-					Task { await copy(valueSide) }
-				}
-				Menu {
-					Button("Remove from History…") {
+			// The controls sit inside the value's box, as in the key inspector.
+			HStack(spacing: 0) {
+				VaultHistoryValueField(content: content, label: "\(title) value of \(key)", chromeless: hasValue)
+				if hasValue {
+					VaultRowIconButton(
+						systemImage: shown ? "eye.slash" : "eye",
+						help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
+						disabled: obscured, compact: true
+					) {
+						if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
+					}
+					// Every control shows at rest, as in the key inspector, so the box's end never looks empty.
+					VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true, quiet: true) {
+						Task { await copy(valueSide) }
+					}
+					let menuID = "\(environment)\u{0}\(key)\u{0}\(sideName)"
+					VaultRowIconButton(systemImage: "ellipsis", help: "More for the \(side) value of \(key)", compact: true,
+						active: openMenu == menuID, quiet: true) {
+						openMenu = openMenu == menuID ? nil : menuID
+					}
+					.vaultMenu(isPresented: Binding(get: { openMenu == menuID }, set: { if !$0, openMenu == menuID { openMenu = nil } }),
+						rows: [VaultMenuList<Int>.Row(id: 0, title: "Remove from History…", destructive: true)],
+						width: 220, label: "More for the \(side) value of \(key)") { _ in
 						Task { await reviewRemoval(entry: entry, environment: environment, key: key, side: sideName) }
 					}
-				} label: {
-					Image(systemName: "ellipsis")
-						.font(.system(size: 11, weight: .semibold))
-						.foregroundStyle(VaultPalette.textTertiary)
 				}
-				.menuStyle(.borderlessButton)
-				.menuIndicator(.hidden)
-				.fixedSize()
-				.help("More for the \(side) value of \(key)")
-				.accessibilityLabel("More for the \(side) value of \(key)")
+			}
+			.padding(.leading, hasValue ? 8 : 0)
+			.padding(.trailing, hasValue ? 2 : 0)
+			// A past value is read, not typed in, so it sits in a well rather than a field's box.
+			.background {
+				if hasValue {
+					RoundedRectangle(cornerRadius: 6).fill(VaultPalette.codeBlock)
+						.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.divider, lineWidth: 1) }
+				}
 			}
 		}
 		.contextMenu {
@@ -245,24 +262,33 @@ struct VaultHistoryInspector: View {
 		}
 	}
 
+	/// Both ways back open a review, which holds the one filled button, so neither looks like the safe default here.
 	private func footer(_ entry: HistoryEngine.Entry) -> some View {
-		VStack(spacing: 8) {
-			Button {
-				Task { await review(rollbackTarget(entry)) }
-			} label: {
-				Label("Roll Back to This Point…", systemImage: "arrow.uturn.backward")
-					.frame(maxWidth: .infinity)
+		// The narrower action first: it touches only this change.
+		VStack(alignment: .leading, spacing: 14) {
+			VStack(alignment: .leading, spacing: 6) {
+				VaultBarButton(systemImage: "arrow.uturn.backward", title: "Undo This Change…", height: 30, fillsWidth: true) {
+					Task { await review(.undo(entry: entry.id, only: nil)) }
+				}
+				footerNote("Reverses only this change and keeps the ones after it.")
 			}
-			.disabled(entry.environments.isEmpty)
-			Button {
-				Task { await review(.undo(entry: entry.id, only: nil)) }
-			} label: {
-				Label("Undo This Change…", systemImage: "arrow.uturn.backward.circle")
-					.frame(maxWidth: .infinity)
+			VStack(alignment: .leading, spacing: 6) {
+				VaultBarButton(systemImage: "clock.arrow.circlepath", title: "Roll Back to This Point…",
+					disabled: entry.environments.isEmpty, height: 30, fillsWidth: true) {
+					Task { await review(rollbackTarget(entry)) }
+				}
+				footerNote("Restores the values as they were just after this change, undoing every later one.")
 			}
 		}
-		.controlSize(.large)
 		.padding(16)
+	}
+
+	private func footerNote(_ text: String) -> some View {
+		Text(text)
+			.font(.system(size: 11))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.fixedSize(horizontal: false, vertical: true)
+			.accessibilityHidden(true)
 	}
 
 	/// What Roll Back to This Point… opens on: the environment the page is

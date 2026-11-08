@@ -120,7 +120,7 @@ struct PublishRoute: View {
 		.padding(.horizontal, 14)
 		.padding(.vertical, 12)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.headerRow))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func side(
@@ -222,7 +222,7 @@ struct PublishSummaryPills: View {
 		[
 			(summary.adding, "add", Pill.Tone.add),
 			(summary.replacing, "replace", .replace),
-			(summary.blocked, "can't publish", .blocked),
+			(summary.blocked, "can’t publish", .blocked),
 			(summary.upToDate, "up to date", .quiet),
 			(summary.skipped, "skipped", .quiet),
 		]

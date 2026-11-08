@@ -39,10 +39,10 @@ struct VaultPublishMenu: View {
 		.frame(width: Self.width)
 		.background {
 			RoundedRectangle(cornerRadius: 10)
-				.fill(VaultPalette.control)
+				.fill(VaultPalette.popover)
 				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
 		}
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.popoverBorder, lineWidth: 1) }
 		.background {
 			VaultMenuKeys { key in
 				switch key {
@@ -50,6 +50,7 @@ struct VaultPublishMenu: View {
 				case .down: highlighted = Self.item(after: highlighted, by: 1, in: items(entries))
 				case .open: if let highlighted { open(highlighted, in: entries) }
 				case .close: isPresented = false
+				case .left, .right: return false
 				}
 				return true
 			}
@@ -262,7 +263,7 @@ struct VaultPublishMenu: View {
 
 /// As tall as its content up to `maximum`, which its content is offered, however
 /// much room there is: a `maxHeight` frame would grow to the maximum instead.
-private struct CappedHeight: Layout {
+struct CappedHeight: Layout {
 	let maximum: CGFloat
 
 	func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

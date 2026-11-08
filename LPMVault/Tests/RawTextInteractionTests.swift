@@ -192,7 +192,7 @@ extension SheetInteractionTests {
 			try await host.click("Edit")
 			let editor = try await editorView(in: host)
 			#expect(editor.string == "API_TOKEN=\"tok en\"\nDATABASE_URL=postgres://app:pw@db:5432/demo\nLOG_LEVEL=info\n")
-			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren't kept.", "4 lines"] {
+			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren’t kept.", "4 lines"] {
 				#expect(try await host.waitForText(text), "The editor says \(text)")
 			}
 			#expect(element("Review before saving", in: host)?.isOn == true, "Save reviews unless that's turned off")
@@ -436,7 +436,7 @@ extension SheetInteractionTests {
 			try await host.click("Table")
 			#expect(try await host.waitForText("KEY", exactly: true))
 			#expect(try await host.waitForText("Raw text edit not saved"))
-			try await host.click("Raw text")
+			try await host.click("Raw Text")
 			#expect(try await editorView(in: host).string.contains("LOG_LEVEL=debug"))
 			try await host.click("Cancel")
 			#expect(try await host.waitForText("API_TOKEN=\(VaultRawText.mask)"))
@@ -501,7 +501,7 @@ extension SheetInteractionTests {
 				size: NSSize(width: 1300, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["raw"] != nil })
 			try await host.clickSidebarEnvironment(".env")
-			try await host.click("Raw text")
+			try await host.click("Raw Text")
 			#expect(try await host.waitForText("API_TOKEN="))
 			try await host.settle()
 			return host
@@ -588,7 +588,7 @@ private struct FixInTableView: View {
 			searchText: "", selectedKey: .constant(nil), revealedKeys: .constant([]),
 			showsInspector: .constant(false), columnWidths: .constant(VaultProjectTableColumnWidths()),
 			isCopyingAll: false, cliAccess: nil,
-			isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+			onCopyAll: {},
 			onImport: {}, onExport: {},
 			valueChecks: VaultValueCheckPresentation(check: check, rules: nil, project: project),
 			onAddSecret: {}, onCopySecret: { _, _ in },

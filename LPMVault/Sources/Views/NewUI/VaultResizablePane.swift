@@ -11,16 +11,20 @@ struct VaultPaneBudget {
 	let sidebar: VaultPaneBounds
 	let inspector: VaultPaneBounds
 	let content: CGFloat
+	/// Whether the sidebar takes a share; a hidden one has no width and no hairline.
+	let showsSidebar: Bool
 
 	init(
 		available: CGFloat,
 		requestedSidebar: CGFloat,
 		requestedInspector: CGFloat,
-		showsInspector: Bool
+		showsInspector: Bool,
+		showsSidebar: Bool = true
 	) {
-		let dividers = VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
+		self.showsSidebar = showsSidebar
+		let dividers = VaultMetrics.paneDivider * CGFloat((showsSidebar ? 1 : 0) + (showsInspector ? 1 : 0))
 		let usable = max(0, available - dividers)
-		let minimums = VaultMetrics.sidebarMinimum
+		let minimums = (showsSidebar ? VaultMetrics.sidebarMinimum : 0)
 			+ (showsInspector ? VaultMetrics.inspectorMinimum : 0)
 		let contentFloor = min(VaultMetrics.contentMinimum, max(0, usable - minimums))
 
@@ -36,15 +40,17 @@ struct VaultPaneBudget {
 			VaultMetrics.sidebarMaximum,
 			max(VaultMetrics.sidebarMinimum, usable - contentFloor - inspectorRequest)
 		)
-		var sidebarBounds = VaultPaneBounds(
-			width: Self.clamp(
-				requestedSidebar,
-				minimum: VaultMetrics.sidebarMinimum,
+		var sidebarBounds = showsSidebar
+			? VaultPaneBounds(
+				width: Self.clamp(
+					requestedSidebar,
+					minimum: VaultMetrics.sidebarMinimum,
+					maximum: sidebarCeiling
+				),
+				minimum: min(VaultMetrics.sidebarMinimum, sidebarCeiling),
 				maximum: sidebarCeiling
-			),
-			minimum: min(VaultMetrics.sidebarMinimum, sidebarCeiling),
-			maximum: sidebarCeiling
-		)
+			)
+			: VaultPaneBounds(width: 0, minimum: 0, maximum: 0)
 
 		var inspectorBounds = VaultPaneBounds(width: 0, minimum: 0, maximum: 0)
 		if showsInspector {
@@ -86,7 +92,7 @@ struct VaultPaneBudget {
 
 	/// Center of the hairline on the inspector's leading edge.
 	var inspectorDividerCenter: CGFloat {
-		sidebar.width + VaultMetrics.paneDivider + content + VaultMetrics.paneDivider / 2
+		sidebar.width + (showsSidebar ? VaultMetrics.paneDivider : 0) + content + VaultMetrics.paneDivider / 2
 	}
 
 	static func clamp(_ candidate: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {

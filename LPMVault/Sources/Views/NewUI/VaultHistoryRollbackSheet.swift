@@ -13,6 +13,7 @@ struct VaultHistoryRollbackSheet: View {
 	@State private var working = false
 	@State private var failure: Failure?
 	@State private var listHeight: CGFloat = 0
+	@State private var choosingEnvironment = false
 
 	private enum Failure: Equatable {
 		/// The values changed since the review, so it has to be made again.
@@ -132,19 +133,24 @@ struct VaultHistoryRollbackSheet: View {
 			Text("Environment:")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textSecondary)
-			Menu {
-				ForEach(names, id: \.self) { name in
-					Button(name) {
-						Task { await review(.environment(name, entry: entry, side: side), entry: history.rollbackReview?.pointEntry) }
-					}
+			Button { choosingEnvironment.toggle() } label: {
+				HStack(spacing: 5) {
+					VaultHistoryEnvironmentChip(current, in: ordered)
+					Image(systemName: "chevron.down")
+						.font(.system(size: 8, weight: .bold))
+						.foregroundStyle(VaultPalette.textTertiary)
 				}
-			} label: {
-				VaultHistoryEnvironmentChip(current, in: ordered)
+				.contentShape(Rectangle())
 			}
-			.menuStyle(.borderlessButton)
+			.buttonStyle(VaultPressStyle(cornerRadius: 6))
 			.fixedSize()
 			.disabled(working)
 			.accessibilityLabel("Environment: \(current)")
+			.accessibilityHint("Shows a menu")
+			.vaultMenu(isPresented: $choosingEnvironment, rows: names.map { VaultMenuList<String>.Row(id: $0, title: $0, isChecked: $0 == current) },
+				width: 220, label: "Environment") { name in
+				Task { await review(.environment(name, entry: entry, side: side), entry: history.rollbackReview?.pointEntry) }
+			}
 			Text("This entry touched \(names.formatted(.list(type: .and))). A rollback acts on one.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
@@ -206,7 +212,7 @@ struct VaultHistoryRollbackSheet: View {
 						}
 					}
 					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				}
 			}
 			if environment.offersDeletion, let current = environment.current {
@@ -242,16 +248,15 @@ struct VaultHistoryRollbackSheet: View {
 					if delete { history.rollbackReview?.keptEnvironments.remove(index) } else { history.rollbackReview?.keptEnvironments.insert(index) }
 				}
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
-			.labelsHidden()
 			.disabled(!empties)
-			.help(empties ? "Delete \(name) once its keys are gone" : "Keys you keep stay in \(name), so it isn't deleted")
+			.help(empties ? "Delete \(name) once its keys are gone" : "Keys you keep stay in \(name), so it isn’t deleted")
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 10)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func rowView(
@@ -300,9 +305,8 @@ struct VaultHistoryRollbackSheet: View {
 					get: { review.applies(environment: environment, row: index) },
 					set: { history.rollbackReview?.setApplies($0, environment: environment, row: index) }
 				))
-				.toggleStyle(.switch)
+				.toggleStyle(VaultSwitchStyle())
 				.controlSize(.mini)
-				.labelsHidden()
 				.disabled(unknown)
 				.help(unknown ? "Its earlier value isn’t known, so it keeps its value now" : "Switch off to keep its value now")
 			}

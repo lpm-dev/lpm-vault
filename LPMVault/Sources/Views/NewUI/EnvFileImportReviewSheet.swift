@@ -99,15 +99,9 @@ struct EnvFileImportReviewSheet: View {
 
 	private var header: some View {
 		HStack(alignment: .top, spacing: 14) {
-			Image(systemName: completion?.undo == .undone ? "arrow.uturn.backward" : "square.and.arrow.down")
-				.font(.system(size: 15, weight: .semibold))
-				.foregroundStyle(VaultPalette.accentForeground)
-				.frame(width: 38, height: 38)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
-				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 4) {
 				Text(title)
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				HStack(spacing: 6) {
 					Text(sourceDescription)
@@ -204,7 +198,6 @@ struct EnvFileImportReviewSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.disabled(failure != nil || isObscured || !isCurrent || isWorking)
 			.help(revealed ? "Hide the values" : "Show the values to compare them")
 		}
@@ -239,7 +232,7 @@ struct EnvFileImportReviewSheet: View {
 		}
 		.background(RoundedRectangle(cornerRadius: 9).fill(VaultPalette.control))
 		.clipShape(RoundedRectangle(cornerRadius: 9))
-		.overlay { RoundedRectangle(cornerRadius: 9).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func addedSection(isCurrent: Bool) -> some View {
@@ -597,9 +590,9 @@ struct EnvFileImportReviewSheet: View {
 			switch outcome {
 			case .saved: completion?.undo = .undone
 			case .changed:
-				completion?.undo = .failed("\(VaultProject.displayName(for: receipt.environment)) changed after the import, so it can't be undone.")
-			case .unavailable: completion?.undo = .failed("The import can't be undone now.")
-			case .failed(let message): completion?.undo = .failed("The import couldn't be undone. \(message)")
+				completion?.undo = .failed("\(VaultProject.displayName(for: receipt.environment)) changed after the import, so it can’t be undone.")
+			case .unavailable: completion?.undo = .failed("The import can’t be undone now.")
+			case .failed(let message): completion?.undo = .failed("The import couldn’t be undone. \(message)")
 			}
 		}
 	}
@@ -640,11 +633,10 @@ private struct AddToggleStyle: ToggleStyle {
 			.padding(.horizontal, 8)
 			.frame(height: 24)
 			.background(RoundedRectangle(cornerRadius: 6).fill(on ? VaultPalette.greenTint : .clear))
-			.overlay { RoundedRectangle(cornerRadius: 6).stroke(on ? .clear : VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(on ? .clear : VaultPalette.border, lineWidth: 1) }
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.vaultPointingHand()
 		.accessibilityAddTraits(on ? .isSelected : [])
 		.help(on ? "Leave this key out of the import" : "Add this key")
 	}
@@ -665,7 +657,7 @@ private struct KeepReplaceControl: View {
 		}
 		.fixedSize()
 		.clipShape(RoundedRectangle(cornerRadius: 6))
-		.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func half(_ title: String, selected: Bool, filled: Color, foreground: Color, action: @escaping () -> Void) -> some View {
@@ -679,7 +671,6 @@ private struct KeepReplaceControl: View {
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.vaultPointingHand()
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 }

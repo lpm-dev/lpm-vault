@@ -16,13 +16,11 @@ struct PlatformLogo: View {
 			.foregroundStyle(.white)
 			.frame(width: size * platform.markScale, height: size * platform.markScale)
 			.frame(width: size, height: size)
-			.background(tile.fill(platform.brandColor))
-			.overlay {
-				// Vercel's black and GitHub's near-black tiles would vanish into a dark page without an edge.
-				if colorScheme == .dark, platform.hasDarkTile {
-					tile.strokeBorder(.white.opacity(0.14), lineWidth: 1)
-				}
-			}
+			// Vercel's black and GitHub's near-black tiles would read as holes in a dark card, so there
+			// they lift a step and take an edge; their white marks keep them recognizable.
+			.background(tile.fill(colorScheme == .dark && platform.hasDarkTile ? Color(hex: 0x2E2E33) : platform.brandColor))
+			// Every tile edged, so none loses its shape on a card of a near color in either appearance.
+			.overlay { tile.strokeBorder(colorScheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.08), lineWidth: 1) }
 			.accessibilityHidden(true)
 	}
 }

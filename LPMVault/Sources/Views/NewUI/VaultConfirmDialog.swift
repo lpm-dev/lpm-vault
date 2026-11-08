@@ -139,7 +139,7 @@ struct VaultPromptDialog: View {
 				.foregroundStyle(prompt.problem == nil ? VaultPalette.textSecondary : VaultPalette.redText)
 				.lineSpacing(3)
 				.fixedSize(horizontal: false, vertical: true)
-			TextField(prompt.placeholder, text: prompt.text)
+			TextField(vaultPrompt: prompt.placeholder, text: prompt.text)
 				.textFieldStyle(.plain)
 				.font(.system(size: 13))
 				.foregroundStyle(VaultPalette.textPrimary)
@@ -151,7 +151,7 @@ struct VaultPromptDialog: View {
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.content))
 				.overlay {
 					RoundedRectangle(cornerRadius: 7)
-						.stroke(focused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
+						.strokeBorder(focused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
 				}
 		} buttons: {
 			VaultBarButton(title: "Cancel", height: 28) {
@@ -236,8 +236,8 @@ private struct VaultDialogSubjectCard: View {
 		}
 		.padding(.horizontal, 11)
 		.padding(.vertical, 9)
-		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.sidebar))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.help([subject.name, subject.detail].compactMap { $0 }.joined(separator: "\n"))
 		.accessibilityElement(children: .combine)
 	}

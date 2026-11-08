@@ -30,7 +30,7 @@ struct VaultKeyHistorySection: View {
 		let values: [String: ExactText]
 	}
 
-	private static let perEnvironment = 3
+	private static let perEnvironment = 2
 
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
@@ -43,7 +43,7 @@ struct VaultKeyHistorySection: View {
 				Spacer(minLength: 4)
 				Button("Show All") { history.show(project.id, key: key) }
 					.buttonStyle(.plain)
-					.font(.system(size: 11.5, weight: .semibold))
+					.font(.system(size: 12, weight: .medium))
 					.foregroundStyle(VaultPalette.accentForeground)
 					.vaultPointingHand()
 					.help("Show every change to \(key) on the History page")
@@ -57,8 +57,8 @@ struct VaultKeyHistorySection: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 		}
-		.padding(.horizontal, 18)
-		.padding(.vertical, 14)
+		.padding(.horizontal, 16)
+		.padding(.vertical, 12)
 		.task(id: input) { await read() }
 	}
 
@@ -89,13 +89,15 @@ struct VaultKeyHistorySection: View {
 		case .read(let groups):
 			let ordered = store.orderedEnvironmentNames(for: project)
 			ForEach(groups, id: \.environment) { group in
-				VStack(alignment: .leading, spacing: 4) {
-					HStack(spacing: 6) {
+				// The environment labels the group; each change is one quieter line under it.
+				VStack(alignment: .leading, spacing: 2) {
+					HStack(spacing: 7) {
 						VaultEnvSwatch(color: VaultHistoryEnvironmentChip(group.environment, in: ordered).color, size: 7)
-						Text(group.environment)
-							.font(.system(size: 12, weight: .semibold))
+						Text(VaultProject.displayName(for: group.environment))
+							.font(.system(size: 12.5, weight: .medium))
 							.foregroundStyle(VaultPalette.textPrimary)
 					}
+					.padding(.bottom, 2)
 					.accessibilityElement(children: .combine)
 					ForEach(group.changes, id: \.entry.id) { change in
 						changeRow(change, environment: group.environment)
@@ -137,33 +139,40 @@ struct VaultKeyHistorySection: View {
 		}
 	}
 
+	/// What changed, when, and by what, on one line under its environment,
+	/// with the rollback on the trailing edge.
 	private func changeRow(_ change: Change, environment: String) -> some View {
 		let badge = VaultHistoryText.badge(change.entry)
 		let moment = text.moment(VaultHistoryText.date(change.entry.time))
-		return HStack(spacing: 6) {
-			Text(moment)
-				.font(VaultTypography.tabular(11.5))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.fixedSize()
-			VaultTagBadge(text: badge.text, foreground: badge.foreground, background: badge.warns ? VaultPalette.orangeTint : badge.background, size: 9.5)
-			Text(Self.kind(change.keyChange))
-				.font(.system(size: 11.5))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
-				.truncationMode(.tail)
-				.layoutPriority(-1)
+		return HStack(spacing: 8) {
+			HStack(spacing: 5) {
+				Text(Self.kind(change.keyChange))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.truncationMode(.middle)
+					.layoutPriority(1)
+				Text("·").foregroundStyle(VaultPalette.textFaint)
+				Text(moment)
+					.font(VaultTypography.tabular(12))
+					.foregroundStyle(VaultPalette.textTertiary)
+				Text("·").foregroundStyle(VaultPalette.textFaint)
+				Text(badge.text)
+					.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
+			}
+			.font(.system(size: 12))
+			.lineLimit(1)
+			.accessibilityElement(children: .combine)
 			Spacer(minLength: 4)
-			Button("Roll Back…") {
+			VaultRowIconButton(
+				systemImage: "arrow.uturn.backward",
+				help: "Roll \(key) in \(VaultProject.displayName(for: environment)) back to its value before this change",
+				label: "Roll Back… \(key) in \(environment) to its value before \(moment)",
+				compact: true,
+				quiet: true
+			) {
 				Task { await rollBack(change, environment: environment) }
 			}
-			.buttonStyle(.plain)
-			.font(.system(size: 11.5, weight: .semibold))
-			.foregroundStyle(VaultPalette.accentForeground)
-			.fixedSize()
-			.vaultPointingHand()
-			.help("Roll \(key) in \(environment) back to its value before this change")
-			.accessibilityLabel("Roll Back… \(key) in \(environment) to its value before \(moment)")
 		}
+		.padding(.leading, 14)
 		.accessibilityElement(children: .contain)
 	}
 

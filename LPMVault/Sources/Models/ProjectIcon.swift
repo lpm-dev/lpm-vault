@@ -117,7 +117,7 @@ extension ProjectIconChoice: Codable {
 		var container = encoder.container(keyedBy: CodingKeys.self)
 		switch self {
 		case .automatic:
-			throw EncodingError.invalidValue(self, .init(codingPath: [], debugDescription: "An automatic icon isn't stored"))
+			throw EncodingError.invalidValue(self, .init(codingPath: [], debugDescription: "An automatic icon isn’t stored"))
 		case .symbol(let name, let color):
 			try container.encode(Kind.symbol, forKey: .kind)
 			try container.encode(name, forKey: .symbol)

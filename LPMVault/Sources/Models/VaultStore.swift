@@ -782,7 +782,7 @@ enum OrganizationMemberAuthorizationPolicy {
       member.publicKeyFingerprint == VaultCrypto.publicKeyFingerprint(localPublicKey)
     else {
       throw VaultSyncError(
-        "This device's sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
+        "This device’s sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
       )
     }
     return SyncService.PublicKeyRecord(
@@ -1402,6 +1402,12 @@ final class VaultStore {
   // Navigation state
   /// The environment opening a project asked for before its values were read.
   @ObservationIgnored private var requestedEnvironment: (projectID: String, environment: String)?
+  /// Whether the selected account is an organization's, whose sync is a share.
+  var selectedAccountIsOrganization: Bool {
+    if case .org = selectedAccount { return true }
+    return false
+  }
+
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
@@ -1414,9 +1420,21 @@ final class VaultStore {
       clearKeyDescriptions()
     }
   }
-  /// The account page shown instead of a project, if any.
+  /// The account page the Settings overlay shows over the workspace, if any.
   var accountPage: AccountPage?
   var isShowingAccountPage: Bool { accountPage != nil }
+  /// The part of Settings shown while `accountPage` is `.settings`, kept
+  /// while Settings is closed, so it opens where it was left.
+  var settingsCategory: VaultSettingsCategory = .general
+
+  /// The part of the Settings overlay shown, or nil while it's closed.
+  var shownSettingsCategory: VaultSettingsCategory? {
+    switch accountPage {
+    case .platforms?: .platforms
+    case .settings?: settingsCategory
+    case nil: nil
+    }
+  }
 
   // Sync state
   var isSyncing: Bool = false
@@ -1435,6 +1453,9 @@ final class VaultStore {
 
   /// Local display preferences and folders linked for the CLI.
   let preferences: UserDefaults
+  /// The workspace's pane and column widths, kept across a lock, and across
+  /// launches when the app gives it somewhere to save them.
+  let layout: VaultLayoutPreferences
 
   /// Where the LPM CLI keeps login and env state, which no project's state may be.
   var lpmHome = LPMHome.current
@@ -1796,6 +1817,19 @@ final class VaultStore {
     resetAutoLock()
   }
 
+  /// Shows Settings at `category`; Platforms is its own page.
+  func showSettings(_ category: VaultSettingsCategory) {
+    guard category != .platforms else { return showPlatforms() }
+    settingsCategory = category
+    showSettings()
+  }
+
+  /// Closes the Settings overlay, leaving the workspace as it was under it.
+  func closeAccountPage() {
+    accountPage = nil
+    resetAutoLock()
+  }
+
   /// Shows the Settings page, unlocking first when the vault is locked:
   /// the settings live in the window, behind the lock.
   func showSettingsUnlockingFirst() async {
@@ -2123,6 +2157,7 @@ final class VaultStore {
     envFileImportService: any EnvFileImportServiceProtocol = EnvFileImportService.shared,
     envFileExportService: EnvFileExportService = .shared,
     preferences: UserDefaults = .standard,
+    layout: VaultLayoutPreferences? = nil,
     sharingKeypairProvider:
       (@Sendable () throws -> (privateKey: Data, publicKey: Data))? = nil,
     stableSyncEncryptor:
@@ -2257,6 +2292,7 @@ final class VaultStore {
     self.envFileImportService = envFileImportService
     self.envFileExportService = envFileExportService
     self.preferences = preferences
+    self.layout = layout ?? VaultLayoutPreferences()
     self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
     self.lastBackup = VaultBackupRecord(defaults: preferences)
     self.syncPauses = VaultSyncPause.load(from: preferences)
@@ -2450,7 +2486,7 @@ final class VaultStore {
   }
 
   private static let localStateRefreshFailure =
-    "Couldn't reload changes from the LPM CLI. Copying, revealing, and exporting are paused until a refresh succeeds."
+    "Couldn’t reload changes from the LPM CLI. Copying, revealing, and exporting are paused until a refresh succeeds."
 
   /// Makes an in-flight refresh read again instead of publishing a snapshot
   /// that a newer local change or selection has superseded.
@@ -3348,7 +3384,7 @@ final class VaultStore {
     case .success(let persisted):
       snapshot = persisted
       if case .failure(let failure) = await publishing.deleteOrphanedRecords(among: [project.id]) {
-        error = "The local copy was deleted, but its publish destinations couldn't be removed: \(failure)"
+        error = "The local copy was deleted, but its publish destinations couldn’t be removed: \(failure)"
       }
     case .failure(let persistenceError):
 	  if case .transactionOutcomeIndeterminate = persistenceError {
@@ -3800,7 +3836,7 @@ final class VaultStore {
   /// Why the selected environment can't be edited as Raw text now, or nil when it can.
   var rawTextEditBlocker: String? {
     guard canUseLocalSecrets, let project = selectedProject, project.environments[selectedEnvironment] != nil else {
-      return "Values can't be edited right now"
+      return "Values can’t be edited right now"
     }
     // A key's edit can rename it or change it in every environment, which
     // the text, written from the saved values, would put back.
@@ -4811,10 +4847,10 @@ final class VaultStore {
 
   private func schemaUnavailableReason(for projectID: String) -> String {
     switch keyDescriptions[projectID]?.schema {
-    case .unreadable?: "lpm.json can't be read. Fix it, then save."
-    case .noFolder?: "The project's folder isn't available."
-    case nil: "lpm.json hasn't been read yet."
-    case .loaded?: "The project's folder changed. Review the rules, then save again."
+    case .unreadable?: "lpm.json can’t be read. Fix it, then save."
+    case .noFolder?: "The project’s folder isn’t available."
+    case nil: "lpm.json hasn’t been read yet."
+    case .loaded?: "The project’s folder changed. Review the rules, then save again."
     }
   }
 
@@ -4828,7 +4864,7 @@ final class VaultStore {
     guard let project = projects.first(where: { $0.id == projectID }), selectedProjectId == projectID,
       let folder = editableSchemaFolder(for: projectID)
     else { throw .targetUnavailable }
-    guard project.hasLoadedEnvironments else { throw .refused("\(project.name)'s values are still loading. Rename the key once they've loaded.") }
+    guard project.hasLoadedEnvironments else { throw .refused("\(project.name)’s values are still loading. Rename the key once they’ve loaded.") }
     let id = VaultKeyDraft.ID(projectID: projectID, key: key)
     if let draft = keyDrafts.draft(id) {
       guard !draft.isDirty else { throw .refused("\(key) has unsaved edits on the Environments page. Save or discard them first.") }
@@ -6646,7 +6682,7 @@ final class VaultStore {
             )
             if serverVersion < authenticatedFloor {
               error =
-                "The cloud env project revision is older than this checkout's authenticated checkpoint."
+                "The cloud env project revision is older than this checkout’s authenticated checkpoint."
               lastSyncStatus = "failed"
               finishSyncIfOwned(authority)
               return
@@ -8870,7 +8906,7 @@ final class VaultStore {
   }
 
   private static func publishingFollowMessage(_ failure: PublishingStoreError) -> String {
-    "The change was saved, but its publish destinations couldn't be updated: \(failure)"
+    "The change was saved, but its publish destinations couldn’t be updated: \(failure)"
   }
 
   /// Returns true once nothing is being written to the Keychain, a project's
@@ -8946,6 +8982,14 @@ final class VaultStore {
 
   private static let syncMetadataKey = "lpm-vault-sync-metadata"
 
+  /// When the project last synced with lpm.dev under the selected account, and whether it pushed.
+  func lastSync(for vaultId: String) -> (date: Date, pushed: Bool)? {
+    guard let binding = currentSyncBinding(), let info = syncMetadata[vaultId]?.syncInfo(boundTo: binding) else {
+      return nil
+    }
+    return (info.date, info.action == "push")
+  }
+
   func syncStatus(for vaultId: String) -> ProjectSyncStatus {
     guard let meta = syncMetadata[vaultId] else { return .neverSynced }
     if meta.isDirty { return .localChanges }
@@ -9001,6 +9045,7 @@ final class VaultStore {
     preferences.removeObject(forKey: Self.envOrderPrefix + vaultId)
     ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
     projectIcons.forget(vaultId)
+    layout.forget(vaultId)
   }
 
   /// Removes preferences of vaults that are no longer on this Mac, such as
@@ -9020,6 +9065,7 @@ final class VaultStore {
       preferences.removeObject(forKey: key)
     }
     projectIcons.forget(keeping: vaultIds)
+    layout.forget(keeping: vaultIds)
   }
 
   /// Removes the sync pauses of vaults whose data is gone. A project removed

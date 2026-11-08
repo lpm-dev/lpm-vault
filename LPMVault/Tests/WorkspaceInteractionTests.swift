@@ -62,12 +62,13 @@ extension SheetInteractionTests {
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
 				#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "160 points" })
+				// Settings shows over the table, which stays as it was under it.
 				store.showSettings()
-				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				#expect(try await host.waitForText("Close Settings"))
 				store.openProject(id: "workspace")
-				try await host.settle()
-				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(restored.accessibilityValue() as? String == "160 points")
+				#expect(try await host.waitUntil {
+					resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" }?.accessibilityValue() as? String == "160 points"
+				})
 				let gate = DispatchSemaphore(value: 0)
 				defer { gate.signal() }
 				store.selectedProjectId = nil
@@ -97,7 +98,8 @@ extension SheetInteractionTests {
 				store.openProject(id: "other")
 				#expect(try await host.waitForText("SECOND"))
 				let other = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(other.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn)) points")
+				// Its own default: fitted to its short keys, not the other project's 160 points.
+				#expect(other.accessibilityValue() as? String == "\(Int(VaultTableColumnLayout.fittedKeyMinimum)) points")
 				other.onDragEnded?(80)
 				try await host.settle()
 				store.openProject(id: "workspace")
@@ -107,10 +109,10 @@ extension SheetInteractionTests {
 				store.openProject(id: "other")
 				#expect(try await host.waitForText("SECOND"))
 				let otherRestored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn) + 80) points")
+				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultTableColumnLayout.fittedKeyMinimum) + 80) points")
 			}
 
-			@Test("a narrow key column keeps an edited drifting key visible")
+			@Test("a narrow key column keeps an edited drifting key visible, its unsaved dot the last mark in one environment's table")
 			func narrowKeyWithBothBadges() async throws {
 				let key = "LONG_DATABASE_AUTHENTICATION_TOKEN"
 				let (store, _) = makeStore(environments: ["default": [key: "a"], "production": [key: "b"]])
@@ -130,40 +132,58 @@ extension SheetInteractionTests {
 				let region = CGRect(x: (frame.midX - VaultTableColumn.key.minimumWidth) / size.width, y: 0.05,
 					width: VaultTableColumn.key.minimumWidth / size.width, height: 0.8)
 				let image = try host.snapshot(host.view)
-				let indicators = try compactIndicatorProfiles(in: image, size: size,
-					region: CGRect(x: frame.midX - 50, y: frame.minY - VaultMetrics.fileRow, width: 38, height: VaultMetrics.fileRow))
-				#expect(indicators.count == 2, "Expected both unsaved and drift indicators: \(indicators)")
-				if indicators.count == 2 {
-					#expect(indicators[0] != indicators[1], "Unsaved changes and differing values need distinct shapes")
-				}
+				let row = CGRect(x: frame.midX - 70, y: frame.minY - VaultMetrics.fileRow + 6, width: 64, height: VaultMetrics.fileRow - 12)
+				let unsaved = try compactIndicatorProfiles(in: image, size: size, region: row)
+				#expect(unsaved.count == 1, "Expected the orange unsaved dot: \(unsaved)")
+				// Drift is between environments, so one environment's table doesn't mark it.
+				let runs = try inkRuns(in: image, size: size, region: row)
+				let last = try #require(runs.last, "Expected the unsaved dot")
+				let lastRegion = CGRect(x: last.minX, y: row.minY, width: last.width, height: row.height)
+				#expect(try compactIndicatorProfiles(in: image, size: size, region: lastRegion).count == 1,
+					"The unsaved dot is the row's last mark: \(runs)")
 				let lines = host.lines(in: region)
 				#expect(lines.contains { $0.text.contains("LONG") }, "Key column contains: \(lines.map(\.text))")
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
-			@Test("a short key's badge sits right after the key", arguments: [VaultAppearance.light, .dark])
-			func shortKeyBadgeFollowsKey(appearance: VaultAppearance) async throws {
-				let (store, _) = makeStore(environments: ["default": ["PORT": "1"], "production": ["PORT": "2"]])
+			@Test("drift marks every drifting key in All Keys at rest, however many drift, at the key cell's trailing edge apart from the key, and not in one environment's table",
+				arguments: [VaultAppearance.light, .dark])
+			func driftMarkShowsWhereItHelps(appearance: VaultAppearance) async throws {
+				// Every key drifts: masked values look alike, so the mark is how a row says it.
+				let (store, _) = makeStore(environments: ["default": ["A_PORT": "1", "Z_HOST": "x"], "production": ["A_PORT": "2", "Z_HOST": "y"]])
 				defer { store.lock() }
-				let suite = "short-key-badge-\(UUID().uuidString)"
+				let suite = "drift-mark-\(UUID().uuidString)"
 				let defaults = try #require(UserDefaults(suiteName: suite))
 				defer { defaults.removePersistentDomain(forName: suite) }
 				let host = try await workspace(store, defaults: defaults)
 				defer { host.window.close() }
 				host.window.appearance = appearance.nativeAppearance
+				try await host.settle()
+
+				/// The ink across the first row's key cell, in the table now showing.
+				func keyCellRuns(rowHeight: CGFloat, named name: String) throws -> (runs: [CGRect], columnEnd: CGFloat) {
+					let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+					let windowFrame = divider.convert(divider.bounds, to: nil)
+					let left = VaultMetrics.sidebar + VaultMetrics.paneDivider + 10
+					let row = CGRect(x: left, y: windowFrame.minY - rowHeight + 6, width: windowFrame.midX - left - 2, height: rowHeight - 12)
+					let image = try host.snapshot(host.view)
+					Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
+						named: "\(name)-\(appearance.rawValue).png")
+					return (try inkRuns(in: image, size: host.view.bounds.size, region: row), windowFrame.midX)
+				}
+
+				let drift = try keyCellRuns(rowHeight: VaultMetrics.matrixRow, named: "drift-at-rest")
+				let key = try #require(drift.runs.first, "No visible key")
+				let glyph = try #require(drift.runs.last, "No visible drift mark")
+				#expect(drift.runs.count == 2, "The key and its mark are apart: \(drift.runs)")
+				#expect(glyph.maxX > drift.columnEnd - 30, "The mark ends at \(glyph.maxX), the key column at \(drift.columnEnd)")
+				#expect(glyph.minX - key.maxX > 20, "The mark starts \(glyph.minX - key.maxX) points after the key")
+
 				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitForText("ACTIONS", exactly: true))
 				try await host.settle()
-				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				let windowFrame = divider.convert(divider.bounds, to: nil)
-				let left = VaultMetrics.sidebar + VaultMetrics.paneDivider + 10
-				let row = CGRect(x: left, y: windowFrame.minY - VaultMetrics.fileRow + 6,
-					width: windowFrame.midX - left - 10, height: VaultMetrics.fileRow - 12)
-				let image = try host.snapshot(host.view)
-				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
-					named: "short-key-badge-\(appearance.rawValue).png")
-				let gap = try keyBadgeGap(in: image, size: host.view.bounds.size, region: row)
-				#expect(gap < 20, "The badge starts \(gap) points after the key")
+				let single = try keyCellRuns(rowHeight: VaultMetrics.fileRow, named: "drift-one-environment")
+				#expect(single.runs.count == 1, "One environment's table doesn't mark drift: \(single.runs)")
 			}
 
 			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
@@ -220,7 +240,7 @@ extension SheetInteractionTests {
 				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
 			}
 
-			@Test("the header's column lines continue the rows' lines, in the same place and color",
+			@Test("the header's column lines continue the rows' lines, in the same place and color; the last column, and one environment's actions, have none",
 				arguments: [false, true], [VaultAppearance.light, .dark])
 			func columnLinesMatchRows(singleEnvironment: Bool, appearance: VaultAppearance) async throws {
 				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "BETA": "b"], "production": ["ALPHA": "z"]])
@@ -239,12 +259,18 @@ extension SheetInteractionTests {
 				let rowHeight = singleEnvironment ? VaultMetrics.fileRow : VaultMetrics.matrixRow
 				let boundaries = resizeViews(in: host.view).filter { $0.accessibilityLabel()?.hasSuffix(" column") == true }
 				try #require(boundaries.count == 3, "The key column and two more")
+				let last = boundaries.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }
 				for boundary in boundaries {
 					let frame = boundary.convert(boundary.bounds, to: nil)
 					let header = try horizontalPixels(in: image, size: host.view.bounds.size, y: frame.midY, from: frame.midX - 4, width: 8)
 					let row = try horizontalPixels(in: image, size: host.view.bounds.size, y: frame.minY - rowHeight / 2, from: frame.midX - 4, width: 8)
 					let name = boundary.accessibilityLabel() ?? ""
 					let headerLine = lineColumns(header), rowLine = lineColumns(row)
+					// A row's actions belong to its value, so nothing divides them.
+					if boundary === last || (singleEnvironment && name == "Resize Value column") {
+						#expect(headerLine.isEmpty && rowLine.isEmpty, "No line at \(name): \(headerLine), \(rowLine)")
+						continue
+					}
 					#expect(!rowLine.isEmpty, "The rows draw a line at \(name)")
 					#expect(headerLine == rowLine, "At \(name) the header's line covers pixels \(headerLine), the rows' \(rowLine)")
 					for column in headerLine.intersection(rowLine) {
@@ -266,7 +292,7 @@ extension SheetInteractionTests {
 						try await host.clickSidebarEnvironment(".env.production")
 						#expect(try await host.waitForText("ACTIONS", exactly: true))
 						try await host.click("Workspace")
-						#expect(try await host.waitForText("All variables"))
+						#expect(try await host.waitForText("All Keys"))
 					}
 					try await host.settle()
 					let image = try host.snapshot(host.view)
@@ -284,32 +310,35 @@ extension SheetInteractionTests {
 				}
 			}
 
-			@Test("the status bar of every page links to the smart views, and each opens All variables showing only its keys")
+			@Test("All Keys' chips and the status bar of every other page open the smart views, each showing only its keys")
 			func statusBarSmartViews() async throws {
 				let (store, _) = makeStore(environments: ["default": ["DRIFTS": "a", "LACKS": "b"], "production": ["DRIFTS": "z"]])
 				defer { store.lock() }
 				let host = try await workspace(store)
 				defer { host.window.close() }
 				let footer = VaultMetrics.statusBar + 4
-				#expect(try await host.waitForText("1 drifting", footer: footer))
-				#expect(try await host.waitForText("1 missing", footer: footer))
-				try await host.click("1 missing")
+				#expect(try await host.waitForText("Drift, 1"))
+				#expect(try await host.waitForText("Missing, 1"))
+				let matrixFooter = try await host.text(footer: footer)
+				#expect(!matrixFooter.contains("differ") && !matrixFooter.contains("missing"),
+					"The status bar doesn't repeat the chips above the table: \(matrixFooter)")
+				try await host.click("Missing, 1")
 				#expect(try await host.waitForTextToDisappear("DRIFTS"))
 				#expect(try await host.text().contains("LACKS"))
 
 				try await host.clickSidebarEnvironment(".env.production")
 				#expect(try await host.waitForText("ACTIONS", exactly: true))
-				#expect(try await host.waitForText("1 missing", footer: footer))
-				try await host.click("1 drifting")
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("1 key missing", footer: footer))
+				try await host.click("1 key differs")
+				#expect(try await host.waitForText("All Keys"))
 				#expect(try await host.waitForTextToDisappear("LACKS"))
 				#expect(try await host.text().contains("DRIFTS"))
 
 				try await host.click("Schema")
 				#expect(try await host.waitForText("editing unavailable", footer: footer))
-				#expect(try await host.waitForText("1 drifting", footer: footer))
-				try await host.click("1 missing")
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("1 key differs", footer: footer))
+				try await host.click("1 key missing")
+				#expect(try await host.waitForText("All Keys"))
 				#expect(try await host.waitForTextToDisappear("DRIFTS"))
 				#expect(try await host.text().contains("LACKS"))
 			}
@@ -368,10 +397,15 @@ extension SheetInteractionTests {
 			host.window.setContentSize(NSSize(width: 1040, height: 800))
 			try await host.settle()
 			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
+			// Too narrow for the sidebar beside the inspector, so it hid; it comes back to move between pages.
+			try await host.click("Show sidebar")
+			#expect(try await host.waitForText("Hide sidebar", exactly: true))
+			// The toggle's name changes at once; the sidebar's rows arrive a moment later.
+			#expect(try await host.waitForText("PROJECTS", exactly: true))
 			if singleEnvironment {
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
 				try await host.settle()
 				try await host.clickSidebarEnvironment(".env")
@@ -381,7 +415,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
-				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForText("All Keys"))
 			}
 			try await host.settle()
 			let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
@@ -447,8 +481,9 @@ extension SheetInteractionTests {
 				try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
 				#expect(try await host.waitForText("VALUES", exactly: true))
 			}
-			let title = try await host.drawnFrame(saying: "All variables")
-			let keyColumn = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.25, y: 0.6, width: 0.4, height: 0.25))
+			let title = try await host.drawnFrame(saying: "All Keys")
+			// The inspector takes the sidebar's place in a window this narrow, so the table can start at the window's edge.
+			let keyColumn = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0, y: 0.6, width: 0.65, height: 0.25))
 			#expect(abs(keyColumn.minX - title.minX) < 3, "KEY starts at \(keyColumn.minX), the title at \(title.minX)")
 		}
 
@@ -482,6 +517,29 @@ extension SheetInteractionTests {
 			try selectRow(0, in: host)
 			#expect(try await host.waitUntil { host.value == "draft-for-token" })
 			#expect(try await host.waitForText("1 unsaved change"))
+		}
+
+		@Test("clicking a row, another row, then the first again selects it without revealing its values")
+		func clicksOnOtherRowsDontMakeADoubleClick() async throws {
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try selectRow(0, in: host)
+			try selectRow(1, in: host)
+			try selectRow(0, in: host)
+			#expect(try await host.waitForText("TOKEN, set in 1 of 1 environments, values hidden"))
+			#expect(try await host.waitUntil { host.value == "fixture-value" }, "The inspector keeps the value masked")
+		}
+
+		@Test("a double-click on a row reveals its values")
+		func doubleClickRevealsRow() async throws {
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try doubleClickRow(0, in: host)
+			#expect(try await host.waitForText("TOKEN, set in 1 of 1 environments, values shown"))
 		}
 
 		@Test("the KEY header reverses the key order in both tables, and the order is remembered")
@@ -528,12 +586,20 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try clickAt(NSPoint(x: 330, y: 503), in: host)
 			#expect(try await host.waitForText("VALUES", exactly: true))
+			// A window this narrow hides the sidebar for the inspector; the narrowest table has both.
+			try await host.click("Show sidebar")
+			#expect(try await host.waitForText("Hide sidebar", exactly: true))
+			// The toggle's name changes at once; the sidebar's rows arrive a moment later.
+			#expect(try await host.waitForText("PROJECTS", exactly: true))
 			if minimumContentWidth {
 				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
-				#expect(inspector.accessibilityPerformIncrement())
-				try await host.settle()
-				#expect(inspector.accessibilityPerformIncrement())
-				#expect(try await host.waitUntil { inspector.accessibilityValue() as? String == "338 points" })
+				let widest = Int(VaultPaneBudget(available: 1040, requestedSidebar: VaultMetrics.sidebar,
+					requestedInspector: VaultMetrics.inspector, showsInspector: true).inspector.maximum)
+				for _ in 0..<4 where inspector.accessibilityValue() as? String != "\(widest) points" {
+					#expect(inspector.accessibilityPerformIncrement())
+					try await host.settle()
+				}
+				#expect(try await host.waitUntil { inspector.accessibilityValue() as? String == "\(widest) points" })
 				try await host.settle()
 			}
 			try await host.clickSidebarEnvironment(".env")
@@ -706,7 +772,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			keychain.failProjectReads = true
 			await store.refreshLocalState()
-			#expect(try await host.waitForText("Couldn't reload changes from the LPM CLI"))
+			#expect(try await host.waitForText("Couldn’t reload changes from the LPM CLI"))
 			#expect(!store.canUseLocalSecrets)
 			let view = host.view
 			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -716,7 +782,7 @@ extension SheetInteractionTests {
 			try await host.click("Retry")
 			#expect(try await host.waitUntil { store.canUseLocalSecrets })
 			try await host.settle()
-			#expect(try await !host.text().contains("Couldn't reload changes"))
+			#expect(try await !host.text().contains("Couldn’t reload changes"))
 		}
 
 		@Test("revealed values stay revealed across a refresh")
@@ -836,11 +902,11 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(!host.lines().contains { $0.text.contains("Select an env project") })
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
-			#expect(try await host.waitForText("All variables"))
+			#expect(try await host.waitForText("All Keys"))
 		}
 
-		@Test("settings removes project and environment selection while retaining navigation context", arguments: [false, true])
-		func settingsHasNoProjectSelection(environmentSelected: Bool) async throws {
+		@Test("Settings shows over the workspace, which keeps its project and environment, and closing it returns to them as they were", arguments: [false, true])
+		func settingsOverTheWorkspace(environmentSelected: Bool) async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
 			let host = try await workspace(store)
@@ -853,12 +919,14 @@ extension SheetInteractionTests {
 			}
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
 			store.showSettings()
-			try await host.settle()
-			#expect(try !host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
+			#expect(try await host.waitForText("Close Settings"))
 			#expect(store.selectedProjectId == "workspace")
-			store.openProject(id: "workspace")
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says("Workspace") },
+				"Under Settings, the workspace is out of VoiceOver's reach")
+			try await host.click("Close Settings")
+			#expect(try await host.waitUntil { !store.isShowingAccountPage })
 			try await host.settle()
-			#expect(!store.isShowingAccountPage)
+			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY), "The row is selected as it was")
 		}
 
 		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {
@@ -1038,7 +1106,9 @@ extension SheetInteractionTests {
 			})
 		}
 
-		private func keyBadgeGap(in image: CGImage, size: NSSize, region: CGRect) throws -> CGFloat {
+		/// The horizontal runs of ink in `region` (window points, from the bottom
+		/// left) that stand out from the row's background, read at its trailing edge.
+		private func inkRuns(in image: CGImage, size: NSSize, region: CGRect) throws -> [CGRect] {
 			let scale = CGFloat(image.width) / size.width
 			let crop = CGRect(x: region.minX * scale, y: (size.height - region.maxY) * scale,
 				width: region.width * scale, height: region.height * scale).integral
@@ -1048,22 +1118,31 @@ extension SheetInteractionTests {
 				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
 			context.draw(strip, in: CGRect(x: 0, y: 0, width: width, height: height))
 			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-			var keyMax = -1, badgeMin = width
-			for row in 0..<height {
-				let background = (row * width + width - 1) * 4
-				for column in 0..<(width - 1) {
+			var runs: [CGRect] = []
+			var start: Int?
+			for column in 0..<width {
+				let hasInk = (0..<height).contains { row in
+					let background = (row * width + width - 1) * 4
 					let pixel = (row * width + column) * 4
-					let red = Int(pixels[pixel]), green = Int(pixels[pixel + 1]), blue = Int(pixels[pixel + 2])
-					let contrast = abs(red - Int(pixels[background])) + abs(green - Int(pixels[background + 1]))
-						+ abs(blue - Int(pixels[background + 2]))
-					if contrast > 80 && max(red, green, blue) - min(red, green, blue) < 20 { keyMax = max(keyMax, column) }
-					if red > green + 40 && green > blue + 40 { badgeMin = min(badgeMin, column) }
+					return (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) } > 60
+				}
+				if hasInk, start == nil { start = column }
+				// Gaps narrower than 4 points are inside a word or glyph; wider ones separate runs.
+				if !hasInk, let first = start, !(column..<min(width, column + Int(4 * scale))).contains(where: { next in
+					(0..<height).contains { row in
+						let background = (row * width + width - 1) * 4
+						let pixel = (row * width + next) * 4
+						return (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) } > 60
+					}
+				}) {
+					runs.append(CGRect(x: region.minX + CGFloat(first) / scale, y: region.minY, width: CGFloat(column - first) / scale, height: region.height))
+					start = nil
 				}
 			}
-			try #require(keyMax >= 0, "No visible key text in \(region)")
-			try #require(badgeMin < width, "No visible differing-value badge in \(region)")
-			try #require(badgeMin > keyMax, "Key and badge ink overlap: \(keyMax), \(badgeMin)")
-			return CGFloat(badgeMin - keyMax - 1) / scale
+			if let first = start {
+				runs.append(CGRect(x: region.minX + CGFloat(first) / scale, y: region.minY, width: CGFloat(width - first) / scale, height: region.height))
+			}
+			return runs
 		}
 
 		private func compactIndicatorProfiles(in image: CGImage, size: NSSize, region: CGRect) throws -> [[Int]] {
@@ -1099,8 +1178,37 @@ extension SheetInteractionTests {
 			try clickAt(NSPoint(x: 330, y: 603 - CGFloat(index) * VaultMetrics.matrixRow), in: host)
 		}
 
+		/// Clicks the matrix row at `index` twice in quick succession.
+		private func doubleClickRow<V: View>(_ index: Int, in host: SheetTestHost<V>) throws {
+			try selectRow(index, in: host)
+			try selectRow(index, in: host)
+		}
+
 		private func clickAt<V: View>(_ point: NSPoint, in host: SheetTestHost<V>) throws {
 			try NativeTestClick.send(to: host.window, at: point)
 		}
+	}
+}
+
+@Suite("Matrix row double-clicks")
+@MainActor
+struct VaultRowClicksTests {
+	@Test("two clicks on one row within the interval are a double-click, and a click on another row in between starts over")
+	func doubleClicks() {
+		var time: TimeInterval = 100
+		let clicks = VaultRowClicks(now: { time }, interval: 0.5)
+		#expect(!clicks.isDoubleClick(on: "TOKEN"))
+		time += 0.2
+		#expect(clicks.isDoubleClick(on: "TOKEN"))
+		time += 0.2
+		#expect(!clicks.isDoubleClick(on: "TOKEN"), "A third click starts a new double-click")
+		time += 0.1
+		#expect(!clicks.isDoubleClick(on: "ZETA"))
+		time += 0.1
+		#expect(!clicks.isDoubleClick(on: "TOKEN"), "A click on another row in between starts over")
+		time += 0.6
+		#expect(!clicks.isDoubleClick(on: "TOKEN"), "Too slow for a double-click")
+		time += 0.5
+		#expect(clicks.isDoubleClick(on: "TOKEN"), "Exactly the interval still counts")
 	}
 }

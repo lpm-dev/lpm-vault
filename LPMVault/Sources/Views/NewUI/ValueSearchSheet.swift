@@ -73,7 +73,7 @@ struct ValueSearchSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(search.mode == .find ? "Find a value" : "Reused values")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityAddTraits(.isHeader)
 				Text(search.mode == .find
@@ -92,13 +92,11 @@ struct ValueSearchSheet: View {
 	}
 
 	private var modePicker: some View {
-		Picker("Search for", selection: Binding(get: { search.mode }, set: { search.mode = $0 })) {
-			Text("Find a value").tag(ValueSearchModel.Mode.find)
-			Text("Reused values").tag(ValueSearchModel.Mode.reuse)
-		}
-		.pickerStyle(.segmented)
-		.labelsHidden()
-		.fixedSize()
+		VaultSegmentedPicker(
+			title: "Search for",
+			options: [(ValueSearchModel.Mode.find, "Find a value"), (.reuse, "Reused values")],
+			selection: Binding(get: { search.mode }, set: { search.mode = $0 })
+		)
 		.disabled(search.isRunning)
 	}
 
@@ -238,7 +236,7 @@ struct ValueSearchSheet: View {
 		.padding(.horizontal, 12)
 		.padding(.vertical, 9)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.headerRow))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	@ViewBuilder

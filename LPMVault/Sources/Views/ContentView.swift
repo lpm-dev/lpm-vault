@@ -44,13 +44,14 @@ struct ContentView: View {
 
 				VStack(spacing: 5) {
 					Text("LPM Vault is Locked")
-						.font(.system(size: 19, weight: .bold))
+						.font(.system(size: 20, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
 
 					Text("Authenticate with Touch ID or your Mac password to unlock.")
 						.font(.system(size: 12.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.multilineTextAlignment(.center)
+						.fixedSize(horizontal: false, vertical: true)
 				}
 
 				VaultBarButton(
@@ -68,17 +69,25 @@ struct ContentView: View {
 				if let failure = store.unlockFailure {
 					VaultLoadErrorView(failure: failure)
 				}
+				VaultHairline().padding(.top, 6)
+				Text("Saved values stay encrypted in this Mac’s Keychain.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.multilineTextAlignment(.center)
 			}
+			.padding(.horizontal, 40)
+			.padding(.top, 36)
+			.padding(.bottom, 24)
+			.frame(width: 440)
+			// One card on the window's quiet surface, so the screen has a center.
+			.background(RoundedRectangle(cornerRadius: 12).fill(VaultPalette.content))
+			.overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			// Sits a little above the middle, where the eye takes the middle to be.
+			.padding(.bottom, 96)
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.background(VaultPalette.titleBar)
 		.frame(minWidth: 1040, minHeight: 640)
-		.overlay(alignment: .bottom) {
-			Text("Values stay encrypted on this Mac until you unlock.")
-				.font(VaultTypography.tabular(10.5))
-				.foregroundStyle(VaultPalette.textFaint)
-				.padding(.bottom, 18)
-		}
 		.ignoresSafeArea(.container, edges: .top)
 	}
 }

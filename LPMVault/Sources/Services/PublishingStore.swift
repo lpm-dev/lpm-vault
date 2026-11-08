@@ -23,10 +23,10 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 	var description: String {
 		switch self {
 		case .keychain(let error): error.description
-		case .unreadable: "The saved publish destinations can't be read."
+		case .unreadable: "The saved publish destinations can’t be read."
 		case .newerVersion: "A newer LPM Vault saved these publish destinations."
-		case .invalidVault: "The env project's ID can't hold publish destinations."
-		case .invalidDestination: "The publish destination isn't valid."
+		case .invalidVault: "The env project’s ID can’t hold publish destinations."
+		case .invalidDestination: "The publish destination isn’t valid."
 		case .duplicateLocation: "Another destination already publishes there."
 		case .limitReached: "This env project has the most publish destinations it can hold."
 		case .tooLarge: "The publish destinations are too large to save."

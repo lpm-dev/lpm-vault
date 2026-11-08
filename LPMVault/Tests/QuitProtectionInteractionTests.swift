@@ -131,7 +131,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForElement(saying: "Quit with unsaved changes?", in: sheet).role?.rawValue == "AXHeading")
 			#expect(try await host.waitForText("demo-api · 1 key", in: sheet))
 			#expect(!(try await host.text(in: sheet).contains("folder")), "The row's symbol isn't read")
-			#expect(try await host.waitForText("Discard all", in: sheet))
+			#expect(try await host.waitForText("Discard All", in: sheet))
 			try await host.click("Save and quit", in: sheet)
 			#expect(try await host.waitUntil { outcome.terminations == 1 })
 			#expect(keychain.envStorage["demo"]?.environments["default"]?["TOKEN"] == "two")
@@ -198,7 +198,7 @@ extension SheetInteractionTests {
 			try await host.click("Save and quit", in: sheet)
 			#expect(try await host.waitUntil { coordinator.phase == .failed })
 			let reason = VaultKeyEditError.persistence(KeychainError.unexpectedStatus(-25293).description).localizedDescription
-			#expect(try await host.waitForText("TOKEN couldn't be saved: \(reason)", in: sheet), "The row says the Keychain's reason")
+			#expect(try await host.waitForText("TOKEN couldn’t be saved: \(reason)", in: sheet), "The row says the Keychain's reason")
 			#expect(try await host.waitForText("One save failed", in: sheet))
 			#expect(try await host.waitForText("Edits that need a review are discarded too.", in: sheet))
 			#expect(!(try await host.text(in: sheet).contains("Your other edits are saved")))
@@ -284,7 +284,7 @@ extension SheetInteractionTests {
 			#expect(store.openSheetWork.isEmpty, "Nothing typed, nothing to lose")
 			try host.typeInFirstField("NEW_KEY")
 			#expect(try await host.waitUntil { store.openSheetWork.values.map(\.detail) == ["NEW_KEY"] })
-			#expect(store.openSheetWork.values.first?.title == "Add variable")
+			#expect(store.openSheetWork.values.first?.title == "New Key")
 			#expect(!store.unsavedWork().isEmpty)
 			try host.typeInFirstField("")
 			#expect(try await host.waitUntil { store.openSheetWork.isEmpty })
@@ -324,7 +324,7 @@ extension SheetInteractionTests {
 			let domain = "quit-settings-page-\(UUID().uuidString)"
 			let defaults = try #require(UserDefaults(suiteName: domain))
 			defer { defaults.removePersistentDomain(forName: domain) }
-			let page = SheetTestHost(VaultSettingsPage(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
+			let page = SheetTestHost(VaultSettingsOverlay(store: store, category: .general).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
 				.environment(VaultQuitSettings(defaults: defaults)), size: NSSize(width: 700, height: 900), keepsRequestedSize: true)
 			defer { page.window.close() }
 			#expect(try await page.waitForText("Settings", exactly: true))

@@ -75,7 +75,7 @@ struct BackupExportSheet: View {
 		HStack(alignment: .top, spacing: 14) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(phase.isDone ? "Backup exported" : "Export backup")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityAddTraits(.isHeader)
 				if !phase.isDone {
@@ -171,7 +171,7 @@ struct BackupExportSheet: View {
 				.disabled(syncKeyCount == 0)
 		}
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func includedRow(_ title: String, detail: String?, count: String?, isOn: Binding<Bool>?) -> some View {
@@ -251,7 +251,7 @@ struct BackupExportSheet: View {
 		HStack(spacing: 6) {
 			Group {
 				if reveals {
-					TextField(title, text: text)
+					TextField(vaultPrompt: title, text: text)
 				} else {
 					SecureField(title, text: text)
 				}
@@ -347,7 +347,7 @@ struct BackupExportSheet: View {
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.orangeTint))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
 		.accessibilityElement(children: .combine)
 	}
 
@@ -381,7 +381,7 @@ struct BackupExportSheet: View {
 				}
 				.padding(14)
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				Label("Encrypted with your passphrase. Store the passphrase separately from the file.", systemImage: "checkmark")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textSecondary)

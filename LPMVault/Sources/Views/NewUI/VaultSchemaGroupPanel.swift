@@ -286,7 +286,7 @@ struct VaultSchemaGroupEditor: View {
 		VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				if renamable {
-					TextField("group_name", text: $field)
+					TextField(vaultPrompt: "group_name", text: $field)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(13.5, .bold))
 						.autocorrectionDisabled()
@@ -303,7 +303,7 @@ struct VaultSchemaGroupEditor: View {
 					Spacer(minLength: 4)
 					if case .inherited = mode {
 						Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(VaultPalette.textFaint)
-							.help("Declared elsewhere, so it can't be renamed here")
+							.help("Declared elsewhere, so it can’t be renamed here")
 					}
 				}
 			}
@@ -312,18 +312,18 @@ struct VaultSchemaGroupEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(renamable ? VaultPalette.control : .clear))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.stroke(invalid ? VaultPalette.red : (renamable ? (nameFocused ? VaultPalette.accent : VaultPalette.border) : .clear),
+					.strokeBorder(invalid ? VaultPalette.red : (renamable ? (nameFocused ? VaultPalette.accent : VaultPalette.border) : .clear),
 						lineWidth: invalid || nameFocused ? 1.5 : 1)
 			}
 			if renamable {
 				switch status {
 				case .empty, .available:
-					Text("Letters, digits and underscores; can't start with a digit; unique among groups.")
+					Text("Letters, digits and underscores; can’t start with a digit; unique among groups.")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
 				case .invalid(let suggestion):
-					issueLine("Use letters, digits and underscores; a name can't start with a digit.",
+					issueLine("Use letters, digits and underscores; a name can’t start with a digit.",
 						actions: suggestion.map { fixed in [("Use \(fixed)", true, { field = fixed })] } ?? [])
 				case .tooLong:
 					issueLine("Names can be at most \(EnvValidation.maximumSchemaKeyNameBytes) characters long.", actions: [])
@@ -364,7 +364,7 @@ struct VaultSchemaGroupEditor: View {
 							.font(.system(size: 11, weight: .semibold))
 							.foregroundStyle(VaultPalette.accentForeground)
 							.disabled(action.edits && !canEdit)
-							.vaultPointingHand()
+							.vaultPointingHand(enabled: !(action.edits && !canEdit))
 					}
 				}
 				.padding(.leading, 16)
@@ -491,8 +491,8 @@ struct VaultSchemaGroupEditor: View {
 					}
 					.padding(10)
 					.frame(maxWidth: .infinity, alignment: .leading)
-					.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.accentTint : VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(selected ? VaultPalette.accent : VaultPalette.border, lineWidth: selected ? 1.5 : 1) }
+					.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.selectedFill : VaultPalette.content))
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? VaultPalette.selectedBorder : VaultPalette.border, lineWidth: 1) }
 					.contentShape(Rectangle())
 				}
 				.buttonStyle(.plain)
@@ -517,10 +517,10 @@ struct VaultSchemaGroupEditor: View {
 				if isEditable { addMemberButton(group) }
 			}
 			if isLarge {
-				TextField("Filter \(group.members.count.formatted()) members", text: $memberFilter)
+				TextField(vaultPrompt: "Filter \(group.members.count.formatted()) members", text: $memberFilter)
 					.textFieldStyle(.roundedBorder)
 					.font(VaultTypography.tabular(12))
-					.accessibilityLabel("Filter the group's members")
+					.accessibilityLabel("Filter the group’s members")
 				Group {
 					if matching.count > shown.count {
 						Text(needle.isEmpty ? "Showing the first \(shown.count). Filter to find the others."
@@ -613,10 +613,10 @@ struct VaultSchemaGroupEditor: View {
 		.buttonStyle(.plain)
 		.disabled(full)
 		.opacity(full ? 0.4 : 1)
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !full)
 		.help(full ? "The LPM CLI accepts at most \(SchemaGroup.maximumMembers) group members in all" : "Add a declared key to the group")
 		.accessibilityLabel("Add a key to the group")
-		.popover(isPresented: $pickingMember, arrowEdge: .leading) {
+		.vaultPopover(isPresented: $pickingMember, arrowEdge: .leading) {
 			VaultKeyPicker(keys: Self.pickableKeys(evaluated: currentOverview?.rules ?? [], draft: draft, excluding: Set(group.members)), secretKeys: currentOverview?.secretKeys ?? []) { picked in
 				pickingMember = false
 				update { if !$0.members.contains(picked) { $0.members.append(picked) } }
@@ -633,7 +633,7 @@ struct VaultSchemaGroupEditor: View {
 		switch mode {
 		case .editing(isOverride: true):
 			noticeBox(symbol: "square.stack.3d.up",
-				text: "You're editing a copy of the group from \(importedSource). Saving writes an override to lpm.json that replaces the original.",
+				text: "You’re editing a copy of the group from \(importedSource). Saving writes an override to lpm.json that replaces the original.",
 				tint: VaultPalette.accentText, background: VaultPalette.accentTint)
 		case .removed:
 			let renamed = draft.newName(ofGroup: name)
@@ -670,12 +670,12 @@ struct VaultSchemaGroupEditor: View {
 			.padding(12)
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint.opacity(0.6)))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.6), lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.red.opacity(0.6), lineWidth: 1) }
 			.padding(.horizontal, 16)
 			.padding(.bottom, 12)
 		case .reset(let source):
 			VStack(alignment: .leading, spacing: 8) {
-				noticeContent(symbol: "arrow.uturn.backward", text: "Your draft removes lpm.json's override, so the group from \(source) applies again.")
+				noticeContent(symbol: "arrow.uturn.backward", text: "Your draft removes lpm.json’s override, so the group from \(source) applies again.")
 				VaultBarButton(title: "Keep override", height: 24) { discardChanges(of: name) }
 					.disabled(!canEdit)
 			}
@@ -938,8 +938,8 @@ private struct VaultGroupMemberChips: View {
 				}
 				.padding(.horizontal, 7)
 				.frame(height: 24)
-				.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, lineWidth: 1) }
-				.help(isDeclared ? "" : "\(shown) isn't declared, which the LPM CLI rejects")
+				.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.border, lineWidth: 1) }
+				.help(isDeclared ? "" : "\(shown) isn’t declared, which the LPM CLI rejects")
 			}
 		}
 	}

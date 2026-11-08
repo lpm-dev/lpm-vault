@@ -317,9 +317,9 @@ extension SheetInteractionTests {
 		func addGroup() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitForText("NEW GROUP", exactly: true))
-			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") }, "Add group puts the cursor in the name")
+			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") }, "Add Group puts the cursor in the name")
 			try await host.typeCharacters("auth", placeholder: "group_name")
 			#expect(try await host.waitForText("already declared"))
 			try host.enterText("smtp", placeholder: "group_name")
@@ -349,9 +349,9 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("MEMBERS"))
 			try await host.click("At least one of")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.changedItems == [.group("auth")] })
-			// Review & save stays off until the draft is checked, which a slow runner can still be doing.
+			// Review & Save stays off until the draft is checked, which a slow runner can still be doing.
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-groups") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText(#"Added "mode": "atLeastOne""#, in: sheet))
@@ -444,7 +444,7 @@ extension SheetInteractionTests {
 		func removeLastMember() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "group_name") })
 			try host.enterText("smtp", placeholder: "group_name")
 			try await host.click("Add a key to the group")
@@ -582,7 +582,7 @@ extension SheetInteractionTests {
 		func pendingText() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") })
 			try await host.click("Add a key to the group")
 			try await host.click("PORT", in: try await host.popoverWindow())
@@ -641,7 +641,7 @@ extension SheetInteractionTests {
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("can't be removed here", in: sheet))
+			#expect(try await host.waitForText("can’t be removed here", in: sheet))
 			try await host.click("Cancel", in: sheet)
 			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
 			try await host.click("Override group")

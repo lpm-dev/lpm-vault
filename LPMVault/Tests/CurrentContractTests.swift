@@ -233,8 +233,8 @@ struct CurrentContractTests {
 
   @Test("sync confirmation actions have distinct operation copy")
   func syncConfirmationCopy() {
-    #expect(SyncConfirmationAction.push.title == "Push to Cloud")
-    #expect(SyncConfirmationAction.pull.title == "Pull from Cloud")
+    #expect(SyncConfirmationAction.push.title == "Push to lpm.dev")
+    #expect(SyncConfirmationAction.pull.title == "Pull from lpm.dev")
     #expect(SyncConfirmationAction.share.title == "Share with Organization")
     #expect(SyncConfirmationAction.share.buttonTitle == "Share")
   }

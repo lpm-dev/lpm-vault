@@ -9,14 +9,14 @@ struct VaultSheetCloseButton: View {
 	var body: some View {
 		Button(action: action) {
 			Image(systemName: "xmark")
-				.font(.system(size: 10, weight: .bold))
+				.font(.system(size: 10, weight: .semibold))
 				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
-				.frame(width: 26, height: 26)
-				.background(Circle().fill(hovering ? VaultPalette.border : VaultPalette.neutralTint))
+				.frame(width: 28, height: 28)
+				.background(Circle().fill(hovering ? VaultPalette.controlHover : .clear))
+				.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(shape: Circle()))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help(label)
 		.accessibilityLabel(label)
 	}
@@ -37,8 +37,7 @@ struct VaultSheetFooter<Leading: View, Actions: View>: View {
 			}
 			.frame(maxWidth: .infinity, alignment: .trailing)
 			.padding(.horizontal, 24)
-			.padding(.top, 14)
-			.padding(.bottom, 18)
+			.padding(.vertical, 16)
 			.background(VaultPalette.headerRow)
 		}
 	}
@@ -55,20 +54,43 @@ struct VaultFieldLabel: View {
 }
 
 extension View {
-	/// Rounded input frame with the accent focus ring used by sheet fields.
-	func vaultInputField(focused: Bool, invalid: Bool = false, background: Color = VaultPalette.control) -> some View {
-		let stroke = invalid ? VaultPalette.red : (focused ? VaultPalette.accent : VaultPalette.border)
+	/// Rounded input frame used by sheet fields. Focus draws one crisp accent
+	/// border inside the frame, never a halo around it.
+	func vaultInputField(focused: Bool, invalid: Bool = false, background: Color = VaultPalette.control,
+		restingEdge: Color = VaultPalette.inputBorder) -> some View {
+		let stroke = invalid ? VaultPalette.problemMark : (focused ? VaultPalette.focusRing : restingEdge)
 		return self
-			.background(RoundedRectangle(cornerRadius: 8).fill(background))
+			.background(RoundedRectangle(cornerRadius: 7).fill(background))
 			.overlay {
-				RoundedRectangle(cornerRadius: 8)
-					.stroke(stroke, lineWidth: focused || invalid ? 1.5 : 1)
+				RoundedRectangle(cornerRadius: 7)
+					.strokeBorder(stroke, lineWidth: focused ? 2 : 1)
 			}
-			.background {
-				RoundedRectangle(cornerRadius: 10)
-					.fill(focused ? (invalid ? VaultPalette.red : VaultPalette.accent).opacity(0.15) : .clear)
-					.padding(-3)
-			}
+	}
+}
+
+extension View {
+	/// A search field's box, the same in the sidebar and a page's filter row:
+	/// edged as the menus beside it are at rest, and in the focus ring while it
+	/// has the keyboard.
+	func vaultSearchField(focused: Bool) -> some View {
+		vaultInputField(focused: focused, restingEdge: VaultPalette.border)
+	}
+
+	/// The app's input box around a text field that keeps its own focus: the
+	/// 3:1 edge at rest and the focus ring while it has the keyboard.
+	func vaultInputBox(invalid: Bool = false) -> some View {
+		modifier(VaultInputBox(invalid: invalid))
+	}
+}
+
+private struct VaultInputBox: ViewModifier {
+	let invalid: Bool
+	@FocusState private var focused: Bool
+
+	func body(content: Content) -> some View {
+		content
+			.focused($focused)
+			.vaultInputField(focused: focused, invalid: invalid)
 	}
 }
 
@@ -91,25 +113,18 @@ struct VaultMenuField<Value: Hashable>: View {
 	var placeholder = "Choose…"
 	var disabled = false
 
+	@FocusState private var focused: Bool
+	@State private var hovering = false
+	@State private var isOpen = false
+	/// The field's width, which its menu takes too, as a pop-up button's does.
+	@State private var width: CGFloat = 0
+
 	private var selected: VaultMenuOption<Value>? {
 		selection.flatMap { value in options.first { $0.value == value } }
 	}
 
 	var body: some View {
-		Menu {
-			ForEach(options) { option in
-				Button {
-					selection = option.value
-				} label: {
-					if let systemImage = option.systemImage {
-						Label(option.label, systemImage: systemImage)
-					} else {
-						Text(option.label)
-					}
-				}
-				.disabled(option.disabled)
-			}
-		} label: {
+		Button { isOpen.toggle() } label: {
 			HStack(spacing: 7) {
 				if let systemImage = selected?.systemImage {
 					Image(systemName: systemImage).font(.system(size: 10)).foregroundStyle(VaultPalette.textPrimary)
@@ -125,18 +140,59 @@ struct VaultMenuField<Value: Hashable>: View {
 					.foregroundStyle(VaultPalette.textQuaternary)
 			}
 			.padding(.horizontal, 10)
-			.frame(height: 28)
+			.frame(height: 30)
 			.frame(maxWidth: .infinity)
 			.contentShape(Rectangle())
-			.vaultInputField(focused: false)
-			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
-			.accessibilityElement(children: .combine)
+			.vaultInputField(focused: focused || isOpen, background: (hovering || isOpen) && !disabled ? VaultPalette.controlHover : VaultPalette.control)
+			.vaultHoverAnimation(hovering)
 		}
-		.menuStyle(.button)
 		.buttonStyle(.plain)
-		.menuIndicator(.hidden)
+		.focusEffectDisabled()
+		.focused($focused)
+		.onHover { hovering = $0 }
 		.disabled(disabled)
+		.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
 		.accessibilityLabel(title)
 		.accessibilityValue(selected?.label ?? placeholder)
+		.accessibilityHint("Shows a menu")
+		.vaultMenu(isPresented: $isOpen, rows: options.map {
+			VaultMenuList<Value>.Row(id: $0.value, title: $0.label, isEnabled: !$0.disabled, isChecked: $0.value == selection, systemImage: $0.systemImage)
+		}, width: max(width, 180), label: title) { value in
+			selection = value
+		}
+	}
+}
+
+/// A caution in a sheet or panel: amber text that stays readable on light
+/// and dark backgrounds, with a warning glyph so it isn't said by color alone.
+struct VaultInlineWarning: View {
+	let text: String
+
+	var body: some View {
+		HStack(alignment: .firstTextBaseline, spacing: 7) {
+			Image(systemName: "exclamationmark.triangle.fill")
+				.font(.system(size: 10.5))
+				.foregroundStyle(VaultPalette.warningMark)
+				.accessibilityHidden(true)
+			Text(text)
+				.foregroundStyle(VaultPalette.textPrimary)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.fixedSize(horizontal: false, vertical: true)
+		}
+		.font(.system(size: 11.5))
+		.padding(.horizontal, 10)
+		.padding(.vertical, 7)
+		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.cautionFill))
+		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.cautionEdge, lineWidth: 1) }
+		.accessibilityElement(children: .combine)
+	}
+}
+
+extension TextField where Label == Text {
+	/// A field whose prompt, while it's empty, is drawn in the placeholder
+	/// color, 4.5:1 on any surface a field sits on, rather than the system's
+	/// lighter gray. The prompt names the field for VoiceOver too.
+	init(vaultPrompt prompt: String, text: Binding<String>, axis: Axis = .horizontal) {
+		self.init(text: text, prompt: Text(prompt).foregroundStyle(VaultPalette.placeholder), axis: axis) { Text(prompt) }
 	}
 }

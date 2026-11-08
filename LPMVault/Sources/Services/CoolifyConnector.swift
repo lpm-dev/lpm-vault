@@ -22,21 +22,21 @@ enum CoolifyConnectError: Error, Equatable, Sendable {
 	var message: String {
 		switch self {
 		case .invalidAddress: "Enter your Coolify address, such as https://coolify.example.com."
-		case .insecureAddress: "Coolify's address must start with https://, so the token isn't sent unencrypted. For an instance without a domain, open an SSH tunnel and use http://localhost with the tunnel's port."
+		case .insecureAddress: "Coolify’s address must start with https://, so the token isn’t sent unencrypted. For an instance without a domain, open an SSH tunnel and use http://localhost with the tunnel’s port."
 		case .invalidToken: "Paste the whole API token Coolify showed when you created it."
-		case .unauthorized: "Coolify didn't accept this token. It may be mistyped or revoked."
-		case .apiDisabled: "Coolify's API is turned off. Turn on API access in Coolify's Settings → Advanced, then connect again."
-		case .addressNotAllowed: "Coolify accepts API requests only from allowed IP addresses. Add this Mac's address to Allowed API IPs in Coolify's Settings → Advanced, then connect again."
-		case .missingPermission: "This token can't read its team. Create a token with the Read and Write permissions."
-		case .roleTooLow: "Only a team's admins and owners can use a token with write permissions. Ask an admin of the team to connect, or to make you an admin."
+		case .unauthorized: "Coolify didn’t accept this token. It may be mistyped or revoked."
+		case .apiDisabled: "Coolify’s API is turned off. Turn on API access in Coolify’s Settings → Advanced, then connect again."
+		case .addressNotAllowed: "Coolify accepts API requests only from allowed IP addresses. Add this Mac’s address to Allowed API IPs in Coolify’s Settings → Advanced, then connect again."
+		case .missingPermission: "This token can’t read its team. Create a token with the Read and Write permissions."
+		case .roleTooLow: "Only a team’s admins and owners can use a token with write permissions. Ask an admin of the team to connect, or to make you an admin."
 		case .forbidden: "Coolify refused this token."
-		case .notCoolify: "That address doesn't answer like Coolify. Check the address."
+		case .notCoolify: "That address doesn’t answer like Coolify. Check the address."
 		case .redirected: "That address redirects somewhere else. Enter the address Coolify itself uses."
-		case .untrustedCertificate: "This Mac doesn't trust the certificate at that address, so the token wasn't sent."
+		case .untrustedCertificate: "This Mac doesn’t trust the certificate at that address, so the token wasn’t sent."
 		case .rateLimited: "Coolify is limiting requests. Wait a minute, then try again."
-		case .unreachable: "Coolify couldn't be reached at that address. Check the address and your network."
+		case .unreachable: "Coolify couldn’t be reached at that address. Check the address and your network."
 		case .cancelled: "Connecting Coolify was cancelled."
-		case .invalidResponse: "That address answered in a way LPM Vault couldn't read. Check the address."
+		case .invalidResponse: "That address answered in a way LPM Vault couldn’t read. Check the address."
 		}
 	}
 }

@@ -27,8 +27,8 @@ struct NewEnvironmentSheet: View {
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 5) {
-				Text("New environment")
-					.font(.system(size: 17, weight: .bold))
+				Text("New Environment")
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("Add another encrypted .env file to \(project.name).")
 					.font(.system(size: 12.5))
@@ -74,7 +74,7 @@ struct NewEnvironmentSheet: View {
 		}
 		.frame(width: 520)
 		.background(VaultPalette.content)
-		.vaultUnsavedSheetWork(store, projectID: project.id, projectName: project.name, title: "New environment", detail: unsavedWork)
+		.vaultUnsavedSheetWork(store, projectID: project.id, projectName: project.name, title: "New Environment", detail: unsavedWork)
 		.onChange(of: source.source) { _, source in nameDraft.follow(source) }
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { cancelWork(); dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != project.id { cancelWork(); dismiss() } }
@@ -124,7 +124,7 @@ struct VaultEnvironmentNameField: View {
 				Text(".env.")
 					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
-				TextField("staging", text: $name)
+				TextField(vaultPrompt: "staging", text: $name)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textPrimary)
@@ -137,7 +137,7 @@ struct VaultEnvironmentNameField: View {
 			.padding(.horizontal, 11)
 			.frame(height: 34)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(focused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(focused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 			if let problem = Self.problem(with: name, existing: existing) {
 				Text(problem)
 					.font(.system(size: 11.5))

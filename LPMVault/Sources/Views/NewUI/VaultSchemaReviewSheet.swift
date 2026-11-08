@@ -30,7 +30,7 @@ struct VaultSchemaReviewSheet: View {
 			HStack(alignment: .top, spacing: 12) {
 				VStack(alignment: .leading, spacing: 4) {
 					Text("Review changes to lpm.json")
-						.font(.system(size: 17, weight: .bold))
+						.font(.system(size: 17, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
 					Text("Plain text, shared with the team. The LPM CLI enforces these rules on its next run.")
 						.font(.system(size: 12.5))
@@ -51,7 +51,7 @@ struct VaultSchemaReviewSheet: View {
 						message("Choose a version for each change that conflicts with lpm.json first. The banner on the Schema page lists them.")
 					} else if let review {
 						if let clash {
-							problem("Can't save: \(clash.message)")
+							problem("Can’t save: \(clash.message)")
 						}
 						if let summary = review.warningSummary {
 							problem(summary)
@@ -102,7 +102,7 @@ struct VaultSchemaReviewSheet: View {
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			} actions: {
-				VaultBarButton(title: (draft?.changeCount ?? 0) > 1 ? "Discard all" : "Discard", disabled: saving || draft == nil, height: 28) {
+				VaultBarButton(title: (draft?.changeCount ?? 0) > 1 ? "Discard All" : "Discard", disabled: saving || draft == nil, height: 28) {
 					store.discardSchemaDraft(in: project.id)
 					dismiss()
 				}
@@ -230,7 +230,7 @@ struct VaultSchemaReviewSheet: View {
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			case .unchecked:
-				Text("Stored values weren't checked: the project's values aren't loaded, or the rules are too large to check here.")
+				Text("Stored values weren’t checked: the project’s values aren’t loaded, or the rules are too large to check here.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -285,7 +285,7 @@ struct VaultSchemaReviewSheet: View {
 		.padding(.vertical, 6)
 		.textSelection(.enabled)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.clipShape(RoundedRectangle(cornerRadius: 8))
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Changes to lpm.json")
@@ -339,7 +339,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			ForEach(Array(effects.prefix(limit).enumerated()), id: \.offset) { index, effect in
 				HStack(alignment: .top, spacing: 8) {
-					VaultStatusDot(color: environmentColor(effect.environment)).padding(.top, 5)
+					VaultEnvSwatch(color: environmentColor(effect.environment)).padding(.top, 5)
 					Text(VaultProject.displayName(for: effect.environment))
 						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textSecondary)
@@ -392,7 +392,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func environmentColor(_ environment: String) -> Color {

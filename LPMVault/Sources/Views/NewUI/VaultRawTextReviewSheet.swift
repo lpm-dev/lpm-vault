@@ -35,7 +35,7 @@ struct VaultRawTextReviewSheet: View {
 				VStack(alignment: .leading, spacing: 16) {
 					counts
 					if review.changes.count == 0 {
-						Text("The edit matches \(name)'s values now, so there's nothing to apply.")
+						Text("The edit matches \(name)’s values now, so there’s nothing to apply.")
 							.font(.system(size: 12.5))
 							.foregroundStyle(VaultPalette.textTertiary)
 					}
@@ -65,7 +65,7 @@ struct VaultRawTextReviewSheet: View {
 			VaultSheetFooter {
 				HStack(spacing: 6) {
 					Image(systemName: "info.circle").accessibilityHidden(true)
-					Text("Comments, blank lines and line order aren't kept.")
+					Text("Comments, blank lines and line order aren’t kept.")
 				}
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
@@ -101,9 +101,9 @@ struct VaultRawTextReviewSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Review changes to \(name)")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text(revealed ? "Switch off any line you don't want to apply." : "Switch off any line you don't want to apply. Values stay hidden.")
+				Text(revealed ? "Switch off any line you don’t want to apply." : "Switch off any line you don’t want to apply. Values stay hidden.")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
@@ -133,7 +133,6 @@ struct VaultRawTextReviewSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.disabled(isObscured || review.changes.count == 0)
 			.help(revealed ? "Hide the values" : "Show the values to compare them")
 		}
@@ -198,9 +197,8 @@ struct VaultRawTextReviewSheet: View {
 				get: { !skipping.contains(key) },
 				set: { if $0 { skipping.remove(key) } else { skipping.insert(key) } }
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
-			.labelsHidden()
 			.help(applies ? "Leave this change out" : "Make this change")
 		}
 		.padding(.horizontal, 14)
@@ -255,7 +253,6 @@ struct VaultRawTextReviewSheet: View {
 				.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.help(showsUnchanged ? "Hide the unchanged keys" : "List the unchanged keys")
 			if showsUnchanged {
 				VaultHairline()

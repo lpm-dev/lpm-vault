@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A view of a project's keys that need attention, which All variables shows filtered.
+/// A view of a project's keys that need attention, which All Keys shows filtered.
 enum VaultSmartView: CaseIterable {
 	/// Keys whose values differ between environments.
 	case drift
@@ -17,18 +17,48 @@ enum VaultSmartView: CaseIterable {
 		}
 	}
 
-	fileprivate func title(_ count: Int) -> String {
+	/// The glyph that marks a key in this view, the same in the header, the
+	/// tables and the status bar.
+	var symbol: String {
 		switch self {
-		case .drift: "\(count) drifting"
-		case .missing: "\(count) missing"
-		case .invalid: "\(count) invalid"
+		case .drift: "notequal"
+		// A static mark: a dashed circle reads as something still loading.
+		case .missing: "minus.circle"
+		case .invalid: "xmark.circle.fill"
+		}
+	}
+
+	/// Drift is often intended, so its glyph stays quiet; the others need fixing.
+	var tint: Color {
+		switch self {
+		case .drift: VaultPalette.textTertiary
+		case .missing: VaultPalette.warningMark
+		case .invalid: VaultPalette.problemMark
+		}
+	}
+
+	/// What the glyph means, for its tooltip and for accessibility.
+	var meaning: String {
+		switch self {
+		case .drift: "Values differ"
+		case .missing: "Missing in an environment"
+		case .invalid: "Fails its lpm.json rules"
+		}
+	}
+
+	/// The count with what it counts, as the status bar and the project card say it.
+	func summary(_ count: Int) -> String {
+		switch self {
+		case .drift: count == 1 ? "1 key differs" : "\(count) keys differ"
+		case .missing: "\(count.counted("key")) missing"
+		case .invalid: "\(count.counted("key")) invalid"
 		}
 	}
 
 	fileprivate var help: String {
 		switch self {
 		case .drift: "Show the keys whose values differ between environments"
-		case .missing: "Show the keys an environment doesn't set"
+		case .missing: "Show the keys an environment doesn’t set"
 		case .invalid: "Show the keys whose values fail their lpm.json rules"
 		}
 	}
@@ -61,23 +91,34 @@ struct VaultSmartViewCounts: Equatable {
 /// page, so a link's number is how many keys the view it opens lists.
 struct VaultSmartViewLinks: View {
 	let counts: VaultSmartViewCounts
-	/// The smart view All variables shows now, which its link marks.
+	/// The smart view All Keys shows now, which its link marks.
 	var current: VaultWorkspaceFilter?
+	/// Whose keys the counts are, said before them, such as "Project" below one environment.
+	var scope: String?
 	/// Shows only the counts, for a narrow status bar.
 	var compact = false
+	/// Views whose count the page already says in its own words, which the links leave out.
+	var omitted: Set<VaultSmartView> = []
 	let open: (VaultSmartView) -> Void
 
 	var body: some View {
 		HStack(spacing: 2) {
+			if let scope {
+				Text(scope)
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textFaint)
+					.padding(.trailing, 2)
+					.accessibilityHidden(true)
+			}
 			ForEach(VaultSmartView.allCases, id: \.self) { view in
-				if let count = counts.count(of: view) {
+				if !omitted.contains(view), let count = counts.count(of: view) {
 					VaultSmartViewLink(view: view, count: count, isCurrent: current == view.filter, compact: compact) { open(view) }
 				}
 			}
 		}
 		.fixedSize()
 		.accessibilityElement(children: .contain)
-		.accessibilityLabel("Smart views")
+		.accessibilityLabel(scope.map { "\($0) smart views" } ?? "Smart views")
 	}
 }
 
@@ -95,11 +136,18 @@ private struct VaultSmartViewLink: View {
 		return isCurrent || hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary
 	}
 
+	private var indicator: some View {
+		Image(systemName: view.symbol)
+			.font(.system(size: 9.5, weight: .semibold))
+			.foregroundStyle(view.tint)
+			.accessibilityHidden(true)
+	}
+
 	var body: some View {
 		Button(action: action) {
 			HStack(spacing: 5) {
 				indicator
-				Text(compact ? "\(count)" : view.title(count))
+				Text(compact ? "\(count)" : view.summary(count))
 					.font(VaultTypography.tabular(11, isCurrent ? .semibold : .regular))
 			}
 			.foregroundStyle(foreground)
@@ -109,26 +157,13 @@ private struct VaultSmartViewLink: View {
 				RoundedRectangle(cornerRadius: 5)
 					.fill(isCurrent ? VaultPalette.neutralTint : (hovering ? VaultPalette.headerHover : .clear))
 			}
-			.contentShape(Rectangle())
+			.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 5))
 		.help(view.help)
-		.accessibilityLabel(view.title(count))
+		.accessibilityLabel(view.summary(count))
 		.accessibilityAddTraits(isCurrent ? .isSelected : [])
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
-	}
-
-	@ViewBuilder
-	private var indicator: some View {
-		switch view {
-		case .drift: VaultStatusDot(color: VaultPalette.orange)
-		case .missing: VaultStatusDot(color: VaultPalette.red)
-		case .invalid:
-			Image(systemName: "xmark.circle")
-				.font(.system(size: 9.5, weight: .semibold))
-				.foregroundStyle(VaultPalette.redText)
-				.accessibilityHidden(true)
-		}
 	}
 }

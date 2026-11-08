@@ -119,7 +119,7 @@ struct PublishReviewPartsTests {
 	@Test("the pills count what each planned action does, leaving out actions no key takes, with can't publish in red")
 	func pills() {
 		let pills = PublishSummaryPills.pills(for: PublishPlan.Summary(adding: 2, replacing: 1, blocked: 1, secrets: 3))
-		#expect(pills.map(\.text) == ["2 add", "1 replace", "1 can't publish"])
+		#expect(pills.map(\.text) == ["2 add", "1 replace", "1 can’t publish"])
 		#expect(pills.map(\.tone) == [.add, .replace, .blocked])
 		#expect(PublishSummaryPills.pills(for: PublishPlan.Summary(upToDate: 3, skipped: 1)).map(\.text) == ["3 up to date", "1 skipped"])
 		#expect(PublishSummaryPills.pills(for: PublishPlan.Summary()).isEmpty)
@@ -263,7 +263,7 @@ extension SheetInteractionTests {
 			let menu = try await layoutFrame(of: "Saved destinations", in: host)
 			#expect(placed, "The menu ends where Publish… does, 6 points under it: \(menu) under \(button)")
 			#expect(abs(menu.width - VaultPublishMenu.width) <= 1)
-			let actions = try await layoutFrame(of: "Platforms", in: host)
+			let actions = try await layoutFrame(of: "Platforms", in: host, within: menu)
 			#expect(menu.minY < actions.minY && actions.minY - menu.minY < 12, "The menu is as tall as what it lists: \(menu), \(actions)")
 
 			try NativeTestClick.send(to: host.window, at: NSPoint(x: 700, y: 120))
@@ -285,28 +285,28 @@ extension SheetInteractionTests {
 			let host = try await fixture.workspace()
 			defer { host.window.close() }
 			try await host.click("Account menu")
-			#expect(try await host.waitForText("VAULTS"))
+			#expect(try await host.waitForText("Sign In…"))
 			try NativeTestClick.send(to: host.window, at: NSPoint(x: 700, y: 120))
-			#expect(try await host.waitForTextToDisappear("VAULTS"))
+			#expect(try await host.waitForTextToDisappear("Sign In…"))
 			#expect(fixture.store.isUnlocked && fixture.store.selectedProjectId == WorkspaceFixture.projectID)
 		}
 
-		@Test("New key and ⌘N close the menu as the Add variable sheet opens, and Cancel doesn't bring it back", arguments: ["New key", "⌘N"])
+		@Test("New key and ⌘N close the menu as the Add variable sheet opens, and Cancel doesn't bring it back", arguments: ["New Key", "⌘N"])
 		func sheetClosesMenu(trigger: String) async throws {
 			let fixture = try WorkspaceFixture(savingDestination: true)
 			defer { fixture.tearDown() }
 			let host = try await fixture.workspace()
 			defer { host.window.close() }
 			try await fixture.openPublishMenu(in: host)
-			if trigger == "New key" {
-				try await host.click("New key")
+			if trigger == "New Key" {
+				try await host.click("New Key")
 			} else {
 				// What Env Project › New Secret sends.
 				NotificationCenter.default.post(name: .newSecret, object: nil)
 			}
 			#expect(try await host.waitUntil { host.window.attachedSheet != nil })
 			let sheet = try #require(host.window.attachedSheet)
-			#expect(try await host.waitForText("Add variable", in: sheet))
+			#expect(try await host.waitForText("New Key", in: sheet))
 			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"), "The menu closes as the sheet opens")
 			try await host.click("Cancel", in: sheet)
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
@@ -343,7 +343,7 @@ extension SheetInteractionTests {
 				NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: host.window)
 			case .accountMenu:
 				try await host.click("Account menu")
-				#expect(try await host.waitForText("VAULTS"))
+				#expect(try await host.waitForText("Sign In…"))
 			case .page:
 				try await host.click("Project Settings")
 			case .environment:
@@ -353,7 +353,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"))
 		}
 
-		@Test("the account menu closes as a sheet opens, and as Publish… opens its menu instead", arguments: ["New key", "Publish…"])
+		@Test("the account menu closes as a sheet opens, and as Publish… opens its menu instead", arguments: ["New Key", "Publish…"])
 		func accountMenuTakeover(trigger: String) async throws {
 			let fixture = try WorkspaceFixture(savingDestination: true)
 			defer { fixture.tearDown() }
@@ -361,10 +361,10 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try await fixture.openPublishMenu(in: host)
 			try await host.click("Account menu")
-			#expect(try await host.waitForText("VAULTS"))
+			#expect(try await host.waitForText("Sign In…"))
 			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"))
 			try await host.click(trigger)
-			#expect(try await host.waitForTextToDisappear("VAULTS"))
+			#expect(try await host.waitForTextToDisappear("Sign In…"))
 			if trigger == "Publish…" {
 				#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
 			} else {
@@ -409,9 +409,12 @@ extension SheetInteractionTests {
 			return CGRect(x: bounds.minX * size.width, y: bounds.minY * size.height, width: bounds.width * size.width, height: bounds.height * size.height)
 		}
 
-		private func layoutFrame<V: View>(of name: String, in host: SheetTestHost<V>) async throws -> CGRect {
-			let bounds = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: name), in: host.view)
+		/// Where the element saying `name` is, in the host view's points from the bottom-left,
+		/// looking only within `area` when given, such as the menu, which the sidebar shares names with.
+		private func layoutFrame<V: View>(of name: String, in host: SheetTestHost<V>, within area: CGRect? = nil) async throws -> CGRect {
 			let size = host.view.bounds.size
+			let region = area.map { CGRect(x: $0.minX / size.width, y: $0.minY / size.height, width: $0.width / size.width, height: $0.height / size.height) }
+			let bounds = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: name, region: region), in: host.view)
 			return CGRect(x: bounds.minX * size.width, y: bounds.minY * size.height, width: bounds.width * size.width, height: bounds.height * size.height)
 		}
 

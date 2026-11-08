@@ -375,7 +375,7 @@ struct ValueSearchCard<Content: View>: View {
 		VStack(spacing: 0) { content }
 			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
 			.clipShape(RoundedRectangle(cornerRadius: 10))
-			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 }
 
@@ -516,7 +516,7 @@ struct ValueSearchStrip: View {
 
 	var body: some View {
 		HStack(spacing: 10) {
-			Image(systemName: "binoculars")
+			Image(systemName: "text.magnifyingglass")
 				.font(.system(size: 11, weight: .semibold))
 				.foregroundStyle(VaultPalette.accentForeground)
 				.accessibilityHidden(true)
@@ -566,7 +566,7 @@ struct ValueSearchFoundBadge: View {
 /// Marks a value a value search found. The row's label says so to VoiceOver.
 struct ValueSearchFoundMark: View {
 	var body: some View {
-		Image(systemName: "binoculars.fill")
+		Image(systemName: "text.magnifyingglass")
 			.font(.system(size: 9.5))
 			.foregroundStyle(VaultPalette.accentForeground)
 			.help("Found by value search")

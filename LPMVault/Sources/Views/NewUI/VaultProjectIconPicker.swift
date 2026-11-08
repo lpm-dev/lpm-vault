@@ -84,12 +84,7 @@ struct VaultProjectIconPicker: View {
 		VStack(alignment: .leading, spacing: 0) {
 			header
 			VStack(alignment: .leading, spacing: 16) {
-				Picker("Icon kind", selection: $tab) {
-					ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
+				VaultSegmentedPicker(title: "Icon kind", options: Tab.allCases.map { ($0, $0.rawValue) }, selection: $tab)
 				if tab != .emoji { colorRow }
 				switch tab {
 				case .icons:
@@ -135,7 +130,7 @@ struct VaultProjectIconPicker: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Choose project icon")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("Choose a symbol, an emoji or a monogram.")
 					.font(.system(size: 12.5))
@@ -181,7 +176,7 @@ struct VaultProjectIconPicker: View {
 	/// moves to the grid.
 	private func searchField(_ prompt: String) -> some View {
 		HStack(spacing: 6) {
-			TextField(prompt, text: $query)
+			TextField(vaultPrompt: prompt, text: $query)
 				.textFieldStyle(.plain)
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)

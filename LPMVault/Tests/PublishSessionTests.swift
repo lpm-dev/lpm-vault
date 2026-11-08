@@ -201,7 +201,7 @@ struct PublishSessionTests {
 		let session = session(saved: saved)
 		session.start()
 		#expect(try await waitUntil { session.reviewError != nil })
-		#expect(session.reviewError?.contains("Other Inc on Vercel, which isn't connected on this Mac") == true)
+		#expect(session.reviewError?.contains("Other Inc on Vercel, which isn’t connected on this Mac") == true)
 	}
 
 	@Test("a production review stops while Vercel hides production variables from the connection")
@@ -850,7 +850,7 @@ struct CoolifyPublishSessionTests {
 		let session = session(saved: saved)
 		session.start()
 		#expect(try await waitUntil { session.reviewError != nil })
-		#expect(session.reviewError?.contains("Root Team on Coolify, which isn't connected on this Mac") == true)
+		#expect(session.reviewError?.contains("Root Team on Coolify, which isn’t connected on this Mac") == true)
 	}
 }
 
@@ -1017,7 +1017,7 @@ struct NetlifyPublishSessionTests {
 		let session = session(saved: saved)
 		session.start()
 		#expect(try await waitUntil { session.reviewError != nil })
-		#expect(session.reviewError?.contains("Tolga on Netlify, which isn't connected on this Mac") == true)
+		#expect(session.reviewError?.contains("Tolga on Netlify, which isn’t connected on this Mac") == true)
 	}
 
 	@Test("a Netlify review that only adds values to variables Netlify has says a change made moments before can still be overwritten")
@@ -1029,7 +1029,7 @@ struct NetlifyPublishSessionTests {
 		let review = try #require(session.review)
 		#expect(review.summary.replacing == 0 && review.summary.adding == 2)
 		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("moments before publishing can still be overwritten") })
-		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("another deploy context at that moment can't be told apart from this publish") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("another deploy context at that moment can’t be told apart from this publish") })
 		review.selection.keys.forEach { if $0 == "API_TOKEN" { session.set($0, selected: false) } }
 		let onlyNew = try #require(session.review)
 		#expect(!PublishSheet.notes(for: onlyNew).map(\.text).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
@@ -1136,7 +1136,7 @@ struct GitHubPublishSessionTests {
 		let notes = PublishSheet.notes(for: review).map(\.text)
 		#expect(notes.contains("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
 		#expect(session.place == PublishSession.Place(title: "northwind/storefront", part: "Repository"), "The owner is in the repository's name")
-		#expect(notes.contains { $0.contains("deployment environment gets that environment's secret or variable instead") })
+		#expect(notes.contains { $0.contains("deployment environment gets that environment’s secret or variable instead") })
 		try await publish(session)
 		#expect(confirmations.reasons == ["Publish 2 secrets and 1 variable to northwind/storefront / Repository on GitHub"])
 		#expect(session.results?.publishedCount == 3)
@@ -1173,7 +1173,7 @@ struct GitHubPublishSessionTests {
 		let results = try #require(session.results)
 		#expect(results.summary == "Published 1 of 1 secret and 0 of 1 variable.")
 		#expect(results.rows.map(\.isSecret) == [true, false])
-		#expect(results.recordFailure?.hasPrefix("The secret was published, but the destination couldn't be saved.") == true)
+		#expect(results.recordFailure?.hasPrefix("The secret was published, but the destination couldn’t be saved.") == true)
 		let flipped = PublishSession.Results(
 			destination: results.destination,
 			rows: results.rows.map { .init(key: $0.key, outcome: $0.outcome, isSecret: !$0.isSecret, isStored: $0.isStored) },
@@ -1202,7 +1202,7 @@ struct GitHubPublishSessionTests {
 				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)),
 			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
 		let failed = PublishSession.Results(
-			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn't be reached."), isSecret: true, isStored: false)],
+			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn’t be reached."), isSecret: true, isStored: false)],
 			needsReconnect: false, recordFailure: nil)
 		#expect(PublishSheet.resultsHeader(for: failed) == "Published 0 of 1 secret.")
 		let stored = PublishSession.Results(
@@ -1280,9 +1280,9 @@ struct GitHubPublishSessionTests {
 	}
 
 	@Test("a review of a repository the person can't change says why, before reading its secrets", arguments: [
-		(true, GitHubRepository.Permission.admin, GitHubPublishTarget.Scope.repository, "northwind/storefront is archived on GitHub, so its secrets and variables can't change."),
-		(false, .read, .repository, "Your role on northwind/storefront can't change its secrets and variables. That needs write access."),
-		(false, .write, .environment(id: "161088068", name: "production"), "Changing an environment's secrets and variables needs admin access to northwind/storefront."),
+		(true, GitHubRepository.Permission.admin, GitHubPublishTarget.Scope.repository, "northwind/storefront is archived on GitHub, so its secrets and variables can’t change."),
+		(false, .read, .repository, "Your role on northwind/storefront can’t change its secrets and variables. That needs write access."),
+		(false, .write, .environment(id: "161088068", name: "production"), "Changing an environment’s secrets and variables needs admin access to northwind/storefront."),
 	])
 	func refusesWithoutAccess(archived: Bool, permission: GitHubRepository.Permission, scope: GitHubPublishTarget.Scope, refusal: String) async throws {
 		try await connect()
@@ -1328,8 +1328,8 @@ struct GitHubPublishSessionTests {
 		try await choose(session)
 		let review = try #require(session.review)
 		#expect(PublishSheet.overflowMessage(for: review) == [
-			"GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret.",
-			"GitHub keeps at most 500 of a repository's own variables, and has 500 already. Leave out the new variable, or remove some on GitHub.",
+			"GitHub keeps at most 100 of a repository’s own secrets, and this would make 101. Leave out 1 new secret.",
+			"GitHub keeps at most 500 of a repository’s own variables, and has 500 already. Leave out the new variable, or remove some on GitHub.",
 		].joined(separator: " "))
 	}
 
@@ -1342,7 +1342,7 @@ struct GitHubPublishSessionTests {
 		let unreadable = session(rules: .unreadable)
 		try await choose(unreadable)
 		#expect(PublishSheet.notes(for: try #require(unreadable.review)).map(\.text)
-			.contains("lpm.json's rules can't be read, so values aren't checked, and keys publish as secrets."))
+			.contains("lpm.json’s rules can’t be read, so values aren’t checked, and keys publish as secrets."))
 	}
 
 	@Test("the note on skipped installations names their accounts, in the plural for several, and says what to do")
@@ -1351,20 +1351,20 @@ struct GitHubPublishSessionTests {
 		let refused = { GitHubSkippedInstallation(account: $0, isSuspended: false) }
 		#expect(PublishSheet.skippedInstallationNotes([]) == [])
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme")]) == [
-			"LPM Vault's GitHub App is suspended on acme, so its repositories aren't listed. An owner of acme can unsuspend it in acme's settings on GitHub, unless LPM Vault suspended it.",
+			"LPM Vault’s GitHub App is suspended on acme, so its repositories aren’t listed. An owner of acme can unsuspend it in acme’s settings on GitHub, unless LPM Vault suspended it.",
 		])
 		#expect(PublishSheet.skippedInstallationNotes([suspended(nil)]).first?.hasSuffix(
 			"An owner of the account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.") == true)
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme"), suspended("northwind"), refused(nil)]) == [
-			"LPM Vault's GitHub App is suspended on acme and northwind, so their repositories aren't listed. An owner of each account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.",
-			"GitHub refused to list the repositories of LPM Vault's GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+			"LPM Vault’s GitHub App is suspended on acme and northwind, so their repositories aren’t listed. An owner of each account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.",
+			"GitHub refused to list the repositories of LPM Vault’s GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
 		])
 		let joined = ListFormatter.localizedString(byJoining: ["a", "b", "c", "2 other accounts"])
 		#expect(PublishSheet.skippedInstallationNotes([refused("a"), refused("b"), refused("c"), refused("d"), refused(nil)]) == [
-			"GitHub refused to list the repositories of LPM Vault's GitHub App on \(joined), as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+			"GitHub refused to list the repositories of LPM Vault’s GitHub App on \(joined), as when it was uninstalled meanwhile. Refresh, or install the app there again.",
 		])
 		#expect(PublishSheet.skippedInstallationNotes([suspended(nil), suspended(nil)]).first?.hasPrefix(
-			"LPM Vault's GitHub App is suspended on 2 accounts, so their repositories aren't listed.") == true)
+			"LPM Vault’s GitHub App is suspended on 2 accounts, so their repositories aren’t listed.") == true)
 	}
 
 	@Test("environments of a repository moved since it was listed say to refresh, not to review again")
@@ -1444,7 +1444,7 @@ struct GitHubPublishSessionTests {
 		let session = session(saved: saved)
 		session.start()
 		#expect(try await waitUntil { session.reviewError != nil })
-		#expect(session.reviewError == "The environment production isn't in northwind/storefront any more. Choose another destination.")
+		#expect(session.reviewError == "The environment production isn’t in northwind/storefront any more. Choose another destination.")
 	}
 
 	@Test("a GitHub token about to expire is renewed through lpm.dev before the repositories are listed, and the review uses the new one")
@@ -1818,11 +1818,11 @@ extension SheetInteractionTests {
 			#expect(abs(added.midY - step.midY) <= 2 && added.minX > step.maxX, "The pills sit beside the steps: \(added), \(step)")
 			#expect(try await host.waitForText("1 skipped"))
 			#expect(try await host.waitForText("Values hidden"))
-			#expect(try await host.waitForText("lpm.json's rules can't be read, so values aren't checked, and keys publish as Secrets"))
+			#expect(try await host.waitForText("lpm.json’s rules can’t be read, so values aren’t checked, and keys publish as Secrets"))
 			try await host.click("Publish SHARED_KEY anyway")
 			#expect(try await host.waitForText("1 replace"))
 			#expect(try await host.waitForTextToDisappear("1 skipped"))
-			#expect(try await host.waitForText("Existing variables will be replaced. Vercel's current values can't be read to compare"))
+			#expect(try await host.waitForText("Existing variables will be replaced. Vercel’s current values can’t be read to compare"))
 		}
 
 		@Test("a publish Vercel refused part of offers Review Again, which reviews the same destination")
@@ -1891,7 +1891,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { session.github?.repositories.value != nil })
 			#expect(try await host.waitForText("Secrets and variables"))
-			#expect(try await host.waitForText("needs LPM Vault's GitHub App"))
+			#expect(try await host.waitForText("needs LPM Vault’s GitHub App"))
 			try await host.click("Install on GitHub")
 			#expect(try await host.waitUntil { !opened.urls.isEmpty })
 			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
@@ -1973,14 +1973,14 @@ extension SheetInteractionTests {
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("GitHub left out repositories of an organization with single sign-on"))
-			#expect(try await host.waitForText("LPM Vault's GitHub App is suspended on acme"))
+			#expect(try await host.waitForText("LPM Vault’s GitHub App is suspended on acme"))
 			session.github?.repositoryID = "1296269"
 			#expect(try await host.waitForText("Loading environments…"))
-			#expect(try await host.waitForText("A repository that isn't listed needs LPM Vault's GitHub App."), "The hint stays while environments load")
+			#expect(try await host.waitForText("A repository that isn’t listed needs LPM Vault’s GitHub App."), "The hint stays while environments load")
 			await gate.open()
 			#expect(try await host.waitForTextToDisappear("Loading environments…"))
 			try await host.click("Review secrets and variables")
-			let overflow = "GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret."
+			let overflow = "GitHub keeps at most 100 of a repository’s own secrets, and this would make 101. Leave out 1 new secret."
 			#expect(try await host.waitForText(overflow))
 			let publish = try await host.waitForElement(saying: "Publish 2 secrets")
 			#expect(!publish.isEnabledNow, "Publish can't be pressed until a new secret is left out")
@@ -2013,7 +2013,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("TO COOLIFY, api, Production · Northwind"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("single quote"))
-			#expect(try await host.waitForText("Can't publish"))
+			#expect(try await host.waitForText("Can’t publish"))
 			#expect(try await host.waitForText("copies new variables"))
 			try await host.click("Publish 1 variable")
 			#expect(try await host.waitForText("Redeploy in Coolify"))
@@ -2049,7 +2049,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("TO NETLIFY"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("one value for all deploy contexts"))
-			#expect(try await host.waitForText("Can't publish"))
+			#expect(try await host.waitForText("Can’t publish"))
 			#expect(try await host.waitForText("netlify.toml"))
 			try await host.click("Publish 1 variable")
 			#expect(try await host.waitForText("Redeploy on Netlify"))
@@ -2109,7 +2109,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let dialog = try #require(host.window.sheets.first)
 			try await host.click("Forget Destination", in: dialog)
-			#expect(try await host.waitForText("couldn't be forgotten"))
+			#expect(try await host.waitForText("couldn’t be forgotten"))
 			keychain.failAppItemDeletes = []
 			try await host.click("Forget destination")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
@@ -2312,7 +2312,7 @@ struct CloudflarePublishSessionTests {
 		let frontend = try #require(review.plan.row("VITE_URL"))
 		#expect(PublishSheet.kind(token, on: .cloudflare) == "Secret" && PublishSheet.kind(frontend, on: .cloudflare) == "Secret")
 		#expect(PublishSheet.detail(token, review: review) == "Replaces the value Cloudflare has now")
-		#expect(PublishSheet.detail(frontend, review: review).hasPrefix("Frontend code reads it at build time, from the build's own variables"))
+		#expect(PublishSheet.detail(frontend, review: review).hasPrefix("Frontend code reads it at build time, from the build’s own variables"))
 		try await publish(session)
 		#expect(confirmations.reasons == ["Publish 2 secrets to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
 		#expect(session.results?.rows.map(\.outcome) == [.published, .published])
@@ -2334,7 +2334,7 @@ struct CloudflarePublishSessionTests {
 		session.cloudflare?.accountID = CloudflareLoginFixture.acme.id
 		#expect(try await waitUntil { session.cloudflare?.workers != .loading && session.cloudflare?.workers != .idle })
 		#expect(session.cloudflare?.workers == .failed(
-			"Work can't list the Workers in Acme. Its role there may not reach Workers."))
+			"Work can’t list the Workers in Acme. Its role there may not reach Workers."))
 		session.reloadChoices()
 		#expect(try await waitUntil { session.cloudflare?.workers.value != nil })
 	}
@@ -2490,7 +2490,7 @@ struct CloudflarePublishSessionTests {
 		session.start()
 		let review = try await review(session)
 		#expect(review.selection.keys.count == 101)
-		#expect(PublishSheet.overflowMessage(for: review) == "Cloudflare can change at most 100 secrets in one step. Choose 1 fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too.")
+		#expect(PublishSheet.overflowMessage(for: review) == "Cloudflare can change at most 100 secrets in one step. Choose 1 fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they’re published too.")
 		session.publish()
 		#expect(confirmations.reasons.isEmpty)
 
@@ -2630,8 +2630,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Choose account…"))
 			#expect(try await host.waitForText("Choose an account first"))
 			session.cloudflare?.accountID = CloudflareLoginFixture.acme.id
-			#expect(try await host.waitForText("Work can't list the Workers in Acme."))
-			#expect(try await host.waitForText("Workers couldn't be listed"))
+			#expect(try await host.waitForText("Work can’t list the Workers in Acme."))
+			#expect(try await host.waitForText("Workers couldn’t be listed"))
 			try await host.click("Refresh Workers")
 			#expect(try await host.waitForText("Choose Worker…"))
 			session.cloudflare?.workerID = CloudflareWorkerSimulator.workerID
@@ -2666,7 +2666,7 @@ extension SheetInteractionTests {
 			let hold = CloudflarePublishing.holdMessage(.earlierVersionLive)
 			#expect(try await host.waitForText(hold))
 			#expect(try await !host.waitForElement(saying: "Publish API_TOKEN").isEnabled)
-			#expect(try await host.waitForText("Can't publish"))
+			#expect(try await host.waitForText("Can’t publish"))
 			#expect(host.lines().filter { $0.text.contains(hold) }.count == 1)
 			#expect(!host.lines().contains { $0.text.contains("deploys it at once") })
 		}

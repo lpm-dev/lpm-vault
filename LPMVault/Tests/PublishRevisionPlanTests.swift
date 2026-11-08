@@ -211,7 +211,7 @@ struct PublishRowDetailTests {
 		#expect(leftOut.holds == [.excluded, .unknownSincePublish] && leftOut.isPublishable)
 		let leftOutDetail = PublishSheet.detail(leftOut, review: review)
 		#expect(leftOutDetail.contains("Left out last time"))
-		#expect(leftOutDetail.contains("Vercel doesn't say whether it changed since you published it"))
+		#expect(leftOutDetail.contains("Vercel doesn’t say whether it changed since you published it"))
 
 		let failing = try #require(plan.row("FAILING"))
 		#expect(failing.holds.first.map { if case .failsRules = $0 { true } else { false } } == true)

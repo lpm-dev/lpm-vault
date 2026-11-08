@@ -44,7 +44,7 @@ struct VaultSchemaEditorFooter: View {
 		guard let draft = store.schemaDraft(for: projectID) else { return nil }
 		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
 			if let item, conflict.item == item { return Blocker(message: "Choose a version of this \(noun(of: item)) above to save.") }
-			return Blocker(message: "Can't save until you choose a version of \(name(of: conflict.item)), which changed on disk.", show: selection(of: conflict.item))
+			return Blocker(message: "Can’t save until you choose a version of \(name(of: conflict.item)), which changed on disk.", show: selection(of: conflict.item))
 		}
 		guard let current = store.currentSchemaDraftEvaluation(for: projectID) else { return Blocker(message: "Checking the rules…", checking: true) }
 		guard let rejection = current.rejection else {
@@ -52,11 +52,11 @@ struct VaultSchemaEditorFooter: View {
 			let shown: String? = if case .key(let key)? = item, clash.keys.contains(key) { nil } else {
 				clash.keys.first { draft.base(of: .key($0)) == .absent && draft.hasChange(to: .key($0)) }
 			}
-			return Blocker(message: "Can't save: \(clash.message)", show: shown.map(VaultSchemaSelection.key))
+			return Blocker(message: "Can’t save: \(clash.message)", show: shown.map(VaultSchemaSelection.key))
 		}
 		if let item, rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
-		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
-		return Blocker(message: "Can't save: \(name(of: other)) has a problem. \(rejection.reason)", show: selection(of: other))
+		guard let other = rejection.item else { return Blocker(message: "Can’t save: \(rejection.reason)") }
+		return Blocker(message: "Can’t save: \(name(of: other)) has a problem. \(rejection.reason)", show: selection(of: other))
 	}
 
 	/// A failed save the panel shows, as one the review can't: not a change on
@@ -150,7 +150,7 @@ struct VaultSchemaEditorFooter: View {
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.help("⌘Z undoes the last change")
 					} else {
-						Text("No changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
+						Text("No unsaved changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 					}
 					Spacer(minLength: 4)
 					if let discard {
@@ -159,14 +159,17 @@ struct VaultSchemaEditorFooter: View {
 					}
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
-					} else {
+					} else if changes > 0 {
+						// Only once there's a change, so it never reads as available when nothing is.
 						reviewButton(blocker: blocker)
 					}
 				}
 			}
+			// As tall as the page's status bar beside it, so their top lines meet.
+			.frame(minHeight: VaultMetrics.statusBar - 10)
 		}
 		.padding(.horizontal, 14)
-		.padding(.vertical, 10)
+		.padding(.vertical, 5)
 		.background(VaultPalette.headerRow)
 		// ⌘S opens the review while the panel is open, after a failed save too, where the review saves again.
 		.background(VaultSchemaShortcuts(review: openReview))
@@ -174,7 +177,7 @@ struct VaultSchemaEditorFooter: View {
 
 	private func reviewButton(blocker: Blocker?) -> some View {
 		let changes = store.schemaDraft(for: project.id)?.changeCount ?? 0
-		return VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
+		return VaultBarButton(title: "Review & Save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
 			action: onReview)
 			.help("Review the changes, then save them to lpm.json (⌘S)")
 	}
@@ -209,7 +212,7 @@ struct VaultSchemaSaveFailureNotice: View {
 			HStack(alignment: .top, spacing: 8) {
 				Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
 				VStack(alignment: .leading, spacing: 3) {
-					Text("Couldn't save lpm.json").font(.system(size: 12, weight: .semibold))
+					Text("Couldn’t save lpm.json").font(.system(size: 12, weight: .semibold))
 					Text(failure.message + " Your draft is kept.")
 						.font(.system(size: 11.5))
 						.fixedSize(horizontal: false, vertical: true)
@@ -219,7 +222,7 @@ struct VaultSchemaSaveFailureNotice: View {
 			.padding(10)
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.5), lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.red.opacity(0.5), lineWidth: 1) }
 			.padding(.horizontal, 16)
 			.padding(.bottom, 12)
 		}

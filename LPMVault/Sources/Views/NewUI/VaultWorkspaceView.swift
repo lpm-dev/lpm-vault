@@ -6,6 +6,7 @@ struct VaultWorkspaceView: View {
 	@Environment(\.vaultContentObscured) private var isObscured
 	@Environment(\.vaultCopyFeedbackTimer) private var copyFeedbackTimer
 	@Environment(\.vaultImportUndoTimer) private var undoTimer
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
@@ -16,13 +17,13 @@ struct VaultWorkspaceView: View {
 	@State private var schemaSelection: VaultSchemaSelection?
 	/// The project whose schema draft the review sheet shows.
 	@State private var schemaReview: SchemaReviewTarget?
+	/// Whether signing out, asked from the account menu, waits for confirmation.
+	@State private var confirmsSignOut = false
 	@State private var schemaPanelSession = UUID()
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var shownMenu: WorkspaceMenu?
-	@State private var sidebarWidth = VaultMetrics.sidebar
-	@State private var inspectorWidth = VaultMetrics.inspector
-	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
+	@State private var workspaceWidth: CGFloat = 0
 
 	@State private var showNewProject = false
 	@State private var showBackupRestore = false
@@ -112,11 +113,16 @@ struct VaultWorkspaceView: View {
 	/// ⌘S with the side panel closed: opens the review when there's a draft
 	/// and nothing blocks it; returns whether it did.
 	private func reviewSchemaFromPage(in project: VaultProject) -> Bool {
-		guard !schemaPanelVisible, (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0, store.canEditSchema(of: project.id),
-			VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil)?.blocksReview != true
-		else { return false }
+		guard canReviewSchema(in: project) else { return false }
 		schemaReview = SchemaReviewTarget(projectID: project.id)
 		return true
+	}
+
+	/// Whether the page can open the review: there's a draft, nothing blocks
+	/// it, and no side panel is open, whose own footer reviews what it holds.
+	private func canReviewSchema(in project: VaultProject) -> Bool {
+		!schemaPanelVisible && (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0 && store.canEditSchema(of: project.id)
+			&& VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil)?.blocksReview != true
 	}
 
 	/// Moves the side panel's selection through `rows`, the table's order. A
@@ -209,6 +215,8 @@ struct VaultWorkspaceView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
 			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
 		}
+		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
+			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
@@ -280,73 +288,89 @@ struct VaultWorkspaceView: View {
 		}
 	}
 
+	/// The sidebar shows unless the person hid it, or, in a narrow window, the inspector needs its room.
+	private var sidebarVisible: Bool {
+		store.layout.sidebarChoice ?? !(inspectorVisible && workspaceWidth > 0 && workspaceWidth < VaultMetrics.sidebarAutoHideWidth)
+	}
+
+	/// Whether the window is narrow enough for the inspector to take the sidebar's room; nil until it's measured.
+	private var sidebarAutoHides: Bool? {
+		workspaceWidth > 0 ? workspaceWidth < VaultMetrics.sidebarAutoHideWidth : nil
+	}
+
+	private func toggleSidebar() {
+		let show = !sidebarVisible
+		withAnimation(reduceMotion ? nil : VaultMotion.panel) { store.layout.sidebarChoice = show }
+	}
+
 	private var workspaceLayout: some View {
 		VStack(spacing: 0) {
 			VaultTitleBarView(
 				store: store,
 				mode: mode,
+				sidebarVisible: sidebarVisible,
+				onToggleSidebar: toggleSidebar,
 				onConnectCLI: { showConnectCLISheet = true },
 				onPull: { showPullConfirmation = true },
 				onPush: { showPushConfirmation = true },
 				isConnectSheetPresented: showConnectCLISheet,
 				onPublish: { publishSession = store.makePublishSession(for: $0) },
-				showsPublishMenu: shows(.publish)
+				showsPublishMenu: shows(.publish),
+				onShowAllKeys: {
+					mode = .matrix
+					filter = .all
+				}
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
-			if !isObscured, !store.isShowingAccountPage, let warning = store.lastSyncWarnings.first {
+			if !isObscured, let warning = store.lastSyncWarnings.first {
 				metadataWarningBanner(warning)
 			}
 			if let refreshError = store.localStateRefreshError {
 				localStateRefreshBanner(refreshError)
 			}
-			if !isObscured, !store.isShowingAccountPage, let project, let pause = store.syncPauses[project.id] {
+			if !isObscured, let project, let pause = store.syncPauses[project.id] {
 				syncPausedBanner(project, pause)
 			}
-			if !isObscured, !store.isShowingAccountPage, let project {
+			if !isObscured, let project {
 				companionBanners(for: project)
 			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
 					available: geometry.size.width,
-					requestedSidebar: sidebarWidth,
-					requestedInspector: inspectorWidth,
-					showsInspector: inspectorVisible
+					requestedSidebar: store.layout.sidebarWidth,
+					requestedInspector: store.layout.inspectorWidth,
+					showsInspector: inspectorVisible,
+					showsSidebar: sidebarVisible
 				)
 
 				HStack(spacing: 0) {
-					VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
-						VaultSidebarView(
-							store: store,
-							mode: $mode,
-							filter: $filter,
-							searchText: $searchText,
-							showsAccountSwitcher: shows(.account),
-							onNewProject: { showNewProject = true },
-							onCloudProjects: { showCloudProjects = true },
-							onNewEnvironment: { showNewEnvironment = true },
-							onProjectSettings: { openProjectSettings($0, focusingName: false) },
-							onRenameProject: { openProjectSettings($0, focusingName: true) },
-							onDeleteProject: { projectToDelete = $0 },
-							onRenameEnvironment: beginRenameEnvironment,
-							onDuplicateEnvironment: beginDuplicateEnvironment,
-							onClearEnvironment: { clearEnvironmentTarget = $0 },
-							onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
-							onFindAsValue: findAsValue
-						)
+					if sidebarVisible {
+						VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
+							VaultSidebarView(
+								store: store,
+								mode: $mode,
+								filter: $filter,
+								searchText: $searchText,
+								showsAccountSwitcher: shows(.account),
+								onNewProject: { showNewProject = true },
+								onNewEnvironment: { showNewEnvironment = true },
+								onProjectSettings: { openProjectSettings($0, focusingName: false) },
+								onRenameProject: { openProjectSettings($0, focusingName: true) },
+								onDeleteProject: { projectToDelete = $0 },
+								onRenameEnvironment: beginRenameEnvironment,
+								onDuplicateEnvironment: beginDuplicateEnvironment,
+								onClearEnvironment: { clearEnvironmentTarget = $0 },
+								onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
+								onFindAsValue: findAsValue
+							)
+						}
+						.transition(.move(edge: .leading))
 					}
 
 					Group {
-						if store.accountPage == .settings {
-							VaultSettingsPage(store: store)
-								.frame(maxWidth: .infinity, maxHeight: .infinity)
-								.background(VaultPalette.content)
-						} else if store.accountPage == .platforms {
-							PlatformsView(store: store)
-								.frame(maxWidth: .infinity, maxHeight: .infinity)
-								.background(VaultPalette.content)
-						} else if let project, mode == .projectSettings {
+						if let project, mode == .projectSettings {
 							VaultProjectSettingsView(
 								store: store,
 								project: project,
@@ -381,7 +405,9 @@ struct VaultWorkspaceView: View {
 								onAddKey: { selectSchema(.newKey) },
 								onAddGroup: { selectSchema(.newGroup) },
 								clientPrefixCount: store.schemaClientPrefixesInEffect(for: project.id).count,
-								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
+								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(
+									store: store, project: project, onOpenKey: { selectSchema(.key($0)) },
+									onReview: canReviewSchema(in: project) ? { schemaReview = SchemaReviewTarget(projectID: project.id) } : nil)),
 								storedKeyCount: store.workspaceSnapshots[project.id]?.allSecretKeys.count ?? 0,
 								failures: schemaFailures(in: project),
 								saveFailed: VaultSchemaEditorFooter.saveFailure(store: store, projectID: project.id) != nil,
@@ -446,9 +472,7 @@ struct VaultWorkspaceView: View {
 					}
 					.frame(width: budget.content, height: geometry.size.height)
 					.overlay(alignment: .bottom) {
-						if !store.isShowingAccountPage {
-							VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
-						}
+						VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
 					}
 					.clipped()
 					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
@@ -509,18 +533,20 @@ struct VaultWorkspaceView: View {
 				.clipped()
 				.overlay(alignment: .topLeading) {
 					ZStack(alignment: .topLeading) {
-						VaultPaneResizeHandle(
-							width: $sidebarWidth,
-							bounds: budget.sidebar,
-							edge: .trailing,
-							accessibilityLabel: "Resize sidebar",
-							onResize: { store.recordUserActivity() }
-						)
-						.padding(.leading, budget.sidebarDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+						if sidebarVisible {
+							VaultPaneResizeHandle(
+								width: Bindable(store.layout).sidebarWidth,
+								bounds: budget.sidebar,
+								edge: .trailing,
+								accessibilityLabel: "Resize sidebar",
+								onResize: { store.recordUserActivity() }
+							)
+							.padding(.leading, budget.sidebarDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+						}
 
 						if inspectorVisible {
 							VaultPaneResizeHandle(
-								width: $inspectorWidth,
+								width: Bindable(store.layout).inspectorWidth,
 								bounds: budget.inspector,
 								edge: .leading,
 								accessibilityLabel: "Resize inspector",
@@ -530,6 +556,11 @@ struct VaultWorkspaceView: View {
 						}
 					}
 				}
+			}
+			.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
+			// A window resized across the line goes back to following its width; the first measure isn't a resize.
+			.onChange(of: sidebarAutoHides) { old, new in
+				if old != nil, new != nil { store.layout.sidebarChoice = nil }
 			}
 		}
 		.background(VaultPalette.content)
@@ -550,15 +581,18 @@ struct VaultWorkspaceView: View {
 
 					VaultAccountSwitcher(
 						store: store,
-						isPresented: shows(.account)
+						isPresented: shows(.account),
+						onSignOut: { confirmsSignOut = true },
+						onImport: { showCloudProjects = true }
 					)
 					.frame(width: VaultPaneBudget.clamp(
-						sidebarWidth,
+						store.layout.sidebarWidth,
 						minimum: VaultMetrics.sidebarMinimum,
 						maximum: VaultMetrics.sidebarMaximum
 					) - 16)
 					.padding(.leading, 8)
-					.padding(.bottom, 56)
+					// Just above the sidebar's footer, which opens it.
+					.padding(.bottom, 52)
 					.transition(.opacity.combined(with: .offset(y: 6)))
 				}
 			}
@@ -612,8 +646,22 @@ struct VaultWorkspaceView: View {
 		return store.publishDestinations[project.id] ?? []
 	}
 
+	/// The workspace, with Settings over it while Settings shows. Under the
+	/// overlay the workspace stays as it was, out of the pointer's reach and VoiceOver's.
+	private var workspaceWithSettings: some View {
+		ZStack {
+			workspaceLayout
+				.modifier(VaultHiddenUnderOverlay(hidden: store.isShowingAccountPage))
+			if let category = store.shownSettingsCategory {
+				VaultSettingsOverlay(store: store, category: category)
+					.transition(.opacity)
+			}
+		}
+		.animation(reduceMotion ? nil : VaultMotion.quick, value: store.isShowingAccountPage)
+	}
+
 	private var workspaceSheets: some View {
-		workspaceLayout
+		workspaceWithSettings
 		.sheet(item: $importRequest) { request in
 			EnvImportSheet(store: store, projectID: request.projectID, environment: request.environment, file: request.file)
 				.vaultPrivacyProtected(isObscured)
@@ -655,6 +703,7 @@ struct VaultWorkspaceView: View {
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
 		}
+		.vaultConfirmation(isPresented: $confirmsSignOut) { .signOut(store) }
 		.sheet(item: $schemaReview) { target in
 			if let project = store.projects.first(where: { $0.id == target.projectID }) {
 				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project))
@@ -751,7 +800,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "trash",
 				title: "Delete this environment?",
-				message: "The environment and its values leave this Mac's Keychain. The project's other environments stay as they are.",
+				message: "The environment and its values leave this Mac’s Keychain. The project’s other environments stay as they are.",
 				subject: environmentSubject(target),
 				actions: [.init(title: "Delete Environment") { store.deleteEnvironment(from: target.projectId, name: target.environment) }])
 		}
@@ -759,7 +808,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "eraser",
 				title: "Clear every key from this environment?",
-				message: "Its keys and values leave this Mac's Keychain, and the environment stays, empty. The project's other environments stay as they are.",
+				message: "Its keys and values leave this Mac’s Keychain, and the environment stays, empty. The project’s other environments stay as they are.",
 				subject: environmentSubject(target),
 				actions: [.init(title: "Clear All Secrets") { store.clearEnvironment(in: target.projectId, name: target.environment) }])
 		}
@@ -780,7 +829,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "exclamationmark.triangle",
 				tone: .warning,
-				title: "LPM Vault couldn't finish that",
+				title: "LPM Vault couldn’t finish that",
 				message: shown.message,
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
@@ -1283,7 +1332,7 @@ struct VaultWorkspaceView: View {
 			guard rawTextSaved?.id == saved.id else { return }
 			switch outcome {
 			case .saved: rawTextSaved?.undo = .undone
-			case .changed: rawTextSaved?.undo = .failed("\(name) changed after the save, so it can't be undone.")
+			case .changed: rawTextSaved?.undo = .failed("\(name) changed after the save, so it can’t be undone.")
 			case .unavailable: rawTextSaved = nil
 			case .failed(let message): rawTextSaved?.undo = .failed(message)
 			}
@@ -1463,8 +1512,8 @@ struct VaultWorkspaceView: View {
 			revealedKeys: $revealedKeys,
 			showsInspector: $showsInspector,
 			columnWidths: Binding(
-				get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
-				set: { tableColumnWidths[project.id] = $0 }
+				get: { store.layout.columnWidths(for: project.id) },
+				set: { store.layout.setColumnWidths($0, for: project.id) }
 			),
 			isCopyingAll: copyAllTask != nil,
 			isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
@@ -1474,8 +1523,6 @@ struct VaultWorkspaceView: View {
 			canEditValues: store.canEditValues(of: project.id),
 			cliAccess: store.selectedProjectCliAccess,
 			cliAccessContradicts: store.selectedProjectCliAccessContradicts,
-			isChangingCliAccess: store.isChangingCliAccess,
-			onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
 			onCopyAll: copyAll,
 			onImport: { presentImport() },
 			onExport: exportCurrentEnvironment,
@@ -1585,4 +1632,34 @@ struct VaultWorkspaceView: View {
 private struct SchemaReviewTarget: Identifiable {
 	let projectID: String
 	var id: String { projectID }
+}
+
+/// Pull and Push from the Env Project menu, whose shortcuts they carry.
+private struct VaultSyncCommands: ViewModifier {
+	/// Read as a command arrives, since a sheet can open between renders.
+	let isAvailable: () -> Bool
+	let onPull: () -> Void
+	let onPush: () -> Void
+
+	func body(content: Content) -> some View {
+		content
+			.onReceive(NotificationCenter.default.publisher(for: .pullProject)) { _ in if isAvailable() { onPull() } }
+			.onReceive(NotificationCenter.default.publisher(for: .pushProject)) { _ in if isAvailable() { onPush() } }
+	}
+}
+
+/// Hides the workspace from VoiceOver while an overlay covers it. An explicit
+/// `accessibilityHidden(false)` would un-hide everything inside that hides
+/// itself, so the modifier applies only while it hides. Before macOS 15 the
+/// overlay's modal trait keeps VoiceOver in it instead.
+private struct VaultHiddenUnderOverlay: ViewModifier {
+	let hidden: Bool
+
+	func body(content: Content) -> some View {
+		if #available(macOS 15, *) {
+			content.accessibilityHidden(true, isEnabled: hidden)
+		} else {
+			content
+		}
+	}
 }

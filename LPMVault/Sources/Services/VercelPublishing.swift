@@ -249,7 +249,7 @@ enum VercelPublishing {
 		}
 	}
 
-	private static let unknownChangeTime = "Vercel doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once on Vercel, then review again."
+	private static let unknownChangeTime = "Vercel doesn’t say when this variable last changed, so LPM Vault can’t tell whether it changed since this review. Edit it once on Vercel, then review again."
 
 	private static func record(
 		_ answer: Result<VercelEnvironmentVariable, VercelAPIError>,
@@ -296,16 +296,16 @@ enum VercelPublishing {
 	static func message(_ error: VercelAPIError) -> String {
 		switch error {
 		case .unauthorized: "Vercel no longer accepts this connection. Connect Vercel again on the Platforms page."
-		case .forbidden: "The LPM Vault integration can't change this project's variables."
-		case .notFound: "Vercel couldn't find the project or the variable."
+		case .forbidden: "The LPM Vault integration can’t change this project’s variables."
+		case .notFound: "Vercel couldn’t find the project or the variable."
 		case .rateLimited: "Vercel is limiting requests. Try again in a minute."
 		case .rejected(let code): "Vercel refused it (\(code))."
-		case .incompleteList: "Vercel listed the variables in pages LPM Vault can't read yet."
-		case .foreignProjects: "Vercel listed a project another account owns for this team, so its projects aren't shown."
+		case .incompleteList: "Vercel listed the variables in pages LPM Vault can’t read yet."
+		case .foreignProjects: "Vercel listed a project another account owns for this team, so its projects aren’t shown."
 		case .wroteToRenamedVariable: "Vercel wrote the value, but the variable was renamed on Vercel meanwhile, so the renamed one holds it now. Check it on Vercel."
-		case .transport: "Vercel couldn't be reached."
+		case .transport: "Vercel couldn’t be reached."
 		case .cancelled: "Cancelled."
-		case .invalidResponse: "Vercel's answer couldn't be read."
+		case .invalidResponse: "Vercel’s answer couldn’t be read."
 		case .server(let status): "Vercel answered with HTTP \(status)."
 		}
 	}

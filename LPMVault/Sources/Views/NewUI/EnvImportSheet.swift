@@ -117,7 +117,7 @@ struct EnvImportSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Import variables")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("into \(Text(project?.name ?? "").fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary))")
 					.font(.system(size: 12.5))
@@ -204,16 +204,15 @@ struct EnvImportSheet: View {
 
 	private var reviewOption: some View {
 		let caption = switch (target == .newEnvironment, reviewsFirst) {
-		case (true, true): "See its keys first, and leave out any you don't want"
+		case (true, true): "See its keys first, and leave out any you don’t want"
 		case (true, false): "Creates it with every key"
 		case (false, true): "See new, changed and unchanged keys first"
 		case (false, false): "Adds new keys and keeps every existing value"
 		}
 		return HStack(spacing: 10) {
 			Toggle("Review before applying", isOn: $reviewsFirst)
-				.toggleStyle(.switch)
+				.toggleStyle(VaultSwitchStyle())
 				.controlSize(.small)
-				.labelsHidden()
 				.disabled(work != nil)
 			VStack(alignment: .leading, spacing: 1) {
 				// The switch says its name.
@@ -230,7 +229,7 @@ struct EnvImportSheet: View {
 		.padding(.horizontal, 12)
 		.padding(.vertical, 10)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.neutralTint.opacity(0.4)))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private var footer: some View {
@@ -397,7 +396,6 @@ private struct EnvImportTargetTile: View {
 		}
 		.buttonStyle(.plain)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help(title)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}

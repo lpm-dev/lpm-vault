@@ -108,7 +108,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			}
 			assign(line, line: number, through: number)
 		}
-		if let open = pending { flag(open.line, "its value's opening \(open.quote) is never closed") }
+		if let open = pending { flag(open.line, "its value’s opening \(open.quote) is never closed") }
 
 		self.values = values
 		self.lines = lines

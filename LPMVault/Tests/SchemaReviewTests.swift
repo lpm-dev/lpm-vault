@@ -375,7 +375,7 @@ extension SheetInteractionTests {
 			}}}
 			"""#
 
-		@Test("Review & save shows the change and what it breaks, and Save writes lpm.json")
+		@Test("Review & Save shows the change and what it breaks, and Save writes lpm.json")
 		func reviewAndSave() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
@@ -383,7 +383,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("5", placeholder: "max")
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-review") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
@@ -480,7 +480,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-review") {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("8080"))])), for: .key("PORT"))
 			}
-			try await host.click("0 drifting")
+			try await host.click("0 keys differ")
 			#expect(try await host.waitUntil { openDescriptors(at: folder + "/lpm.json") == 0 }, "Nothing watches lpm.json while another page shows")
 			try #"{"envSchema":{"vars":{"PORT":{"format":"port","default":"3000"},"RETRY_COUNT":{"format":"integer","min":0,"max":3}}}}"#
 				.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
@@ -508,7 +508,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-review") { $0.set(.declared(.object([.init(key: "default", value: .string("on"))])), for: .key("MODE")) }
 			#expect(try await host.waitUntil { store.schemaDraftReview(for: "schema-review", environments: ["default"])?.values == .checked })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("OTHER KEYS", exactly: true, in: sheet))
@@ -523,7 +523,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("5", placeholder: "max")
 			#expect(try await host.waitUntil { store.schemaDraftReview(for: "schema-review", environments: ["default"])?.values == .checked })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Newly failing", in: sheet))

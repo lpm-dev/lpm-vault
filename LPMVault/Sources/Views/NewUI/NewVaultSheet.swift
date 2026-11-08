@@ -33,7 +33,7 @@ struct NewVaultSheet: View {
 			VStack(alignment: .leading, spacing: 16) {
 				VStack(alignment: .leading, spacing: 5) {
 					Text("New env project")
-						.font(.system(size: 17, weight: .bold))
+						.font(.system(size: 17, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
 					Text("Create a new encrypted project in \(isOrg ? (orgSlug ?? "this organization") : "your personal vault").")
 						.font(.system(size: 12.5))
@@ -42,7 +42,7 @@ struct NewVaultSheet: View {
 
 				VStack(alignment: .leading, spacing: 7) {
 					Text("PROJECT NAME").vaultSectionLabel()
-					TextField("my-api-server", text: $name)
+					TextField(vaultPrompt: "my-api-server", text: $name)
 						.textFieldStyle(.plain)
 						.font(.system(size: 12.5))
 						.foregroundStyle(VaultPalette.textPrimary)
@@ -51,7 +51,7 @@ struct NewVaultSheet: View {
 						.padding(.horizontal, 11)
 						.frame(height: 34)
 						.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-						.overlay { RoundedRectangle(cornerRadius: 8).stroke(isFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
+						.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(isFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 				}
 
 				if isOrg {
@@ -73,7 +73,7 @@ struct NewVaultSheet: View {
 				VaultBarButton(title: "Cancel", disabled: !canDismiss) { dismiss() }
 					.keyboardShortcut(.escape, modifiers: [])
 				VaultBarButton(
-					title: "Create project",
+					title: "Create Project",
 					filled: true,
 					disabled: normalizedName == nil || isCreating,
 					action: create

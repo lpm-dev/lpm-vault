@@ -172,6 +172,58 @@ extension SheetInteractionTests {
 			#expect(try await single.text().contains("Add to another environment"))
 		}
 
+		@Test("a value's controls show at rest, so the field's end never looks empty")
+		func controlsAtRest() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "old"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			for control in ["Copy .env value", Self.more] {
+				let drawn = try await host.drawnFrame(saying: control)
+				#expect(drawn.width > 4 && drawn.height > 1, "\(control) is drawn without the pointer over the field: \(drawn)")
+			}
+		}
+
+		@Test("with values in several environments, a labeled Reveal shows them all, and then says Hide")
+		func revealAllIsLabeled() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "one"], "production": ["TOKEN": "two"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 700))
+			defer { host.window.close() }
+			let reveal = try await host.waitForElement(saying: "Reveal this key in all environments")
+			#expect(reveal.role == .button)
+			let drawn = try await host.drawnFrame(saying: "Reveal this key in all environments")
+			#expect(drawn.width > 30, "It shows its name beside the eye, not the eye alone: \(drawn)")
+			let label = try await host.drawnFrame(saying: "VALUES")
+			#expect(label.height < 16 && label.width > 30, "The section's label stays on one line beside them: \(label)")
+			try await host.click("Reveal this key in all environments")
+			#expect(try await host.waitForText("Hide this key in all environments"))
+		}
+
+		@Test("a value's More menu opens in the app's popover: a format copies, and Generate opens the generator in its place")
+		func moreMenu() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "old"]])
+			defer { store.lock() }
+			let copies = CopiedFormats()
+			let host = SheetTestHost(KeyInspectorFixture(store: store, onCopy: { copies.formats.append($0.format) }), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click(Self.more)
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("COPY AS", in: menu))
+			try await host.click("KEY=value", in: menu)
+			#expect(try await host.waitUntil { copies.formats == [.dotenv] })
+			#expect(try await host.waitUntil { !menu.isVisible }, "Choosing closes the menu")
+			try await host.click(Self.more)
+			let again = try await host.popoverWindow()
+			try await host.click("Generate Value…", in: again)
+			let panel = try await host.generatorWindow()
+			#expect(try await host.waitUntil { !again.isVisible })
+			#expect(try await host.perform(Self.closeGenerator, on: Self.more))
+			#expect(try await host.waitForGeneratorDismissal(panel))
+		}
+
 		@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
 		func generatorDraft(scheme: ColorScheme) async throws {
 			let (store, keychain) = makeStore(["default": ["TOKEN": "old"], "production": ["TOKEN": "production-old"]])
@@ -179,24 +231,24 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(KeyInspectorFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
 			defer { host.window.close() }
 			try await host.settle()
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let panel = try await host.generatorWindow()
 			try await host.click("Password", in: panel)
 			try await host.waitUntil { host.value != "old" }
 			let generated = host.value
 			#expect(generated.count == SecretValueGenerator.defaultLength)
 			#expect(stored(keychain, "default", "TOKEN") == "old")
-			// Synthetic clicks bypass the popover's outside-click monitor, so close it with its button.
-			try host.click(.generate)
+			// Synthetic clicks bypass the popover's outside-click monitor, so close it as VoiceOver does.
+			#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 			#expect(try await host.waitForGeneratorDismissal(panel))
 			try await host.click("Revert")
 			#expect(try await host.waitUntil { host.value == "old" })
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let secondPanel = try await host.generatorWindow()
 			try await host.click("UUID v4", in: secondPanel, caseInsensitive: true)
 			try await host.waitUntil { UUID(uuidString: host.value) != nil }
 			let second = host.value
-			try host.click(.generate)
+			#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 			#expect(try await host.waitForGeneratorDismissal(secondPanel))
 			try await host.click("Save")
 			#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN") == second })
@@ -210,7 +262,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
 			defer { host.window.close() }
 			try await host.settle()
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let panel = try await host.generatorWindow()
 			try await host.click("Hexadecimal", in: panel)
 			try await host.waitUntil { host.value != "old" }
@@ -230,16 +282,16 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("Changed outside the editor"))
 			}
 			#expect(try await host.waitForGeneratorDismissal(panel))
-			try host.click(.generate)
+			#expect(try await !host.perform(Self.generate, on: Self.more), "Generate Value… is unavailable")
 			try await host.settle()
 			#expect(try await host.visibleGeneratorWindow() == nil)
 			#expect(host.value == generated)
 			if reason == "conflict" {
 				try await host.click("Use latest")
 				#expect(try await host.waitUntil { host.value == "external" })
-				try host.click(.generate)
+				#expect(try await host.perform(Self.generate, on: Self.more))
 				let recoveredPanel = try await host.generatorWindow()
-				try host.click(.generate)
+				#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 				#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
 			}
 		}
@@ -362,6 +414,10 @@ extension SheetInteractionTests {
 			#expect(keychain.applyVaultTransactionCallCount == 0)
 		}
 
+		private static let generate = "Generate a value for .env"
+		private static let more = "More for the .env value"
+		private static let closeGenerator = "Close the value generator for .env"
+
 		private func makeStore(_ environments: [String: [String: String]], path: String = "") -> (VaultStore, MockKeychainService) {
 			let keychain = MockKeychainService()
 			keychain.envStorage["inspector"] = (name: "Inspector", path: path, environments: environments)
@@ -384,10 +440,16 @@ private final class CloseCounter {
 	var count = 0
 }
 
+@MainActor
+private final class CopiedFormats {
+	var formats: [VaultCopyFormat] = []
+}
+
 private struct KeyInspectorFixture: View {
 	@Bindable var store: VaultStore
 	var mode: VaultWorkspaceMode = .matrix
 	var onClose: () -> Void = {}
+	var onCopy: (VaultValueCopy) -> Void = { _ in }
 	@State private var selectedKey: String? = "TOKEN"
 	@State private var revealedKeys: Set<String> = []
 
@@ -401,7 +463,7 @@ private struct KeyInspectorFixture: View {
 				selectedKey: selectedKey,
 				revealedKeys: $revealedKeys,
 				onClose: onClose,
-				onCopy: { _ in },
+				onCopy: onCopy,
 				onDelete: { _, _ in },
 				onAddElsewhere: { _, _ in },
 				onRenamed: { key, newKey in

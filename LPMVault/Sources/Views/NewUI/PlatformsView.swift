@@ -3,12 +3,16 @@ import SwiftUI
 /// The platform accounts LPM Vault publishes to, and connecting new ones.
 struct PlatformsView: View {
 	@Bindable var store: VaultStore
+	/// Its own title row; the Settings overlay's header names it instead.
+	var showsHeader = true
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var pendingDisconnect: PlatformConnection?
 	@State private var connectingCoolify = false
 	@State private var renaming: PlatformConnection?
 	@State private var renameDraft = ""
 	@State private var renameError: String?
+	@State private var showsRevocationSteps = false
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	/// Whether the privacy curtain is up, as the Cloudflare question's handlers read it when AppKit calls them, after the curtain moved.
 	@State private var promptCurtained = false
 
@@ -16,24 +20,29 @@ struct PlatformsView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			header
-
-			VaultHairline()
+			if showsHeader {
+				header
+				VaultHairline()
+			}
 
 			ScrollView {
-				VStack(alignment: .leading, spacing: 14) {
+				VStack(alignment: .leading, spacing: 20) {
+					if !showsHeader {
+						Text(Self.tokensNote + ". " + Self.connectingNote)
+							.font(.system(size: 12))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
+					}
 					if let notice = platforms.notice { noticeBanner(notice) }
 					connectedSection
 					addPlatformSection
-					Text(Self.revocationNote)
-						.font(.system(size: 11.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.lineSpacing(2)
-						.fixedSize(horizontal: false, vertical: true)
+					revocationSection
 				}
-				.padding(.horizontal, 24)
-				.padding(.top, 16)
-				.padding(.bottom, 18)
+				// As wide as Settings' other parts, inside the overlay.
+				.frame(maxWidth: showsHeader ? .infinity : VaultMetrics.formWidth, alignment: .leading)
+				.padding(.horizontal, showsHeader ? 20 : 28)
+				.padding(.top, showsHeader ? 18 : 24)
+				.padding(.bottom, 20)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
 		}
@@ -87,20 +96,23 @@ struct PlatformsView: View {
 		}
 	}
 
+	private static let tokensNote = "Tokens stay in this Mac’s Keychain"
+	/// How every platform connects, said once above them rather than on each card.
+	static let connectingNote = "Each platform connects in your browser, except Coolify, which takes an API token you create."
+
 	private var header: some View {
 		HStack(alignment: .firstTextBaseline, spacing: 12) {
 			Text("Platforms")
-				.font(.system(size: 19, weight: .bold))
-				.foregroundStyle(VaultPalette.textPrimary)
+				.vaultPageTitle()
 				.accessibilityAddTraits(.isHeader)
-			Text("Tokens stay in this Mac's Keychain")
+			Text(Self.tokensNote)
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.lineLimit(1)
 			Spacer(minLength: 0)
 		}
-		.padding(.horizontal, 24)
-		.frame(height: 58)
+		.padding(.horizontal, 20)
+		.frame(height: 60)
 	}
 
 	private func noticeBanner(_ notice: PlatformConnections.Notice) -> some View {
@@ -140,7 +152,8 @@ struct PlatformsView: View {
 			.accessibilityAddTraits(.isHeader)
 		return VStack(alignment: .leading, spacing: 7) {
 			if connections.isEmpty {
-				label
+				// Once read, an empty list's card says it's empty, so it needs no heading saying "Connected" above it.
+				if platforms.isLoading { label }
 			} else {
 				let note = Text(Self.disconnectingNote(revokesCloudflare: connections.contains { $0.platform == .cloudflare }))
 					.font(.system(size: 11.5))
@@ -157,50 +170,50 @@ struct PlatformsView: View {
 					}
 				}
 			}
-			VStack(alignment: .leading, spacing: 0) {
-				if connections.isEmpty {
-					if platforms.isLoading {
+			if connections.isEmpty, !platforms.isLoading {
+				// A flat note, not a card: the cards below are the platforms to connect.
+				emptyState
+			} else {
+				VStack(alignment: .leading, spacing: 0) {
+					if connections.isEmpty {
 						Text("Loading…")
 							.font(.system(size: 12.5))
 							.foregroundStyle(VaultPalette.textTertiary)
-							.padding(14)
-					} else {
-						emptyState
+							.padding(16)
+					}
+					ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
+						if index > 0 { VaultHairline() }
+						connectionRow(connection)
 					}
 				}
-				ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
-					if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
-					connectionRow(connection)
-				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.vaultPlatformCard()
 			}
-			.frame(maxWidth: .infinity, alignment: .leading)
-			.vaultPlatformCard()
 			cleanupNotes
 		}
 	}
 
 	private var emptyState: some View {
-		VStack(spacing: 8) {
+		HStack(alignment: .firstTextBaseline, spacing: 10) {
 			Image(systemName: "cloud")
-				.font(.system(size: 17, weight: .medium))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.frame(width: 40, height: 40)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.neutralTint))
-				.accessibilityHidden(true)
-			Text("No platforms connected")
-				.font(.system(size: 13, weight: .semibold))
-				.foregroundStyle(VaultPalette.textPrimary)
-			Text("Connect one below to publish environments to it. Touch ID or your password confirms every publish.")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textTertiary)
-				.multilineTextAlignment(.center)
-				.lineSpacing(2)
-				.frame(maxWidth: 380)
-				.fixedSize(horizontal: false, vertical: true)
+				.accessibilityHidden(true)
+			VStack(alignment: .leading, spacing: 2) {
+				Text("No platforms connected")
+					.font(.system(size: 13, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text("Connect one below to publish environments to it. Touch ID or your password confirms every publish.")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			Spacer(minLength: 0)
 		}
 		.padding(.horizontal, 14)
-		.padding(.vertical, 26)
-		.frame(maxWidth: .infinity)
+		.padding(.vertical, 12)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sectionBand))
 	}
 
 	private func connectionRow(_ connection: PlatformConnection) -> some View {
@@ -254,7 +267,7 @@ struct PlatformsView: View {
 					.padding(.leading, 40)
 			}
 		}
-		.padding(.horizontal, 14)
+		.padding(.horizontal, 16)
 		.padding(.vertical, 9)
 	}
 
@@ -445,7 +458,7 @@ struct PlatformsView: View {
 				}
 			}
 			Text(browser.map { Self.browserGuidance($0, waiting: isConnectingHere && platforms.phase == .waitingForBrowser) }
-				?? "Connects a team on your Coolify instance with an API token you create there.")
+				?? "Connects a team on your Coolify instance.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.lineSpacing(2)
@@ -454,7 +467,6 @@ struct PlatformsView: View {
 			HStack(spacing: 8) {
 				let title = isConnectingHere ? "Connecting…" : "Connect"
 				VaultBarButton(
-					systemImage: isConnectingHere ? nil : "plus",
 					title: title,
 					disabled: browser != nil && (platforms.isConnecting || !store.isLoggedIn)
 				) {
@@ -473,7 +485,7 @@ struct PlatformsView: View {
 				}
 			}
 		}
-		.padding(12)
+		.padding(16)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 		.vaultPlatformCard()
 	}
@@ -484,18 +496,19 @@ struct PlatformsView: View {
 			"Finish in your browser: choose the Vercel team and the projects LPM Vault can reach, then come back here."
 		case (.netlify, true):
 			"Finish in your browser: authorize LPM Vault on Netlify, then come back here."
+		// What each one reaches, which differs; how they connect is said once above them.
 		case (.netlify, false):
-			"Opens Netlify in your browser to authorize LPM Vault. It reaches the sites of every team your Netlify account belongs to."
+			"Reaches the sites of every team your Netlify account belongs to."
 		case (.vercel, false):
-			"Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account."
+			"Installs the LPM Vault integration for a team or your personal account."
 		case (.github, true):
 			"Finish in your browser: authorize LPM Vault on GitHub, then come back here."
 		case (.github, false):
-			"Opens GitHub in your browser to authorize LPM Vault. It reaches the repositories you can reach on the accounts where its GitHub App is installed."
+			"Reaches your repositories on the accounts where its GitHub App is installed."
 		case (.cloudflare, true):
 			"Finish in your browser: choose the Cloudflare accounts LPM Vault can reach, approve it, then come back here."
 		case (.cloudflare, false):
-			"Opens Cloudflare in your browser to approve LPM Vault for the accounts you choose. It publishes your Workers' runtime secrets."
+			"Publishes Workers’ runtime secrets for the accounts you approve."
 		}
 	}
 
@@ -505,23 +518,62 @@ struct PlatformsView: View {
 	static let revocationSteps: [(platform: PublishPlatform, step: String)] = [
 		(.vercel, "Integrations settings, where uninstalling deletes the variables LPM Vault created"),
 		(.netlify, "Authorized applications"),
-		(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings"),
+		(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization’s owner uninstalls it in the organization’s settings"),
 		(.cloudflare, "disconnecting here revokes it"),
 		(.coolify, "Keys & Tokens"),
 	]
 
-	static var revocationNote: AttributedString {
-		var note = AttributedString("To remove LPM Vault's access entirely, revoke it on the platform: ")
-		for (index, step) in revocationSteps.enumerated() {
-			if index > 0 { note += AttributedString(" · ") }
-			var name = AttributedString(step.platform.displayName)
-			name.swiftUI.font = .system(size: 11.5, weight: .semibold)
-			name.swiftUI.foregroundColor = VaultPalette.textSecondary
-			note += name
-			note += AttributedString(" → \(step.step)")
+	static let revocationIntro = "To remove LPM Vault’s access entirely, revoke it on the platform:"
+
+	/// Where to revoke LPM Vault's access, one platform to a line.
+	private var revocationSection: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			Button {
+				withAnimation(reduceMotion ? nil : VaultMotion.quick) { showsRevocationSteps.toggle() }
+			} label: {
+				HStack(spacing: 6) {
+					Image(systemName: "chevron.right")
+						.font(.system(size: 9, weight: .semibold))
+						.rotationEffect(.degrees(showsRevocationSteps ? 90 : 0))
+					Text("How to Remove LPM Vault’s Access")
+						.font(.system(size: 12, weight: .medium))
+				}
+				.foregroundStyle(VaultPalette.textSecondary)
+				.padding(.horizontal, 4)
+				.frame(height: 24)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(VaultPressStyle(cornerRadius: 6))
+			.padding(.horizontal, -4)
+			.accessibilityValue(showsRevocationSteps ? "Expanded" : "Collapsed")
+			if showsRevocationSteps {
+				Text(Self.revocationIntro)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textTertiary)
+				VStack(alignment: .leading, spacing: 0) {
+					ForEach(Array(Self.revocationSteps.enumerated()), id: \.offset) { index, step in
+						if index > 0 { VaultHairline() }
+						HStack(alignment: .firstTextBaseline, spacing: 10) {
+							PlatformLogo(platform: step.platform, size: 16)
+								.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+							Text(step.platform.displayName)
+								.font(.system(size: 12, weight: .semibold))
+								.foregroundStyle(VaultPalette.textSecondary)
+								.frame(width: 76, alignment: .leading)
+							Text(step.step.prefix(1).uppercased() + step.step.dropFirst())
+								.font(.system(size: 12))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.fixedSize(horizontal: false, vertical: true)
+							Spacer(minLength: 0)
+						}
+						.padding(.horizontal, 16)
+						.padding(.vertical, 9)
+						.accessibilityElement(children: .combine)
+					}
+				}
+				.vaultPlatformCard()
+			}
 		}
-		note += AttributedString(".")
-		return note
 	}
 
 	// MARK: Cloudflare
@@ -533,9 +585,9 @@ struct PlatformsView: View {
 		case (true, false):
 			"Sign in to LPM to finish revoking Cloudflare access LPM Vault no longer uses."
 		case (true, true):
-			"LPM Vault can't finish revoking Cloudflare access it no longer uses through the LPM environment it's signed in to. Sign in through the one that access was connected in."
+			"LPM Vault can’t finish revoking Cloudflare access it no longer uses through the LPM environment it’s signed in to. Sign in through the one that access was connected in."
 		case (false, _) where count == 1:
-			"LPM Vault is still revoking a Cloudflare login's access it no longer uses. It finishes once lpm.dev confirms it."
+			"LPM Vault is still revoking a Cloudflare login’s access it no longer uses. It finishes once lpm.dev confirms it."
 		case (false, _):
 			"LPM Vault is still revoking the access of \(count) Cloudflare logins it no longer uses. It finishes once lpm.dev confirms it."
 		}
@@ -560,7 +612,7 @@ struct PlatformsView: View {
 	static func cloudflarePromptMessage(_ prompt: PlatformConnections.CloudflarePrompt) -> String {
 		switch prompt {
 		case .otherLogin(let reconnecting):
-			"Add the login you approved beside \(reconnecting), or put it in \(reconnecting)'s place, which revokes \(reconnecting)'s access. Destinations stay with their Cloudflare accounts either way."
+			"Add the login you approved beside \(reconnecting), or put it in \(reconnecting)’s place, which revokes \(reconnecting)’s access. Destinations stay with their Cloudflare accounts either way."
 		case .losesAccounts(let label, let accounts):
 			"LPM Vault would no longer reach \(ListFormatter.localizedString(byJoining: accounts)) through \(label), so destinations there stop publishing until a login that reaches them is connected."
 		}
@@ -646,8 +698,8 @@ struct PlatformsView: View {
 
 extension View {
 	fileprivate func vaultPlatformCard() -> some View {
-		background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
-			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.card))
+			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 }
 

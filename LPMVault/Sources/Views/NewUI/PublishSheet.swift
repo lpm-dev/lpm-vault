@@ -58,7 +58,7 @@ struct PublishSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(session.step == .results ? "Published" : "Publish environment")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text(subtitle)
 					.font(.system(size: 12.5))
@@ -215,7 +215,7 @@ struct PublishSheet: View {
 		case .github(let form)?:
 			if case .failed(let message) = form.repositories { return message }
 			if case .failed(let message) = form.environments {
-				return "\(form.repository?.fullName ?? "The repository")'s environments couldn't be listed. \(message) Its own secrets and variables can still be chosen."
+				return "\(form.repository?.fullName ?? "The repository")’s environments couldn’t be listed. \(message) Its own secrets and variables can still be chosen."
 			}
 		case .cloudflare(let form)?: if case .failed(let message) = form.workers { return message }
 		case nil: break
@@ -295,7 +295,7 @@ struct PublishSheet: View {
 			}
 			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 			.clipShape(RoundedRectangle(cornerRadius: 10))
-			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.disabled(session.isPublishing)
 			PublishNoteList(notes: Self.notes(for: review), error: session.reviewError)
 		}
@@ -348,7 +348,7 @@ struct PublishSheet: View {
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)
 		case .cantPublish:
-			Text("Can't publish").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
+			Text("Can’t publish").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
 		case .needsConfirmation:
 			HStack(spacing: 8) {
 				VaultTagBadge(text: "Blocked", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 11)
@@ -380,7 +380,7 @@ struct PublishSheet: View {
 		if review.platform == .cloudflare,
 			ProjectEnvSchemaRule.publicPrefix(of: row.key, clientPrefixes: review.rules.overview.clientPrefixes) != nil
 		{
-			parts.append("frontend code reads it at build time, from the build's own variables")
+			parts.append("frontend code reads it at build time, from the build’s own variables")
 		}
 		if row.staysSecret { parts.append("stays a \(secret) on \(platform)") }
 		if let hold = row.holds.first {
@@ -438,7 +438,7 @@ struct PublishSheet: View {
 				? "GitHub keeps this as a readable variable, so the value would be readable too. Delete the variable on GitHub to publish it as a secret"
 				: "\(platform) keeps this variable readable, so the value would be too. Mark it as containing secret values \(onPlatform) to keep it write-only"
 		case .unknownChangeTime:
-			return "\(platform) doesn't say when this variable last changed, so a change made meanwhile can't be caught. Edit it once \(onPlatform), then review again"
+			return "\(platform) doesn’t say when this variable last changed, so a change made meanwhile can’t be caught. Edit it once \(onPlatform), then review again"
 		case .sharedWith(let names):
 			let list = ListFormatter.localizedString(byJoining: names)
 			return "Shared with \(list) on \(platform) — publishing would change \(list) too"
@@ -449,7 +449,7 @@ struct PublishSheet: View {
 		case .changedOnPlatform:
 			return row.status.platform == .removed ? "Removed \(onPlatform) since you published it" : "Changed \(onPlatform) since you published it"
 		case .unknownSincePublish:
-			return "\(platform) doesn't say whether it changed since you published it. Publishing replaces whatever it has now"
+			return "\(platform) doesn’t say whether it changed since you published it. Publishing replaces whatever it has now"
 		case .unconfirmedPublish:
 			return "This Mac sent it, but no answer came back, so \(platform) may or may not have it. Publishing sends it again"
 		case .upToDate:
@@ -459,10 +459,10 @@ struct PublishSheet: View {
 
 	static func note(for issue: PublishPlan.ValueIssue, on platform: String) -> String {
 		switch issue {
-		case .singleQuote: "\(platform) can't pass a value with a single quote (') to your app unchanged"
-		case .trailingBackslash: "\(platform) can't pass a value ending in a backslash (\\) to your app unchanged"
+		case .singleQuote: "\(platform) can’t pass a value with a single quote (') to your app unchanged"
+		case .trailingBackslash: "\(platform) can’t pass a value ending in a backslash (\\) to your app unchanged"
 		case .unquotedJSON: "\(platform) passes JSON without quotes, so its line breaks, $ signs or \" #\" would change"
-		case .reference: "\(platform) replaces its {{…}} reference with a shared variable's value"
+		case .reference: "\(platform) replaces its {{…}} reference with a shared variable’s value"
 		case .trimmed: "\(platform) drops the spaces and line breaks at its ends"
 		}
 	}
@@ -492,19 +492,19 @@ struct PublishSheet: View {
 			switch review.platform {
 			case .vercel:
 				notes.append(PublishNote(.risk, replaced, lead: "Existing variables will be replaced.",
-					"Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten."))
+					"Vercel’s current values can’t be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten."))
 			case .coolify:
 				notes.append(PublishNote(.risk, replaced, lead: "Existing variables will be replaced.",
-					"LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten."))
+					"LPM Vault doesn’t read Coolify’s current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten."))
 			case .netlify:
 				notes.append(PublishNote(.risk, replaced, lead: "Values will be written to variables Netlify already has.",
-					"LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can't be told apart from this publish."))
+					"LPM Vault doesn’t read Netlify’s current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can’t be told apart from this publish."))
 			case .github:
 				notes.append(PublishNote(.risk, replaced, lead: "Existing secrets and variables will be replaced.",
-					"GitHub never shows a secret's value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten."))
+					"GitHub never shows a secret’s value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten."))
 			case .cloudflare:
 				notes.append(PublishNote(.risk, replaced, lead: "Existing secrets will be replaced.",
-					"Cloudflare never shows a secret's value. LPM Vault checks the Worker's newest version right before sending, but Cloudflare replaces secrets without a check of its own, so a change made moments before publishing can still be overwritten."))
+					"Cloudflare never shows a secret’s value. LPM Vault checks the Worker’s newest version right before sending, but Cloudflare replaces secrets without a check of its own, so a change made moments before publishing can still be overwritten."))
 			}
 		}
 		if case .cloudflare(let target) = review.destination.target {
@@ -519,27 +519,27 @@ struct PublishSheet: View {
 				let others = review.frontendKeys.count - 1
 				let named = others == 0 ? first : "\(first) and \(others) more"
 				notes.append(PublishNote(.risk, "hammer",
-					"\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker's secrets reach only the Worker at runtime, so set them as the build's own variables and rebuild."))
+					"\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker’s secrets reach only the Worker at runtime, so set them as the build’s own variables and rebuild."))
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
 			review.summary.adding > 0
 		{
-			notes.append(PublishNote(.info, "doc.on.doc", "Coolify also copies new variables to the application's preview deployments. LPM Vault locks the copies of Secrets."))
+			notes.append(PublishNote(.info, "doc.on.doc", "Coolify also copies new variables to the application’s preview deployments. LPM Vault locks the copies of Secrets."))
 		}
 		if review.platform == .netlify {
 			notes.append(PublishNote(.info, "square.3.layers.3d",
-				"Values set in the site's netlify.toml override published ones. A site's variables also override the team's shared variables with the same name."))
+				"Values set in the site’s netlify.toml override published ones. A site’s variables also override the team’s shared variables with the same name."))
 		}
 		if case .github(let target) = review.destination.target {
 			notes.append(PublishNote(.info, "curlybraces", "Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
 			switch target.scope {
 			case .repository:
 				notes.append(PublishNote(.info, "square.3.layers.3d",
-					"A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name."))
+					"A job that uses a deployment environment gets that environment’s secret or variable instead, when it has one with the same name."))
 			case .environment(let id, let name):
 				notes.append(PublishNote(.info, "square.3.layers.3d",
-					"Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository's with the same name."))
+					"Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository’s with the same name."))
 			}
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
@@ -551,12 +551,12 @@ struct PublishSheet: View {
 		let secrets = review.platform == .github || review.platform == .cloudflare ? "secrets" : "Secrets"
 		switch review.rules {
 		case .unreadable:
-			notes.append(PublishNote(.risk, "exclamationmark.triangle", "lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable)."))
+			notes.append(PublishNote(.risk, "exclamationmark.triangle", "lpm.json’s rules can’t be read, so values aren’t checked, and keys publish as \(secrets)\(readable)."))
 		case .none:
 			notes.append(PublishNote(.info, "doc.text", "This project has no rules, so keys publish as \(secrets)\(readable)."))
 		case .known:
 			if !review.hasValueCheck {
-				notes.append(PublishNote(.risk, "checklist", "The values haven't been checked against lpm.json's rules yet, so rule failures don't show."))
+				notes.append(PublishNote(.risk, "checklist", "The values haven’t been checked against lpm.json’s rules yet, so rule failures don’t show."))
 			}
 		}
 		if let lastPublishedAt = review.lastPublishedAt {
@@ -592,7 +592,7 @@ struct PublishSheet: View {
 				}
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 				.clipShape(RoundedRectangle(cornerRadius: 10))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				if results.needsReconnect {
 					Text("\(results.destination.target.platform.displayName) no longer accepts this connection. Connect it again on the Platforms page.")
 						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
@@ -617,16 +617,16 @@ struct PublishSheet: View {
 		if let first = suspended.first {
 			let one = suspended.count == 1
 			let owner = one ? "An owner of \(first.account ?? "the account")" : "An owner of each account"
-			let settings = one ? first.account.map { "\($0)'s settings" } ?? "its settings" : "its settings"
+			let settings = one ? first.account.map { "\($0)’s settings" } ?? "its settings" : "its settings"
 			// GitHub lets an installation be unsuspended only the way it was suspended: an app's own suspension, only by the app.
 			notes.append(
-				"LPM Vault's GitHub App is suspended on \(accounts(suspended)), so \(one ? "its" : "their") repositories aren't listed. \(owner) can unsuspend it in \(settings) on GitHub, unless LPM Vault suspended it."
+				"LPM Vault’s GitHub App is suspended on \(accounts(suspended)), so \(one ? "its" : "their") repositories aren’t listed. \(owner) can unsuspend it in \(settings) on GitHub, unless LPM Vault suspended it."
 			)
 		}
 		let refused = skipped.filter { !$0.isSuspended }
 		if !refused.isEmpty {
 			notes.append(
-				"GitHub refused to list the repositories of LPM Vault's GitHub App on \(accounts(refused)), as when it was uninstalled meanwhile. Refresh, or install the app there again."
+				"GitHub refused to list the repositories of LPM Vault’s GitHub App on \(accounts(refused)), as when it was uninstalled meanwhile. Refresh, or install the app there again."
 			)
 		}
 		return notes
@@ -785,7 +785,7 @@ struct PublishSheet: View {
 			isForgetting = false
 			switch result {
 			case .success: close()
-			case .failure(let error): forgetFailure = "This destination couldn't be forgotten. \(error)"
+			case .failure(let error): forgetFailure = "This destination couldn’t be forgotten. \(error)"
 			}
 		}
 	}
@@ -846,7 +846,7 @@ private struct CloudflareDestinationFields: View {
 		case .loading: "Loading Workers…"
 		case .loaded(let workers) where workers.isEmpty: "No Workers in this account"
 		case .idle where form.accountID == nil: "Choose an account first"
-		case .failed: "Workers couldn't be listed"
+		case .failed: "Workers couldn’t be listed"
 		default: "Choose Worker…"
 		}
 	}
@@ -955,7 +955,7 @@ private struct NetlifyDestinationFields: View {
 			GridRow {
 				PublishDestinationField("Branch") {
 					VStack(alignment: .leading, spacing: 4) {
-						TextField("staging", text: $form.branch)
+						TextField(vaultPrompt: "staging", text: $form.branch)
 							.textFieldStyle(.plain)
 							.font(VaultTypography.tabular(12.5))
 							.foregroundStyle(VaultPalette.textPrimary)
@@ -1020,7 +1020,7 @@ private struct GitHubDestinationFields: View {
 		}
 		GridRow {
 			HStack(spacing: 8) {
-				Text("A repository that isn't listed needs LPM Vault's GitHub App.\(form.environments == .loading ? " Loading environments…" : "")")
+				Text("A repository that isn’t listed needs LPM Vault’s GitHub App.\(form.environments == .loading ? " Loading environments…" : "")")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 				if let installURL {
@@ -1057,7 +1057,7 @@ private struct GitHubDestinationFields: View {
 	private var placeholder: String {
 		switch form.repositories {
 		case .loading: "Loading repositories…"
-		case .loaded(let repositories) where repositories.isEmpty: "No repositories have LPM Vault's GitHub App"
+		case .loaded(let repositories) where repositories.isEmpty: "No repositories have LPM Vault’s GitHub App"
 		default: "Choose repository…"
 		}
 	}

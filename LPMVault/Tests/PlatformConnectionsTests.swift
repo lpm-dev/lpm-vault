@@ -999,13 +999,15 @@ struct PlatformsPagePresentationTests {
 		#expect(grouped.map(\.name) == ["Zephyr", "Acme", "Mallory", "Bob", "Carol", "Alpha"])
 	}
 
-	@Test("the note on removing access names each platform in the page's order")
-	func revocationNote() {
+	@Test("the section on removing access names each platform in the page's order, with where to revoke it")
+	func revocationSteps() {
 		#expect(PlatformsView.revocationSteps.map(\.platform) == PlatformsView.pageOrder)
-		let note = String(PlatformsView.revocationNote.characters)
-		#expect(note.hasPrefix("To remove LPM Vault's access entirely, revoke it on the platform: Vercel → Integrations settings, where uninstalling deletes the variables LPM Vault created · "))
-		#expect(note.contains(" · GitHub → Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings · "))
-		#expect(note.hasSuffix(" · Cloudflare → disconnecting here revokes it · Coolify → Keys & Tokens."))
+		#expect(PlatformsView.revocationIntro == "To remove LPM Vault’s access entirely, revoke it on the platform:")
+		let steps = Dictionary(uniqueKeysWithValues: PlatformsView.revocationSteps.map { ($0.platform, $0.step) })
+		#expect(steps[.vercel] == "Integrations settings, where uninstalling deletes the variables LPM Vault created")
+		#expect(steps[.github] == "Authorized GitHub Apps and Installed GitHub Apps; an organization’s owner uninstalls it in the organization’s settings")
+		#expect(steps[.cloudflare] == "disconnecting here revokes it")
+		#expect(steps[.coolify] == "Keys & Tokens")
 	}
 
 	@Test("the note on disconnecting names Cloudflare's exception only when a Cloudflare login is listed")
@@ -1213,7 +1215,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("No platforms connected"))
 			#expect(try await host.waitForText("Touch ID or your password confirms every publish."))
-			#expect(try await host.waitForText("CONNECTED", exactly: true))
+			#expect(!host.lines().contains { $0.text == "CONNECTED" }, "The empty card says it, with no heading over it")
 			let states = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Not connected") }
 			#expect(states.count == 5, "\(states.map(\.texts))")
 			#expect(!host.lines().contains { $0.text.contains("Disconnecting forgets") }, "Nothing listed, nothing to disconnect")
@@ -1558,7 +1560,13 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { !opened.urls.isEmpty })
 			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
 			try host.scrollToEnd()
-			#expect(try await host.waitForText("an organization's owner uninstalls it in the organization's settings"))
+			try await host.click("How to Remove LPM Vault’s Access")
+			// The steps open below the end of the page, so it scrolls to them as they arrive.
+			#expect(try await host.waitUntil {
+				try host.scrollToEnd()
+				return AccessibilityTree.text(in: host.view, root: host.window)
+					.contains("an organization’s owner uninstalls it in the organization’s settings")
+			})
 		}
 
 		@Test("a connected GitHub user shows with its login, an expired one says to connect again, and Disconnect explains what stays on GitHub")
@@ -1740,7 +1748,7 @@ extension SheetInteractionTests {
 			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
-			#expect(try await host.waitForText("LPM Vault's access to it on Cloudflare has ended"))
+			#expect(try await host.waitForText("LPM Vault’s access to it on Cloudflare has ended"))
 		}
 
 		@Test("a login that no longer works offers Reconnect, which asks before losing an account, and declining keeps it as it was")
@@ -1858,7 +1866,7 @@ extension SheetInteractionTests {
 			}
 			let (store, host) = page(environment: .production)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("couldn't confirm that the access of 2 Cloudflare logins was revoked"))
+			#expect(try await host.waitForText("couldn’t confirm that the access of 2 Cloudflare logins was revoked"))
 			try await host.click("Dismiss the note about unconfirmed revocations")
 			#expect(try await host.waitForTextToDisappear("Connected Applications on Cloudflare"))
 			#expect(try await waitUntil {

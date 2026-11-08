@@ -82,12 +82,12 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	func note(for fix: Fix) -> String? {
 		if writesOverride, let source {
 			let container = item.isGroup ? "groupOverrides" : "overrides"
-			return "Writes envSchema.\(container).\(item.name.escapingDirectionControls) to lpm.json, which replaces \(source)'s version in full: later changes there won't apply."
+			return "Writes envSchema.\(container).\(item.name.escapingDirectionControls) to lpm.json, which replaces \(source)’s version in full: later changes there won’t apply."
 		}
 		switch (fix, kind) {
 		case (.dropFromGroup, .group(_, let mode, let members)) where mode != "allOrNone" && members.count == 2:
 			let other = members.first { $0 != key } ?? ""
-			return "Leaves \(other.escapingDirectionControls) as the group's only member, which makes it required."
+			return "Leaves \(other.escapingDirectionControls) as the group’s only member, which makes it required."
 		case (.removeGroupOverride, _):
 			guard case .group(_, let source)? = restore else { return nil }
 			return "The group \(source) declares applies again."
@@ -162,9 +162,9 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 		case .checking?:
 			return nil
 		case .group(_, let restoredSource)?:
-			return "lpm.json's override lists only it, and the group \(restoredSource) declares names it too. Remove it there."
+			return "lpm.json’s override lists only it, and the group \(restoredSource) declares names it too. Remove it there."
 		case .unavailable?:
-			return "lpm.json's override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first."
+			return "lpm.json’s override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first."
 		case nil:
 			return "The group has no other member and is declared in \(source ?? "an imported schema"). Remove it there."
 		}

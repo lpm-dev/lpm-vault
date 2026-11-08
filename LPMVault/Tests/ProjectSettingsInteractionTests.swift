@@ -42,6 +42,26 @@ extension SheetInteractionTests {
 			return Fixture(store: store, keychain: keychain, preferences: preferences, domain: domain, images: images)
 		}
 
+		@Test("the icon is changed from one Choose… menu: a symbol, emoji or monogram, an image file, or back to Automatic once it isn't")
+		func iconChooseMenu() async throws {
+			let fixture = try makeFixture(path: "")
+			defer { fixture.tearDown() }
+			let host = SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
+				.environment(VaultAppearanceSettings(defaults: fixture.preferences)),
+				size: NSSize(width: 1100, height: 720), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+			#expect(try await host.waitForText("Project icon"))
+			#expect(try await !host.text().contains("Choose File…"), "One menu, not two buttons that read alike")
+			try await host.click("Choose icon")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Image File…", in: menu))
+			#expect(try await !host.waitForElement(saying: "Use Automatic", in: menu).isEnabledNow, "Already automatic")
+			try await host.click("Symbol, Emoji or Monogram…", in: menu)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The picker opens")
+		}
+
 		@Test("Project Settings, opened by the request its ⌘I command posts, shows the detected icon, folder, CLI approval and Delete Locally, and Save renames the project")
 		func pageOpensAndSaves() async throws {
 			let folder = try ProjectIconFixture.folder()
@@ -68,8 +88,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.keychain.envStorage["demo"]?.name == "renamed-project" })
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
-			try await host.click("All variables")
-			#expect(try await host.waitForText("New key", exactly: true))
+			try await host.click("All Keys")
+			#expect(try await host.waitForText("New Key", exactly: true))
 		}
 
 		@Test("the folder row copies the project's folder path")
@@ -95,11 +115,11 @@ extension SheetInteractionTests {
 
 		/// The context menu of the sidebar row showing `name`.
 		private func rowMenu<V: View>(_ name: String, in host: SheetTestHost<V>) async throws -> NSMenu {
-			try await host.contextMenu(of: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.contextMenu(of: name, region: host.sidebarRegion)
 		}
 
 		private func editingName<V: View>(in host: SheetTestHost<V>) -> Bool {
-			((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.placeholderString == "Project name"
+			((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.shownPlaceholder == "Project name"
 		}
 
 		@Test("only Rename focuses the name; Project Settings opened afterwards doesn't")
@@ -110,8 +130,8 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try host.choose("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
-			try await host.click("All variables")
-			#expect(try await host.waitForText("New key", exactly: true))
+			try await host.click("All Keys")
+			#expect(try await host.waitForText("New Key", exactly: true))
 			host.window.makeFirstResponder(nil)
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			#expect(try await host.waitForText("Project Settings"))
@@ -157,11 +177,11 @@ extension SheetInteractionTests {
 			try host.choose("Project Settings…", in: menu)
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
-			#expect(try await host.waitForText("New key", exactly: true))
+			#expect(try await host.waitForText("New Key", exactly: true))
 			#expect(try await !host.text().contains("Delete Locally"), "The page didn't open")
 		}
 
-		@Test("Revert ends the edits, and Reset shows only while an icon is chosen")
+		@Test("Revert ends the edits, and Use Automatic is a choice only while an icon is chosen")
 		func revertAndReset() async throws {
 			let fixture = try makeFixture(path: "")
 			defer { fixture.tearDown() }
@@ -170,14 +190,17 @@ extension SheetInteractionTests {
 				size: NSSize(width: 820, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Choose icon"))
-			#expect(try await !host.text().contains("Reset"))
 			fixture.store.editProjectSettings(of: project) {
 				$0.name = "renamed"
 				$0.icon = .symbol("bolt.fill", .indigo)
 			}
 			#expect(try await host.waitForText("Unsaved changes"))
-			#expect(try await host.waitForText("Reset"))
 			#expect(try await host.waitForText("bolt.fill"))
+			try await host.click("Choose icon")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForElement(saying: "Use Automatic", in: menu).isEnabledNow, "Once an icon is chosen, Automatic is a choice")
+			try host.key("\u{1b}", code: 53, in: menu)
+			#expect(try await host.waitUntil { !menu.isVisible })
 			try await host.click("Revert")
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
@@ -191,8 +214,8 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("policy can't be read"))
-			#expect(try await host.waitForText("can't be found"))
+			#expect(try await host.waitForText("policy can’t be read"))
+			#expect(try await host.waitForText("can’t be found"))
 		}
 
 		@Test("the CLI approval switch can't be changed while the policy can't be read, and can once it can")
@@ -203,29 +226,20 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
 			defer { host.window.close() }
-			func switches(in view: NSView) -> [NSSwitch] {
-				((view as? NSSwitch).map { [$0] } ?? []) + view.subviews.flatMap { switches(in: $0) }
-			}
 			func cliSwitch() -> AccessibilityTree.Element? {
 				AccessibilityTree.visibleElements(in: host.window, of: host.view).first {
 					$0.role == .checkBox && ($0.label ?? $0.title) == "CLI approval"
 				}
 			}
-			/// The switch drawn where VoiceOver finds CLI approval's, beside Local history's.
-			func cliNativeSwitch() -> NSSwitch? {
-				guard let element = cliSwitch() else { return nil }
-				let point = AccessibilityTree.center(of: element, in: host.window)
-				return switches(in: host.view).first { $0.convert($0.bounds, to: nil).contains(point) }
-			}
-			#expect(try await host.waitUntil { cliNativeSwitch() != nil })
+			#expect(try await host.waitUntil { cliSwitch() != nil })
 			#expect(fixture.store.projectCliAccess["demo"] == nil)
-			#expect(cliNativeSwitch()?.isEnabled == false, "An unreadable policy can't be changed from here")
+			#expect(cliSwitch()?.isEnabledNow == false, "An unreadable policy can't be changed from here")
 			#expect(try await host.waitUntil { cliSwitch()?.value == "Unavailable" })
 			fixture.keychain.cliAccessPolicies["demo"] = .requireApproval
 			#expect(await fixture.store.loadProjects())
 			fixture.store.isUnlocked = true
-			#expect(try await host.waitUntil { cliNativeSwitch()?.isEnabled == true })
-			#expect(cliNativeSwitch()?.state == .on)
+			#expect(try await host.waitUntil { cliSwitch()?.isEnabledNow == true })
+			#expect(cliSwitch()?.isOn == true)
 			#expect(try await host.waitUntil { cliSwitch()?.value == "Required" })
 		}
 
@@ -295,9 +309,9 @@ extension SheetInteractionTests {
 				size: NSSize(width: 820, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
 			#expect(try await host.waitUntilRendered {
-				((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.placeholderString == "Project name"
+				((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.shownPlaceholder == "Project name"
 			})
-			#expect(try await host.waitForText("This project isn't linked to a folder."))
+			#expect(try await host.waitForText("This project isn’t linked to a folder."))
 		}
 
 		@Test("the icon picker chooses an emoji by its search, and a monogram from its letters and color")

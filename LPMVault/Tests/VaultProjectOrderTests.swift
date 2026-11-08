@@ -364,7 +364,8 @@ extension SheetInteractionTests {
 			let order = store.visibleVaults(matching: "").map(\.id)
 			store.openProject(id: order[0])
 			let reorder = VaultSidebarReorder()
-			let host = sidebarHost(store, height: 320, reorder: reorder)
+			// Tall enough for the open project's rows under the sidebar's search and its pages.
+			let host = sidebarHost(store, height: 420, reorder: reorder)
 			defer { host.window.close() }
 			try await host.settle()
 			let scrollView = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first?.enclosingScrollView)
@@ -391,12 +392,12 @@ extension SheetInteractionTests {
 			let host = sidebarHost(store, width: width, mode: mode)
 			defer { host.window.close() }
 			try await host.settle()
-			let bands = try labelBands(in: host)
+			let bands = try labelBands(in: host, through: 240)
 			try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
 			let project = bands[0]
 			let projectStart = try inkStart(in: host, band: project, columns: 32..<150)
 			var labelStarts: [CGFloat] = []
-			for (label, band) in zip(["Schema", "History", "New environment", ".env"], bands.dropFirst()) {
+			for (label, band) in zip(["Schema", "History", ".env", "New Environment"], bands.dropFirst()) {
 				let icon = try inkBounds(in: host, band: band, columns: 32..<52)
 				#expect(abs(icon.midX - projectStart - 3) <= 0.5, "\(label) icon center is \(icon.midX), expected \(projectStart + 3)")
 				labelStarts.append(try inkStart(in: host, band: band, columns: 52..<200))
@@ -417,7 +418,7 @@ extension SheetInteractionTests {
 				let host = sidebarHost(store, mode: mode)
 				defer { host.window.close() }
 				try await host.settle()
-				let bands = try labelBands(in: host)
+				let bands = try labelBands(in: host, through: 240)
 				try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
 				return try backgroundEdge(in: host, band: bands[row])
 			}
@@ -437,7 +438,7 @@ extension SheetInteractionTests {
 				defer { host.window.close() }
 				host.window.appearance = appearance.nativeAppearance
 				try await host.settle()
-				let bands = try labelBands(in: host)
+				let bands = try labelBands(in: host, through: 240)
 				try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
 				return try columns.map { try pixel(in: host, at: NSPoint(x: $0, y: bands[row].midY)) }
 			}
@@ -450,7 +451,7 @@ extension SheetInteractionTests {
 			}
 		}
 
-		@Test("a trailing lock marks projects whose CLI access needs approval, and an orange mark those whose policy can't be read")
+		@Test("a trailing lock marks projects whose CLI access needs approval, and a quiet gray mark those whose policy can't be read")
 		func approvalIndicators() async throws {
 			let (store, keychain, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -467,8 +468,9 @@ extension SheetInteractionTests {
 			let indicatorColumns = SidebarRowColumns(width: host.view.bounds.width).indicator
 			#expect((try? inkBounds(in: host, band: rows[0], columns: indicatorColumns)) != nil, "Alpha needs approval")
 			#expect((try? inkBounds(in: host, band: rows[1], columns: indicatorColumns)) == nil, "Middle's access is automatic")
+			// Nothing to fix there, so it doesn't alarm: a neutral mark, not a warning color.
 			let (red, green, blue) = try strongestInk(in: host, band: rows[2], columns: indicatorColumns)
-			#expect(red > green + 30 && green > blue, "Zulu's unreadable policy is marked in orange, read \((red, green, blue))")
+			#expect(max(red, green, blue) - min(red, green, blue) <= 12, "Zulu's unreadable policy is marked in gray, read \((red, green, blue))")
 			let (lockRed, lockGreen, lockBlue) = try strongestInk(in: host, band: rows[0], columns: indicatorColumns)
 			#expect(lockBlue - lockRed > 40 && lockBlue - lockGreen > 40, "The lock is in the accent color, not a warning, read \((lockRed, lockGreen, lockBlue))")
 		}
@@ -524,18 +526,16 @@ extension SheetInteractionTests {
 			#expect(abs(schema.edge - matrix.edge) > 2, "On the Schema page the Schema row is highlighted instead")
 		}
 
-		@Test("the lpm.dev import button shows only while signed in")
-		func importNeedsSignIn() async throws {
+		@Test("the projects header holds New Project alone, signed in or not; importing from lpm.dev is in the account menu")
+		func headerHoldsNewProject() async throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 			let host = sidebarHost(store)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Create env project"))
-			#expect(try await !host.text().contains("Import env project from lpm.dev"), "Signed out, there's nothing on lpm.dev to import")
 			store.currentUser = LPMUser(id: "user", username: "user", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
-			#expect(try await host.waitForText("Import env project from lpm.dev"))
-			store.currentUser = nil
-			#expect(try await host.waitForTextToDisappear("Import env project from lpm.dev"))
+			try await host.settle()
+			#expect(try await !host.text().contains("Import env project from lpm.dev"), "No unlabeled icon beside it")
 		}
 
 		@Test("the sidebar lists a project's schema and environments, and no smart views")
@@ -777,7 +777,7 @@ extension SheetInteractionTests {
 		) -> SheetTestHost<some View> {
 			SheetTestHost(VaultSidebarView(store: store, mode: .constant(mode),
 				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
-				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
+				onNewProject: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
 				onDeleteProject: onDeleteProject, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
 				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }, reorder: reorder),
 				size: NSSize(width: width, height: height), keepsRequestedSize: true, usesHostingView: true)
@@ -845,18 +845,19 @@ extension SheetInteractionTests {
 			switch mode {
 			case .schema: 1
 			case .history: 2
-			default: 4
+			default: 3
 			}
 		}
 
-		private func labelBands<V: View>(in host: SheetTestHost<V>) throws -> [CGRect] {
+		/// The rows with label ink between 80 and `bottom` points from the sidebar's top.
+		private func labelBands<V: View>(in host: SheetTestHost<V>, through bottom: CGFloat = 215) throws -> [CGRect] {
 			let image = try host.snapshot(host.view)
 			let context = try pixelContext(image)
 			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
 			let scale = CGFloat(image.width) / host.view.bounds.width
 			var bands: [CGRect] = []
 			var first: Int?
-			for row in Int(80 * scale)..<min(Int(215 * scale), image.height) {
+			for row in Int(80 * scale)..<min(Int(bottom * scale), image.height) {
 				let background = (row * image.width + Int(CGFloat(SidebarRowColumns(width: host.view.bounds.width).background) * scale)) * 4
 				let hasInk = (Int(55 * scale)..<Int(190 * scale)).contains { column in
 					let pixel = (row * image.width + column) * 4

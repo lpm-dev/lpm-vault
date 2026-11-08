@@ -68,7 +68,7 @@ enum HistoryEngine {
 		}
 		let json: Data
 		do { json = try JSONEncoder().encode(request) } catch {
-			throw Failure(code: "history.invalid_input", message: "The request couldn't be encoded.")
+			throw Failure(code: "history.invalid_input", message: "The request couldn’t be encoded.")
 		}
 		let input = try frame(json: json, blobs: blobs.items)
 		var result = input.withUnsafeBytes { bytes in
@@ -81,7 +81,7 @@ enum HistoryEngine {
 		let (answerJSON, answerBlobs) = try decodeFrame(output)
 		lpm_env_clear_output(&result)
 		if partial, let asked = try? JSONDecoder().decode(Asked.self, from: answerJSON) {
-			throw Failure(code: partsNeeded, message: "The LPM engine needs more of this project's history.", neededParts: asked.needsParts)
+			throw Failure(code: partsNeeded, message: "The LPM engine needs more of this project’s history.", neededParts: asked.needsParts)
 		}
 		do {
 			return Answer(response: try JSONDecoder().decode(Response.self, from: answerJSON), blobs: answerBlobs)
@@ -159,7 +159,7 @@ enum HistoryEngine {
 	}
 
 	fileprivate static let unreadable = Failure(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
-	private static let tooLarge = Failure(code: "history.too_large", message: "This project's history is too large to read at once.")
+	private static let tooLarge = Failure(code: "history.too_large", message: "This project’s history is too large to read at once.")
 }
 
 // MARK: - Reading
