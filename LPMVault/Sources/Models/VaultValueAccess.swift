@@ -24,6 +24,8 @@ final class VaultValueAccess {
 	@ObservationIgnored private var approvedAt: TimeInterval?
 	@ObservationIgnored private var asking: Task<Bool, Never>?
 	@ObservationIgnored private var rehideTask: Task<Void, Never>?
+	/// Whether a value was revealed since values were last masked.
+	@ObservationIgnored private var showsValues = false
 	@ObservationIgnored private var generation = 0
 
 	/// The reason Touch ID shows: "LPM Vault is trying to show or copy a value".
@@ -65,6 +67,7 @@ final class VaultValueAccess {
 	func reveal(_ action: @escaping @MainActor () -> Void) {
 		perform { [weak self] in
 			action()
+			self?.showsValues = true
 			self?.startRehideTimer()
 		}
 	}
@@ -88,10 +91,11 @@ final class VaultValueAccess {
 		hide()
 	}
 
-	/// The Security setting for masking again changed: a shorter time starts
-	/// from now, and Never stops the time running.
+	/// The Security setting for masking again changed. While values show,
+	/// the new time starts from now, values shown under Never included, and
+	/// Never stops the time running.
 	func rehideSettingChanged() {
-		guard rehideTask != nil else { return }
+		guard showsValues else { return }
 		startRehideTimer()
 	}
 
@@ -103,6 +107,7 @@ final class VaultValueAccess {
 	}
 
 	private func hide() {
+		showsValues = false
 		hideGeneration &+= 1
 		onHide?()
 	}

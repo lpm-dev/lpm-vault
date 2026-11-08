@@ -60,4 +60,49 @@ struct LPMCLILocatorTests {
 		#expect(await LPMCLILocator(shell: folder.appendingPathComponent("absent").path, environment: [:]).locate() == .unavailable)
 		#expect(await LPMCLILocator(shell: silent.path, timeout: .milliseconds(200), environment: [:]).locate() == .unavailable)
 	}
+
+	@Test("a lookup that times out stops the shell and everything it started, even what ignores being asked to stop")
+	func stopsEverythingItStarted() async throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lpm-cli-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let shell = folder.appendingPathComponent("stubborn-shell")
+		let childFile = folder.appendingPathComponent("child.pid"), shellFile = folder.appendingPathComponent("shell.pid")
+		try "#!/bin/sh\ntrap '' TERM\nsleep 100000 &\necho $! > \"$LPM_TEST_CHILD\"\necho $$ > \"$LPM_TEST_SHELL\"\nwait\n"
+			.write(to: shell, atomically: true, encoding: .utf8)
+		try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shell.path)
+
+		let status = await LPMCLILocator(shell: shell.path, timeout: .milliseconds(500), environment: [
+			"PATH": "/bin:/usr/bin", "LPM_TEST_CHILD": childFile.path, "LPM_TEST_SHELL": shellFile.path,
+		]).locate()
+		#expect(status == .unavailable)
+		let pids = try [childFile, shellFile].map { file in
+			try #require(pid_t(String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+		}
+		defer { for pid in pids { kill(pid, SIGKILL) } }
+		#expect(try await waitUntil { pids.allSatisfy { kill($0, 0) != 0 } }, "Neither the shell nor what it started outlives the lookup")
+	}
+
+	@Test("a cancelled lookup ends at once, with the shell stopped, rather than at the timeout")
+	func cancelled() async throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lpm-cli-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let silent = folder.appendingPathComponent("silent-shell")
+		try "#!/bin/sh\nexec sleep 100000\n".write(to: silent, atomically: true, encoding: .utf8)
+		try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: silent.path)
+
+		let locator = LPMCLILocator(shell: silent.path, timeout: .seconds(3600), environment: [:])
+		let lookup = Task { await locator.locate() }
+		try await letStartedWorkGetAhead()
+		lookup.cancel()
+		let answer = LockedCLIStatus(.found(path: "", version: nil))
+		let ended = LockedCount()
+		Task {
+			answer.value = await lookup.value
+			ended.add()
+		}
+		#expect(try await waitUntil { ended.value == 1 }, "An hour's timeout would hold it far past the test's limit")
+		#expect(ended.value == 0 || answer.value == .unavailable)
+	}
 }

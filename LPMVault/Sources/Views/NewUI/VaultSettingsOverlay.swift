@@ -46,10 +46,13 @@ struct VaultSettingsOverlay: View {
 		// Its keys work wherever focus is in the window, unless a sheet, such as a backup's, is over it.
 		.background(VaultMenuKeys { handle($0) })
 		.onReceive(NotificationCenter.default.publisher(for: .findSettings)) { _ in searchFocused = true }
+		.onChange(of: category) { _, category in search.pageShown(category) }
 	}
 
 	/// Esc clears a search before it closes Settings. From the search field,
-	/// the arrows show the result above or below, and Return the one shown or the best.
+	/// the arrows show the result above or below, and Return the one shown or
+	/// the best. The arrows stay the search's there even with no result
+	/// further, so they don't move the field's caret instead.
 	private func handle(_ key: VaultMenuKeys.Key) -> Bool {
 		switch key {
 		case .close:
@@ -93,7 +96,7 @@ struct VaultSettingsOverlay: View {
 			header
 			VaultHairline()
 			HStack(spacing: 0) {
-				menu
+				VaultSettingsMenuColumn(store: store, category: category, search: search, searchFocused: $searchFocused, show: show)
 				VaultHairline(axis: .vertical)
 				VaultSettingsContent(store: store, category: category)
 					.id(category)
@@ -141,10 +144,20 @@ struct VaultSettingsOverlay: View {
 	private var closeButton: some View {
 		VaultSheetCloseButton(label: "Close Settings") { store.closeAccountPage() }
 	}
+}
 
-	private var menu: some View {
+/// Settings' menu: the search above its parts, or what the search found in
+/// their place. Its own view, so what's typed updates it alone.
+private struct VaultSettingsMenuColumn: View {
+	let store: VaultStore
+	let category: VaultSettingsCategory
+	let search: VaultSettingsSearch
+	var searchFocused: FocusState<Bool>.Binding
+	let show: (VaultSettingsEntry) -> Void
+
+	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
-			VaultSettingsSearchField(search: search, focused: $searchFocused)
+			VaultSettingsSearchField(search: search, focused: searchFocused)
 				.padding(.bottom, 10)
 			if search.isSearching {
 				VaultSettingsSearchResults(search: search, show: show)
@@ -166,9 +179,12 @@ struct VaultSettingsOverlay: View {
 		}
 		.padding(.horizontal, 10)
 		.padding(.vertical, 14)
-		.frame(width: Self.menuWidth, alignment: .leading)
+		.frame(width: VaultSettingsOverlay.menuWidth, alignment: .leading)
 		.frame(maxHeight: .infinity)
 		.background(VaultPalette.sidebar)
+		.onChange(of: search.resultsAnnouncement) { _, announcement in
+			if let announcement { AccessibilityNotification.Announcement(announcement).post() }
+		}
 	}
 }
 

@@ -1297,16 +1297,16 @@ struct VaultStoreTests {
 			autoLockNow: { clock.now }, settings: settings
 		)
 		await store.unlock()
-		while await sleeper.count < 1 { await Task.yield() }
+		#expect(try await waitUntil { await sleeper.count >= 1 })
 		#expect(await sleeper.durations == [.seconds(1770)])
 
 		clock.now = 10
 		settings.lockAfter = .oneMinute
-		while await sleeper.count < 2 { await Task.yield() }
+		#expect(try await waitUntil { await sleeper.count >= 2 })
 		#expect(await sleeper.durations.last == .seconds(30), "The new time runs from the change, in the change's own wait")
 		clock.now = 40
 		await sleeper.resume(at: 1)
-		while await sleeper.count < 3 { await Task.yield() }
+		#expect(try await waitUntil { await sleeper.count >= 3 })
 		#expect(store.autoLockCountdownSeconds == 30)
 		clock.now = 70
 		await sleeper.resume(at: 2)
@@ -1326,9 +1326,9 @@ struct VaultStoreTests {
 			autoLockNow: { clock.now }, settings: settings
 		)
 		await store.unlock()
-		while await sleeper.count < 1 { await Task.yield() }
+		#expect(try await waitUntil { await sleeper.count >= 1 })
 		settings.lockAfter = .fiveMinutes
-		while await sleeper.count < 2 { await Task.yield() }
+		#expect(try await waitUntil { await sleeper.count >= 2 })
 		clock.now = 121
 		store.recordUserActivity()
 		#expect(store.isUnlocked, "Two minutes passed, but the vault now locks after five")

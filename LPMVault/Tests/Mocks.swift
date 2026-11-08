@@ -368,8 +368,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> { lock.withLock { historyState } }
 
-	var historyUsage: Result<VaultHistoryUsage, KeychainError> = .success(VaultHistoryUsage(projects: 0, records: 0))
-	func historyUsageResult() -> Result<VaultHistoryUsage, KeychainError> { lock.withLock { historyUsage } }
+	var historyUsage: Result<VaultHistoryUsage?, KeychainError> = .success(VaultHistoryUsage(projects: 0, records: 0))
+	func historyUsageResult() -> Result<VaultHistoryUsage?, KeychainError> { lock.withLock { historyUsage } }
 
 	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
 		lock.withLock { historyTimeline }

@@ -48,14 +48,17 @@ struct VaultUpdateSettingsSection: View {
 				}
 			}
 			VaultHairline()
+			// A build that doesn't update itself shows both off, as they are for it.
+			let updatesItself = updates.canChangeAutomaticUpdates
 			VaultSettingsRow(.automaticChecks,
-				detail: updates.canChangeAutomaticUpdates ? "Looks for a new version in the background and offers it in the title bar."
+				detail: updatesItself ? "Looks for a new version in the background and offers it in the title bar."
 					: "This build doesn’t update itself.") {
-				VaultSettingsSwitch(.automaticChecks, isOn: $updates.automaticallyChecks, disabled: !updates.canChangeAutomaticUpdates)
+				VaultSettingsSwitch(.automaticChecks, isOn: updatesItself ? $updates.automaticallyChecks : .constant(false),
+					disabled: !updatesItself)
 			}
 			VaultSettingsRow(.backgroundInstall, detail: "Installs the next time LPM Vault quits, without asking first.") {
-				VaultSettingsSwitch(.backgroundInstall, isOn: $updates.automaticallyDownloads,
-					disabled: !updates.canChangeAutomaticUpdates || !updates.automaticallyChecks)
+				VaultSettingsSwitch(.backgroundInstall, isOn: updatesItself ? $updates.automaticallyDownloads : .constant(false),
+					disabled: !updatesItself || !updates.automaticallyChecks)
 			}
 			VaultHairline()
 			VaultSettingsRow(.updateChannel, detail: updates.channelDescription) {

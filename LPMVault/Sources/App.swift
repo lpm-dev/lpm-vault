@@ -276,7 +276,7 @@ struct LPMVaultApp: App {
 					NotificationCenter.default.post(name: find.notification, object: nil)
 				}
 				.keyboardShortcut("f", modifiers: .command)
-				.disabled(!store.isUnlocked || (find == .secrets && store.selectedProject == nil))
+				.disabled(!find.isEnabled(unlocked: store.isUnlocked, hasProject: store.selectedProject != nil))
 
 				Button("Find Value…") {
 					NotificationCenter.default.post(name: .findValue, object: nil)
@@ -350,6 +350,11 @@ enum VaultFindTarget: Equatable {
 		case .secrets: .findSecrets
 		case .settings: .findSettings
 		}
+	}
+
+	/// Settings can be searched with no project chosen; a project's secrets can't.
+	func isEnabled(unlocked: Bool, hasProject: Bool) -> Bool {
+		unlocked && (self == .settings || hasProject)
 	}
 }
 

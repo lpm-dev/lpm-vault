@@ -36,9 +36,9 @@ extension SheetInteractionTests {
 			return Fixture(store: store, keychain: keychain, defaults: defaults, folder: folder)
 		}
 
-		private func backup(_ projects: [BackupPayload.Project], in folder: URL) throws -> URL {
+		private func backup(_ projects: [BackupPayload.Project], app: BackupAppSection? = nil, in folder: URL) throws -> URL {
 			let payload = BackupPayload(
-				createdAt: Date(timeIntervalSince1970: 1_761_171_075), producerVersion: "1.0.2", deviceName: "Studio", projects: projects, app: nil)
+				createdAt: Date(timeIntervalSince1970: 1_761_171_075), producerVersion: "1.0.2", deviceName: "Studio", projects: projects, app: app)
 			let file = try BackupEngine.seal(payload: try #require(payload.encoded()).bytes, passphrase: Self.passphrase).get()
 			let url = folder.appending(path: "LPM Vault 2026-10-21.lpmbackup")
 			try file.write(to: url)
@@ -114,6 +114,33 @@ extension SheetInteractionTests {
 			}
 			#expect(fixture.keychain.envStorage["fresh"]?.environments == ["default": ["TOKEN": "a"]])
 			#expect(fixture.keychain.envStorage["shared"]?.environments["default"]?["B"] == "9")
+		}
+
+		@Test("the backup's settings say everything they replace, and name each one less strict than this Mac's")
+		func settingsDisclosure() async throws {
+			let fixture = try fixture()
+			defer { fixture.tearDown() }
+			var loose = VaultSettings.standard
+			loose.security.lockAfter = .thirtyMinutes
+			loose.security.hidesFromCapture = false
+			let app = BackupAppSection(settings: .init(appearance: .system, keySort: .ascending, quitShortcut: .doublePress,
+				updateChannel: .stable, projectOrder: [], environmentOrders: [:],
+				preferences: .init(app: loose, updates: .init(checks: false, downloads: false))))
+			let url = try backup([project("fresh", environments: ["default": ["TOKEN": "a"]])], app: app, in: fixture.folder)
+			let host = host(fixture, file: url)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("Choose…")
+			try host.enterValue(Self.passphrase, at: 0)
+			#expect(try await host.waitUntil { element("Continue", in: host.window)?.isEnabled == true })
+			try await host.click("Continue")
+			#expect(try await host.waitForText("Use the backup’s settings"))
+			for text in ["Security, new-project defaults, backup reminder, automatic updates, appearance, quit shortcut, key sort, project order and icons",
+				"Less strict than this Mac’s:", "Lock after: 30 min, instead of 2 min",
+				"Hide from screenshots and screen sharing: off, instead of on", "Check for updates automatically: off, instead of on"]
+			{
+				#expect(try await host.waitForText(text), "The settings choice says \(text)")
+			}
 		}
 
 		@Test("Use this folder appears when the backup's folder links the project, and the restored project keeps it")

@@ -4,20 +4,21 @@ import Testing
 
 @testable import LPMVault
 
+/// Settings as the workspace shows it: the overlay at the page the store shows.
+struct VaultSettingsOverlayHost: View {
+	@Bindable var store: VaultStore
+
+	var body: some View {
+		if let category = store.shownSettingsCategory {
+			VaultSettingsOverlay(store: store, category: category)
+		}
+	}
+}
+
 extension SheetInteractionTests {
 	@Suite("Settings search, rendered")
 	@MainActor
 	struct SettingsSearchInteractionTests {
-		/// Settings as the workspace shows it: the overlay at the page the store shows.
-		private struct Overlay: View {
-			@Bindable var store: VaultStore
-
-			var body: some View {
-				if let category = store.shownSettingsCategory {
-					VaultSettingsOverlay(store: store, category: category)
-				}
-			}
-		}
 
 		private final class AnchorRecord: @unchecked Sendable {
 			private let lock = NSLock()
@@ -39,7 +40,7 @@ extension SheetInteractionTests {
 		}
 
 		private func overlay(_ store: VaultStore, _ defaults: UserDefaults) async throws -> SheetTestHost<some View> {
-			let host = SheetTestHost(Overlay(store: store)
+			let host = SheetTestHost(VaultSettingsOverlayHost(store: store)
 				.environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: defaults))
 				.environment(VaultQuitSettings(defaults: defaults)),
@@ -50,6 +51,10 @@ extension SheetInteractionTests {
 
 		private func isShown<V: View>(_ label: String, in host: SheetTestHost<V>, where matches: (AccessibilityTree.Element) -> Bool) -> Bool {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says(label) && matches($0) }
+		}
+
+		private func isSelectedResult<V: View>(_ title: String, in host: SheetTestHost<V>) -> Bool {
+			AccessibilityTree.elements(in: host.window).contains { $0.role == .button && $0.says(title) && $0.isSelected }
 		}
 
 		@Test("typing lists the settings that match under their pages, in the menu's place; Return shows the best on its page, scrolled into view")
@@ -98,6 +103,53 @@ extension SheetInteractionTests {
 			#expect(host.fieldText(placeholder: "Search")?.isEmpty == true && store.accountPage == .settings)
 			try host.press(.escape)
 			#expect(try await host.waitUntil { store.accountPage == nil })
+		}
+
+		@Test("the arrows and Return go on to whatever has the keyboard once the search field doesn't")
+		func keysOutsideTheField() async throws {
+			let defaults = try isolatedDefaults()
+			let store = makeStore(defaults)
+			store.showSettings(.general)
+			let host = try await overlay(store, defaults)
+			defer { host.window.close() }
+			let first = VaultSettingsEntry.lockAfter.title, second = VaultSettingsEntry.lockOnSleep.title
+			try host.typeText("lock", placeholder: "Search")
+			_ = try await host.waitForElement(saying: second)
+			try host.press(.return)
+			#expect(try await host.waitUntil { isSelectedResult(first, in: host) })
+
+			host.window.makeFirstResponder(nil)
+			#expect(try await host.waitUntil { !host.isEditing(placeholder: "Search") })
+			try await host.settle()
+			try host.press(.down)
+			try await quietPeriod()
+			#expect(isSelectedResult(first, in: host) && !isSelectedResult(second, in: host), "The arrow wasn't the search's")
+
+			try host.typeText("lock", placeholder: "Search")
+			try await host.settle()
+			try host.press(.down)
+			#expect(try await host.waitUntil { isSelectedResult(second, in: host) }, "From the field, it is")
+		}
+
+		@Test("while an input method composes in the search field, Return, the arrows and Esc are the composition's")
+		func composingKeepsKeys() async throws {
+			let defaults = try isolatedDefaults()
+			let store = makeStore(defaults)
+			store.showSettings(.general)
+			let host = try await overlay(store, defaults)
+			defer { host.window.close() }
+			try host.typeText("lock", placeholder: "Search")
+			_ = try await host.waitForElement(saying: VaultSettingsEntry.lockAfter.title)
+			let editor = try #require(host.window.firstResponder as? NSTextView)
+			editor.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+			#expect(editor.hasMarkedText())
+			try host.press(.return)
+			try host.press(.down)
+			try host.press(.escape)
+			try await quietPeriod()
+			#expect(store.shownSettingsCategory == .general, "No result was shown")
+			#expect(store.accountPage == .settings, "Settings stayed open")
+			#expect(host.fieldText(placeholder: "Search")?.hasPrefix("lock") == true, "The search wasn't cleared")
 		}
 
 		@Test("a search that finds nothing says so")

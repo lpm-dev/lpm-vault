@@ -59,7 +59,7 @@ struct SettingsSearchTests {
 		let first = try #require(search.result(movingBy: 1))
 		#expect(first == .exportBackup)
 		search.choose(first)
-		#expect(search.selected == first.id && search.highlight == .init(entry: first.id, request: 1))
+		#expect(search.selected == first.id && search.highlight == .init(entry: first, request: 1))
 		let second = try #require(search.result(movingBy: 1))
 		search.choose(second)
 		#expect(search.resultForReturn == second)
@@ -70,7 +70,7 @@ struct SettingsSearchTests {
 		search.choose(first)
 		let shown = search.highlight
 		search.choose(first)
-		#expect(search.highlight?.entry == first.id && search.highlight != shown, "Choosing it again asks its page again")
+		#expect(search.highlight?.entry == first && search.highlight != shown, "Choosing it again asks its page again")
 	}
 
 	@Test("typing on keeps the result shown while it still matches, and drops it once it doesn't; clearing ends the search")
@@ -85,6 +85,50 @@ struct SettingsSearchTests {
 		search.clear()
 		#expect(search.query.isEmpty && !search.isSearching && search.results.isEmpty)
 		#expect(search.selected == nil && search.highlight == nil)
+	}
+
+	@Test("deleting the search's words ends what it showed, so a later visit to the page doesn't bring the setting back")
+	func emptiedSearchEndsHighlight() {
+		for emptied in ["", "  "] {
+			let search = VaultSettingsSearch()
+			search.query = "lock"
+			search.choose(.lockAfter)
+			search.query = emptied
+			#expect(search.highlight == nil && search.selected == nil, "\(emptied.debugDescription)")
+		}
+	}
+
+	@Test("showing another page ends the highlight and the result shown; the highlighted setting's own page keeps them")
+	func otherPageEndsHighlight() {
+		let search = VaultSettingsSearch()
+		search.query = "lock"
+		search.choose(.lockAfter)
+		search.pageShown(.security)
+		#expect(search.highlight?.entry == .lockAfter && search.selected == VaultSettingsEntry.lockAfter.id)
+		search.pageShown(.general)
+		#expect(search.highlight == nil && search.selected == nil)
+		#expect(search.result(movingBy: 1) == search.results.first, "The arrows start again from the top")
+	}
+
+	@Test("VoiceOver hears how many settings a search found")
+	func resultsAnnouncement() {
+		let search = VaultSettingsSearch()
+		#expect(search.resultsAnnouncement == nil)
+		search.query = "backup"
+		#expect(search.resultsAnnouncement == "\(search.results.count) settings found")
+		search.query = "screenshot"
+		#expect(search.resultsAnnouncement == "1 setting found")
+		search.query = "zzz"
+		#expect(search.resultsAnnouncement == "No settings found")
+	}
+
+	@Test("⌘F works in Settings with no project chosen; finding secrets needs one; neither works while locked")
+	func findEnabled() {
+		#expect(VaultFindTarget.settings.isEnabled(unlocked: true, hasProject: false))
+		#expect(!VaultFindTarget.secrets.isEnabled(unlocked: true, hasProject: false))
+		#expect(VaultFindTarget.secrets.isEnabled(unlocked: true, hasProject: true))
+		#expect(!VaultFindTarget.settings.isEnabled(unlocked: false, hasProject: true))
+		#expect(!VaultFindTarget.secrets.isEnabled(unlocked: false, hasProject: true))
 	}
 
 	@Test("⌘F searches Settings while it shows, rather than the projects hidden under it")

@@ -1221,6 +1221,12 @@ struct VaultWorkspaceView: View {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage,
 			let current = store.selectedProject, current.id == request.projectID
 		else { return }
+		let feedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
+		if let selection = request.selection {
+			guard store.clipboard.copy(selection) else { return }
+			copyFeedback = feedback
+			return
+		}
 		let draft = store.keyDrafts.draft(VaultKeyDraft.ID(projectID: request.projectID, key: request.key))
 		let name = draft.map { EnvValidation.isValidVariableName($0.name) ? $0.name : $0.key } ?? request.key
 		var value = ""
@@ -1230,7 +1236,7 @@ struct VaultWorkspaceView: View {
 			value = shown
 		}
 		guard store.clipboard.copy(request.format.text(key: name, value: value)) else { return }
-		copyFeedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
+		copyFeedback = feedback
 	}
 
 	private func copiedEnvironment(in project: VaultProject) -> String? {
@@ -1325,7 +1331,9 @@ struct VaultWorkspaceView: View {
 				rawTextFailures[target] = nil
 			},
 			onCopy: { copyEditedText($0, in: target) },
-			onFixCharacters: { store.fixRawTextCharacters(target, $0) }
+			onFixCharacters: { store.fixRawTextCharacters(target, $0) },
+			isShown: store.shownRawTextEdits.contains(target),
+			onShow: { store.showRawTextEdit(target) }
 		)
 	}
 
@@ -1579,7 +1587,7 @@ struct VaultWorkspaceView: View {
 			copiedLineCount: copiedLineCount(in: project),
 			rawEditing: rawTextEditing(in: project),
 			rawEditBlocker: store.rawTextEditBlocker,
-			onEditRaw: { store.beginRawTextEdit(order: $0) },
+			onEditRaw: { store.editRawText(order: $0) },
 			rawSaved: rawTextSaved,
 			onUndoRawSave: undoRawTextSave,
 			valueSearchSummary: store.valueSearch.isPresented ? nil

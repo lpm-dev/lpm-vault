@@ -46,6 +46,22 @@ struct UpdateCheckerTests {
 		#endif
 	}
 
+	@Test("Updates says when automatic updates differ from LPM Vault's, and puts them back, never the update channel")
+	func restoreDefaults() throws {
+		let defaults = try isolatedDefaults()
+		let checker = UpdateChecker(driver: TestUpdateDriver(), defaults: defaults, buildInfo: VaultBuildInfo(info: [:]))
+		checker.start()
+		let pages = VaultSettingsPageDefaults(settings: VaultSettings(defaults: defaults), updates: checker)
+		#expect(!pages.hasChanges(on: .updates))
+		checker.channel = .nightly
+		#expect(checker.channel == .nightly && !pages.hasChanges(on: .updates), "The channel isn't a default to restore")
+		checker.automaticallyDownloads = true
+		#expect(pages.hasChanges(on: .updates))
+		pages.restore(.updates)
+		#expect(checker.automaticallyChecks && !checker.automaticallyDownloads && checker.channel == .nightly)
+		#expect(!pages.hasChanges(on: .updates))
+	}
+
 	@Test("a direct nightly installation keeps its channel when a newer stable build replaces it")
 	func nightlyDefaultSurvivesStableReplacement() throws {
 		let domain = "nightly-default-\(UUID().uuidString)"

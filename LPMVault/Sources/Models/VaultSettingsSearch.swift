@@ -114,31 +114,55 @@ final class VaultSettingsSearch {
 	/// A request to bring a setting into view and mark it. Choosing the same
 	/// setting again is a new request, so its page shows it again.
 	struct Highlight: Equatable, Sendable {
-		let entry: VaultSettingsEntry.ID
+		let entry: VaultSettingsEntry
 		let request: Int
 	}
 
 	var query = "" {
 		didSet {
 			guard query != oldValue else { return }
+			isSearching = !Self.terms(in: query).isEmpty
 			results = Self.results(for: query)
-			if let selected, !results.contains(where: { $0.id == selected }) { self.selected = nil }
+			if !isSearching {
+				selected = nil
+				highlight = nil
+			} else if let selected, !results.contains(where: { $0.id == selected }) {
+				self.selected = nil
+			}
 		}
 	}
 
+	/// Whether the query holds a word to look for.
+	private(set) var isSearching = false
 	private(set) var results: [VaultSettingsEntry] = []
 	/// The result shown, which arrows move from.
 	private(set) var selected: VaultSettingsEntry.ID?
 	private(set) var highlight: Highlight?
 	@ObservationIgnored private var requests = 0
 
-	var isSearching: Bool { !Self.terms(in: query).isEmpty }
-
 	/// Selects `entry` and asks its page to bring it into view.
 	func choose(_ entry: VaultSettingsEntry) {
 		selected = entry.id
 		requests += 1
-		highlight = Highlight(entry: entry.id, request: requests)
+		highlight = Highlight(entry: entry, request: requests)
+	}
+
+	/// Settings shows `category`. Any other page ends the highlight, so coming
+	/// back to the highlighted setting's page later doesn't bring it back.
+	func pageShown(_ category: VaultSettingsCategory) {
+		guard let highlight, highlight.entry.category != category else { return }
+		self.highlight = nil
+		selected = nil
+	}
+
+	/// What VoiceOver says about the results as they change.
+	var resultsAnnouncement: String? {
+		guard isSearching else { return nil }
+		return switch results.count {
+		case 0: "No settings found"
+		case 1: "1 setting found"
+		default: "\(results.count) settings found"
+		}
 	}
 
 	/// The result `offset` places from the one shown, or the first one going

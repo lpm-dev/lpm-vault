@@ -29,6 +29,10 @@ struct VaultValueField: NSViewRepresentable {
 	/// true when it handled the press, which otherwise submits.
 	var onReturn: (NSEvent.ModifierFlags) -> Bool = { _ in false }
 	var onSubmit: () -> Void = {}
+	/// Copies text selected in the field, which Copy and Cut hand here rather
+	/// than to the clipboard, so it goes as every copy of a value does. A
+	/// field without it copies nothing; a secure field never does.
+	var onCopySelection: ((String) -> Void)?
 
 	func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -62,6 +66,9 @@ struct VaultValueField: NSViewRepresentable {
 		field.recordsUndo = recordsUndo
 		field.delegate = context.coordinator
 		field.onFocusChange = { [weak coordinator = context.coordinator] focused in coordinator?.focusChanged(focused) }
+		(field as? PlainValueTextField)?.onCopySelection = { [weak coordinator = context.coordinator] text in
+			coordinator?.parent.onCopySelection?(text)
+		}
 		apply(to: field)
 		return field
 	}
@@ -174,6 +181,16 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 	var onFocusChange: ((Bool) -> Void)?
 	var recordsUndo = true
 
+	override class var cellClass: AnyClass? {
+		get { ValueFieldCell.self }
+		set {}
+	}
+
+	var onCopySelection: ((String) -> Void)? {
+		get { (cell as? ValueFieldCell)?.editor.onCopy }
+		set { (cell as? ValueFieldCell)?.editor.onCopy = newValue }
+	}
+
 	/// The placeholder's words, which the field draws from its attributed placeholder.
 	override var placeholderString: String? {
 		get { super.placeholderString ?? placeholderAttributedString?.string }
@@ -214,4 +231,56 @@ private final class SecureValueTextField: NSSecureTextField, ValueFieldFocus {
 		super.textDidEndEditing(notification)
 		onFocusChange?(false)
 	}
+}
+
+/// A plain value field's cell, which edits with the field's own editor: the
+/// window's shared one would copy a value straight to the clipboard.
+private final class ValueFieldCell: NSTextFieldCell {
+	let editor = ValueFieldEditor()
+
+	override func fieldEditor(for controlView: NSView) -> NSTextView? { editor }
+}
+
+/// The editor of a value field's text. Copy and Cut hand the selection to
+/// `onCopy`, and nothing is dragged out or offered to a Service, as in Raw text.
+final class ValueFieldEditor: NSTextView {
+	var onCopy: ((String) -> Void)?
+
+	convenience init() {
+		self.init(frame: .zero)
+		isFieldEditor = true
+	}
+
+	/// The text selected, every range of it in order.
+	private var selectedText: String? {
+		let ranges = selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
+		guard !ranges.isEmpty else { return nil }
+		let text = string as NSString
+		return ranges.map { text.substring(with: $0) }.joined()
+	}
+
+	override func copy(_ sender: Any?) {
+		guard let text = selectedText, let onCopy else { return }
+		onCopy(text)
+	}
+
+	override func cut(_ sender: Any?) {
+		guard isEditable, let text = selectedText, let onCopy else { return }
+		onCopy(text)
+		delete(sender)
+	}
+
+	override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+		if item.action == #selector(copy(_:)) || item.action == #selector(cut(_:)) {
+			guard onCopy != nil, selectedText != nil else { return false }
+		}
+		return super.validateUserInterfaceItem(item)
+	}
+
+	override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool { false }
+
+	override func dragSelection(with event: NSEvent, offset mouseOffset: NSSize, slideBack: Bool) -> Bool { false }
+
+	override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+		returnType: NSPasteboard.PasteboardType?) -> Any? { nil }
 }

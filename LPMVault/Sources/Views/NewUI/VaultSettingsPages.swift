@@ -119,11 +119,13 @@ struct VaultHistoryDefaultsSettingsSection: View {
 
 // MARK: - CLI
 
-/// The LPM CLI the person's shell runs, and its version.
+/// The LPM CLI the person's shell runs, and its version, as the store last
+/// found it this session.
 struct VaultCLIStatusSettingsSection: View {
-	let locate: @Sendable () async -> LPMCLIStatus
-	@State private var status: LPMCLIStatus?
-	@State private var checking = false
+	let store: VaultStore
+
+	private var status: LPMCLIStatus? { store.cliStatus }
+	private var checking: Bool { store.isLocatingCLI }
 
 	static let installURL = URL(string: "https://cli.lpm.dev/")!
 
@@ -135,11 +137,11 @@ struct VaultCLIStatusSettingsSection: View {
 					if status == .notFound {
 						VaultBarButton(systemImage: "globe", title: "Install…", height: 28) { NSWorkspace.shared.open(Self.installURL) }
 					}
-					VaultBarButton(title: "Check Again", disabled: checking, height: 28) { Task { await check() } }
+					VaultBarButton(title: "Check Again", disabled: checking, height: 28) { store.refreshCLIStatus() }
 				}
 			}
 		}
-		.task { if status == nil { await check() } }
+		.task { if status == nil { store.refreshCLIStatus() } }
 	}
 
 	private var title: Text {
@@ -162,12 +164,6 @@ struct VaultCLIStatusSettingsSection: View {
 		case .unavailable: return "Your shell didn’t answer in time. Check again once it’s set up."
 		case nil: return "Asking your shell, as Terminal would."
 		}
-	}
-
-	private func check() async {
-		checking = true
-		status = await locate()
-		checking = false
 	}
 }
 
@@ -208,8 +204,10 @@ enum VaultAboutLinks {
 	static let documentation = URL(string: "https://cli.lpm.dev/docs/dev/lpm-vault")!
 
 	/// A new GitHub issue that says which LPM Vault and macOS it's about, and nothing else.
+	/// `system` is as `operatingSystemVersionString` gives it: "Version 15.4.1 (Build 24E263)".
 	static func feedback(build: VaultBuildInfo, system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> URL {
-		let body = "What happened, and what did you expect?\n\n\n---\nLPM Vault \(build.displayVersion)\nmacOS \(system)\n"
+		let version = system.hasPrefix("Version ") ? system.dropFirst("Version ".count) : Substring(system)
+		let body = "What happened, and what did you expect?\n\n\n---\nLPM Vault \(build.displayVersion)\nmacOS \(version)\n"
 		var components = URLComponents(string: "https://github.com/lpm-dev/lpm-vault/issues/new")!
 		components.queryItems = [URLQueryItem(name: "body", value: body)]
 		return components.url!

@@ -67,11 +67,6 @@ enum VaultSettingsDuration {
 	static func title(seconds: Int) -> String {
 		seconds < 60 ? "\(seconds) sec" : "\(seconds / 60) min"
 	}
-
-	/// The same duration in words, for a sentence: "10 seconds", "1 minute".
-	static func phrase(seconds: Int) -> String {
-		seconds < 60 ? seconds.counted("second") : (seconds / 60).counted("minute")
-	}
 }
 
 /// LPM Vault's own settings that aren't a single control's: how the vault
@@ -201,7 +196,9 @@ final class VaultSettings {
 
 	private static func choice<Choice: RawRepresentable & CaseIterable>(_ defaults: UserDefaults, _ key: String) -> Choice?
 	where Choice.RawValue == Int {
-		guard let number = defaults.object(forKey: key) as? NSNumber, CFGetTypeID(number) == CFNumberGetTypeID() else { return nil }
+		guard let number = defaults.object(forKey: key) as? NSNumber, CFGetTypeID(number) == CFNumberGetTypeID(),
+			!CFNumberIsFloatType(number)
+		else { return nil }
 		return Choice(rawValue: number.intValue)
 	}
 

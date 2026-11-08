@@ -627,7 +627,10 @@ private struct VaultKeyEditor: View {
 			maxLines: revealed ? 4 : 1,
 			isEnabled: !disabled,
 			concealsDots: conceals,
-			onSubmit: save
+			onSubmit: save,
+			onCopySelection: { selection in
+				onCopy(VaultValueCopy(projectID: project.id, key: key, environment: environment, format: .value, selection: selection))
+			}
 		)
 		.id(revealed)
 		.overlay(alignment: .leading) {

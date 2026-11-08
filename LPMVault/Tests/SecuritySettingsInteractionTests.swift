@@ -147,6 +147,50 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Install…", exactly: true))
 		}
 
+		@Test("the shell is asked for the LPM CLI once a session, however often the CLI page shows; Check Again asks again")
+		func cliLookedUpOnce() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let lookups = LockedCount()
+			fixture.store.locateCLI = {
+				lookups.add()
+				return .found(path: "/opt/homebrew/bin/lpm", version: "1.4.2")
+			}
+			fixture.store.showSettings(.cli)
+			let host = SheetTestHost(VaultSettingsOverlayHost(store: fixture.store)
+				.environment(UpdateChecker())
+				.environment(VaultAppearanceSettings(defaults: fixture.defaults))
+				.environment(VaultQuitSettings(defaults: fixture.defaults)),
+				size: NSSize(width: 1040, height: 760), keepsRequestedSize: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("lpm 1.4.2", exactly: true))
+			fixture.store.showSettings(.general)
+			#expect(try await host.waitForText("LOCAL HISTORY"))
+			fixture.store.showSettings(.cli)
+			#expect(try await host.waitForText("lpm 1.4.2", exactly: true))
+			try await quietPeriod()
+			#expect(lookups.value == 1)
+			try await host.click("Check Again")
+			#expect(try await host.waitUntil { lookups.value == 2 })
+		}
+
+		#if DEBUG
+		@Test("a build that doesn't update itself shows its automatic updates off, beside saying so")
+		func automaticUpdatesOffWithoutUpdater() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let checker = UpdateChecker(defaults: fixture.defaults, buildInfo: VaultBuildInfo(info: [:]))
+			#expect(!checker.canChangeAutomaticUpdates)
+			let host = try await overlay(fixture, .updates, updates: checker)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("This build doesn’t update itself."))
+			let checks = try await host.waitForElement(saying: VaultSettingsEntry.automaticChecks.title)
+			let downloads = try await host.waitForElement(saying: VaultSettingsEntry.backgroundInstall.title)
+			#expect(checks.isOn == false && !checks.isEnabled)
+			#expect(downloads.isOn == false && !downloads.isEnabled)
+		}
+		#endif
+
 		@Test("About opens release notes, documentation and a feedback issue that holds the version and no values")
 		func aboutLinks() async throws {
 			var opened: [URL] = []
@@ -185,6 +229,34 @@ extension SheetInteractionTests {
 
 			fixture.store.valueAccess.hideRevealed()
 			#expect(try await host.waitUntil { revealToggle(in: host)?.isOn == false }, "Masking again clears what the table shows")
+		}
+
+		@Test("Raw text's Edit asks first, as revealing does; masking values again hides the editor, keeping the edit, until it's shown again")
+		func rawEditAsksFirst() async throws {
+			let fixture = try makeFixture { $0.valueApproval = .afterFiveMinutes }
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			try await host.clickSidebarEnvironment(".env")
+			try await host.click("Raw Text")
+			let target = VaultEnvironmentTarget(projectId: "guarded", environment: "default")
+			fixture.biometric.shouldSucceed = false
+			try await host.click("Edit .env as text")
+			#expect(try await host.waitUntil { fixture.biometric.confirmationReasons.count == 1 })
+			try await quietPeriod()
+			#expect(fixture.store.rawTextDraft(for: target) == nil, "Declined, no edit shows the values")
+
+			fixture.biometric.shouldSucceed = true
+			try await host.click("Edit .env as text")
+			#expect(try await host.waitUntil { fixture.store.rawTextDraft(for: target) != nil })
+			#expect(try await host.waitForText("TOKEN=s3cret-token"))
+
+			fixture.store.valueAccess.hideRevealed()
+			#expect(try await host.waitForTextToDisappear("TOKEN=s3cret-token"))
+			#expect(try await host.waitForText("Show Edit", exactly: true))
+			#expect(fixture.store.rawTextDraft(for: target) != nil, "The edit is kept")
+			try await host.click("Show Edit")
+			#expect(try await host.waitForText("TOKEN=s3cret-token"))
 		}
 
 		@Test("a declined approval reveals and copies nothing")
@@ -265,4 +337,12 @@ final class LockedDate: @unchecked Sendable {
 		get { lock.withLock { stored } }
 		set { lock.withLock { stored = newValue } }
 	}
+}
+
+/// A count a test reads, kept by a closure that can't say which actor it runs on.
+final class LockedCount: @unchecked Sendable {
+	private let lock = NSLock()
+	private var stored = 0
+	var value: Int { lock.withLock { stored } }
+	func add() { lock.withLock { stored += 1 } }
 }

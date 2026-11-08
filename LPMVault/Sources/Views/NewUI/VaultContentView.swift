@@ -766,23 +766,49 @@ struct VaultContentView: View {
 				}
 				rawCard(editing: true) {
 					VStack(spacing: 0) {
-						VaultRawTextEditor(
-							text: draft.text,
-							problems: draft.check.problems,
-							problemLines: draft.check.problemLines,
-							warnings: editing.characterWarnings?.pills ?? [],
-							label: "\(name) as text, editing",
-							isEditable: !editing.isSaving,
-							onChange: editing.onChange,
-							onCopy: editing.onCopy
-						)
-						.id("\(project.id)/\(selectedEnvironment)")
+						if editing.isShown {
+							VaultRawTextEditor(
+								text: draft.text,
+								problems: draft.check.problems,
+								problemLines: draft.check.problemLines,
+								warnings: editing.characterWarnings?.pills ?? [],
+								label: "\(name) as text, editing",
+								isEditable: !editing.isSaving,
+								onChange: editing.onChange,
+								onCopy: editing.onCopy
+							)
+							.id("\(project.id)/\(selectedEnvironment)")
+						} else {
+							rawEditHidden(editing)
+						}
 						VaultHairline()
 						rawEditorFooter(editing)
 					}
 				}
 			}
 		}
+	}
+
+	/// In the editor's place while values are masked again: the edit holds
+	/// every value of the environment, and is kept until it's shown again.
+	private func rawEditHidden(_ editing: VaultRawTextEditing) -> some View {
+		VStack(spacing: 8) {
+			Image(systemName: "eye.slash")
+				.font(.system(size: 18))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
+			Text("This edit’s values are hidden")
+				.font(.system(size: 13, weight: .semibold))
+				.foregroundStyle(VaultPalette.textPrimary)
+			Text("Your changes are kept. Show the edit to go on.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+			VaultBarButton(systemImage: "eye", title: "Show Edit", height: 28, action: editing.onShow)
+				.padding(.top, 4)
+		}
+		.multilineTextAlignment(.center)
+		.padding(24)
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
 
 	private func rawEditorFooter(_ editing: VaultRawTextEditing) -> some View {

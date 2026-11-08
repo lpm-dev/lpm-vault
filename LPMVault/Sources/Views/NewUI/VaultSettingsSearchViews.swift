@@ -48,8 +48,8 @@ private struct VaultSettingsAnchor: ViewModifier {
 			.id(entry.id)
 			.preference(key: VaultSettingsAnchors.self, value: [entry.id])
 			.task(id: highlight) {
-				guard highlight?.entry == entry.id else {
-					marked = false
+				guard highlight?.entry == entry else {
+					if marked { marked = false }
 					return
 				}
 				marked = true
@@ -61,7 +61,9 @@ private struct VaultSettingsAnchor: ViewModifier {
 }
 
 /// A Settings page's scroll view. It brings the setting search chose into view
-/// once the page has laid it out, which a page just opened hasn't yet.
+/// once the page has laid it out, which a page just opened hasn't yet, and
+/// after the update that found it there: a scroll asked for within that update
+/// is dropped.
 struct VaultSettingsScroller<Content: View>: View {
 	@ViewBuilder let content: Content
 	@Environment(\.vaultSettingsHighlight) private var highlight
@@ -69,7 +71,7 @@ struct VaultSettingsScroller<Content: View>: View {
 	@State private var anchors: Set<VaultSettingsEntry.ID> = []
 
 	private var target: VaultSettingsSearch.Highlight? {
-		guard let highlight, anchors.contains(highlight.entry) else { return nil }
+		guard let highlight, anchors.contains(highlight.entry.id) else { return nil }
 		return highlight
 	}
 
@@ -77,9 +79,9 @@ struct VaultSettingsScroller<Content: View>: View {
 		ScrollViewReader { proxy in
 			ScrollView { content }
 				.onPreferenceChange(VaultSettingsAnchors.self) { anchors = $0 }
-				.onChange(of: target, initial: true) { _, target in
+				.task(id: target) {
 					guard let target else { return }
-					withAnimation(reduceMotion ? nil : VaultMotion.panel) { proxy.scrollTo(target.entry, anchor: .center) }
+					withAnimation(reduceMotion ? nil : VaultMotion.panel) { proxy.scrollTo(target.entry.id, anchor: .center) }
 				}
 		}
 	}

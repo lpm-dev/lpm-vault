@@ -103,6 +103,24 @@ struct RawTextStoreTests {
 		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "1", "B": "2"])
 	}
 
+	@Test("an edit shows once the guard on values allows it; masking values again hides it, keeping it, and ending it forgets it was shown")
+	func editShowsThroughTheGuard() async throws {
+		let (store, _) = try await makeStore()
+		defer { store.lock() }
+		store.editRawText(order: ["A", "B"])
+		#expect(store.rawTextDraft(for: target()) != nil && store.shownRawTextEdits == [target()], "Nothing to ask: it shows at once")
+
+		store.valueAccess.hideRevealed()
+		#expect(store.shownRawTextEdits.isEmpty && store.rawTextDraft(for: target()) != nil)
+		store.showRawTextEdit(target())
+		#expect(store.shownRawTextEdits == [target()])
+
+		store.discardRawTextDraft(target())
+		#expect(store.shownRawTextEdits.isEmpty)
+		store.showRawTextEdit(target())
+		#expect(store.shownRawTextEdits.isEmpty, "No edit, nothing to show")
+	}
+
 	@Test("unsaved key edits keep the environment from being edited as text, which would put their keys back")
 	func waitsForKeyEdits() async throws {
 		let (store, _) = try await makeStore()

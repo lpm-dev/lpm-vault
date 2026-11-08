@@ -78,33 +78,83 @@ struct LPMCLILocator: Sendable {
 	/// Runs the script in an interactive login shell, so every startup file
 	/// that sets PATH is read, with nothing to read from and its errors
 	/// dropped. The answer is complete once its last line arrives, even while
-	/// something the startup files started keeps the output open; the shell
-	/// is stopped then, or once the timeout passes.
+	/// something the startup files started keeps the output open. Then, once
+	/// the timeout passes, or once the task is cancelled, the shell and all
+	/// it started are stopped.
 	private func run() async -> String? {
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: shell)
-		process.arguments = ["-l", "-i", "-c", script]
-		process.environment = environment
-		process.standardInput = FileHandle.nullDevice
-		process.standardError = FileHandle.nullDevice
-		let output = Pipe()
-		process.standardOutput = output
+		var ends: [Int32] = [-1, -1]
+		guard pipe(&ends) == 0 else { return nil }
+		let output = FileHandle(fileDescriptor: ends[0], closeOnDealloc: true)
+		let started = spawn(writingTo: ends[1])
+		close(ends[1])
+		guard let pid = started else { return nil }
 		let collector = Collector()
-		output.fileHandleForReading.readabilityHandler = { handle in collector.append(handle.availableData) }
-		process.terminationHandler = { _ in collector.ended() }
-		do { try process.run() } catch {
-			output.fileHandleForReading.readabilityHandler = nil
-			return nil
+		output.readabilityHandler = { handle in collector.append(handle.availableData) }
+		// Waits for the shell to exit without reaping it: until it's reaped,
+		// its process ID, which names its process group, can't be reused.
+		Thread.detachNewThread {
+			var info = siginfo_t()
+			_ = waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT)
+			collector.ended()
 		}
 		let timer = Task {
 			try? await Task.sleep(for: timeout)
 			if !Task.isCancelled { collector.timedOut() }
 		}
-		let text = await collector.answer()
+		let text = await withTaskCancellationHandler {
+			await collector.answer()
+		} onCancel: {
+			collector.timedOut()
+		}
 		timer.cancel()
-		output.fileHandleForReading.readabilityHandler = nil
-		if process.isRunning { process.terminate() }
+		output.readabilityHandler = nil
+		Self.stop(pid)
 		return text
+	}
+
+	/// Starts the shell in a session of its own. With no terminal it runs no
+	/// job control, so all it starts stays in its process group, which
+	/// `stop(_:)` ends together.
+	private func spawn(writingTo output: Int32) -> pid_t? {
+		var actions: posix_spawn_file_actions_t?
+		posix_spawn_file_actions_init(&actions)
+		defer { posix_spawn_file_actions_destroy(&actions) }
+		posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+		posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO)
+		posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
+		var attributes: posix_spawnattr_t?
+		posix_spawnattr_init(&attributes)
+		defer { posix_spawnattr_destroy(&attributes) }
+		// Closes every other descriptor in the shell, LPM Vault's own included.
+		posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+		var pid: pid_t = 0
+		let status = Self.withCStrings([shell, "-l", "-i", "-c", script]) { arguments in
+			Self.withCStrings(environment.map { "\($0.key)=\($0.value)" }) { variables in
+				posix_spawn(&pid, shell, &actions, &attributes, arguments, variables)
+			}
+		}
+		return status == 0 ? pid : nil
+	}
+
+	/// Asks the shell's process group to stop, then, a second later, stops
+	/// whatever ignored that, and reaps the shell once nothing in its group
+	/// can be named by its process ID any more.
+	private static func stop(_ pid: pid_t) {
+		kill(-pid, SIGTERM)
+		Thread.detachNewThread {
+			Thread.sleep(forTimeInterval: 1)
+			kill(-pid, SIGKILL)
+			var status: Int32 = 0
+			while waitpid(pid, &status, 0) == -1, errno == EINTR {}
+		}
+	}
+
+	private static func withCStrings<Result>(_ strings: [String],
+		_ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>) -> Result) -> Result
+	{
+		let pointers = strings.map { strdup($0) } + [nil]
+		defer { for pointer in pointers { free(pointer) } }
+		return pointers.withUnsafeBufferPointer { body($0.baseAddress!) }
 	}
 
 	/// The shell's output as it arrives, answered once: when the version line

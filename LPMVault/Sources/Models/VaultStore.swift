@@ -1178,6 +1178,7 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      startBackupReminderIfNeeded()
       schemaReviews = [:]
       invalidateLocalStateRefresh()
       keyDrafts.receive(projects)
@@ -1293,6 +1294,7 @@ final class VaultStore {
   private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:] {
     didSet {
       if rawTextDrafts.count < oldValue.count {
+        shownRawTextEdits = shownRawTextEdits.filter { rawTextDrafts[$0] != nil }
         for target in rawTextCharacterChecks.keys where rawTextDrafts[target] == nil {
           rawTextCharacterTasks.removeValue(forKey: target)?.cancel()
           rawTextCharacterChecks[target] = nil
@@ -1507,6 +1509,10 @@ final class VaultStore {
   @ObservationIgnored var backupReminderNow: @Sendable () -> Date = { Date() }
   /// Finds the LPM CLI the person's shell runs, for Settings.
   @ObservationIgnored var locateCLI: @Sendable () async -> LPMCLIStatus = { await LPMCLILocator().locate() }
+  /// The LPM CLI as the shell last found it this session; nil until it's been asked.
+  private(set) var cliStatus: LPMCLIStatus?
+  /// Whether the shell is being asked for the LPM CLI now.
+  private(set) var isLocatingCLI = false
   /// Restored projects whose sync stays paused until their keys are recovered.
   private(set) var syncPauses: [String: VaultSyncPause]
   /// Whether a restore is writing, during which pauses exist before their projects.
@@ -2352,7 +2358,10 @@ final class VaultStore {
     self.schemaEditNow = schemaEditNow
     valueSearch.store = self
     settings.onChange = { [weak self] change in self?.settingChanged(change) }
-    valueAccess.onHide = { [weak self] in self?.history.hideRevealed() }
+    valueAccess.onHide = { [weak self] in
+      self?.history.hideRevealed()
+      self?.shownRawTextEdits = []
+    }
 
     #if DEBUG
       // Local-server selection is a debug-only developer convenience.
@@ -3878,6 +3887,32 @@ final class VaultStore {
 
   func rawTextDraft(for target: VaultEnvironmentTarget) -> VaultRawTextDraft? {
     rawTextDrafts[target]
+  }
+
+  /// The Raw text edits whose text shows. An edit holds every value of its
+  /// environment, so it shows as a reveal does, through the guard on values,
+  /// and hides as values are masked again, keeping the edit.
+  private(set) var shownRawTextEdits: Set<VaultEnvironmentTarget> = []
+
+  /// Edits the selected environment as Raw text, or goes back to its edit,
+  /// once the guard on values allows it.
+  func editRawText(order: [String]) {
+    guard let project = selectedProject else { return }
+    let target = VaultEnvironmentTarget(projectId: project.id, environment: selectedEnvironment)
+    valueAccess.reveal { [weak self] in
+      guard let self, self.selectedProject?.id == target.projectId, self.selectedEnvironment == target.environment,
+        self.beginRawTextEdit(order: order)
+      else { return }
+      self.shownRawTextEdits.insert(target)
+    }
+  }
+
+  /// Shows `target`'s hidden edit again, asking first when the guard says to.
+  func showRawTextEdit(_ target: VaultEnvironmentTarget) {
+    valueAccess.reveal { [weak self] in
+      guard let self, self.rawTextDrafts[target] != nil else { return }
+      self.shownRawTextEdits.insert(target)
+    }
   }
 
   /// Edits the selected environment as Raw text, from a line for each of its
@@ -5770,7 +5805,6 @@ final class VaultStore {
     }
     isUnlocked = true
     valueAccess.noteUnlocked()
-    startBackupReminderIfNeeded()
     unlockFailure = nil
     beginSelectedProjectLoadIfNeeded()
     // Locking forgot the list, and the page doesn't reopen to load it again.
@@ -6460,7 +6494,7 @@ final class VaultStore {
   /// or when the Keychain can't say.
   func historyUsage() async -> VaultHistoryUsage? {
     guard isUnlocked else { return nil }
-    guard case .success(let usage) = await persistence.historyUsage(), isUnlocked else { return nil }
+    guard case .success(let usage?) = await persistence.historyUsage(), isUnlocked else { return nil }
     return usage
   }
 
@@ -6482,8 +6516,20 @@ final class VaultStore {
     preferences.set(until, forKey: VaultBackupReminder.postponedKey)
   }
 
+  /// Asks the person's shell for the LPM CLI, unless it's being asked now.
+  /// The answer is kept for the session: starting a login shell runs its
+  /// startup files, too slow to repeat each time the CLI page shows.
+  func refreshCLIStatus() {
+    guard !isLocatingCLI else { return }
+    isLocatingCLI = true
+    Task {
+      cliStatus = await locateCLI()
+      isLocatingCLI = false
+    }
+  }
+
   /// Starts the first reminder's month when this Mac holds a project and
-  /// has never been backed up.
+  /// has never been backed up, whenever the first project arrives.
   private func startBackupReminderIfNeeded() {
     guard backupReminderStarted == nil, lastBackup == nil, !projects.isEmpty else { return }
     let now = backupReminderNow()

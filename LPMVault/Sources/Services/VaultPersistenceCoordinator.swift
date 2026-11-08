@@ -1634,7 +1634,7 @@ actor VaultPersistenceCoordinator {
 		service.removeFromHistoryResult(vaultId: vaultId, review: review, selection: selection)
 	}
 
-	func historyUsage() -> Result<VaultHistoryUsage, KeychainError> {
+	func historyUsage() -> Result<VaultHistoryUsage?, KeychainError> {
 		service.historyUsageResult()
 	}
 

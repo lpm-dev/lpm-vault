@@ -59,7 +59,7 @@ struct VaultSettingsContent: View {
 		case .appearance: settingsSection { VaultAppearanceSettingsSection() }
 		case .account: accountSections
 		case .cli:
-			settingsSection("LPM CLI") { VaultCLIStatusSettingsSection(locate: store.locateCLI) }
+			settingsSection("LPM CLI") { VaultCLIStatusSettingsSection(store: store) }
 			settingsSection("APPROVAL") { VaultCLIApprovalSettingsSection(settings: store.settings) }
 			settingsSection("LPM HOME") { VaultLPMHomeSettingsSection(store: store) }
 		case .backup:
