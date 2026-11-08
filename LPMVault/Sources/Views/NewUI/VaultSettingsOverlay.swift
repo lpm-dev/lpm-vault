@@ -73,7 +73,9 @@ struct VaultSettingsOverlay: View {
 			HStack(spacing: 10) {
 				Text("Settings")
 					.foregroundStyle(VaultPalette.textTertiary)
-				Text("/")
+				// The same chevron as every other path in the app, such as All Keys › Project Settings.
+				Image(systemName: "chevron.right")
+					.font(.system(size: 10, weight: .semibold))
 					.foregroundStyle(VaultPalette.textFaint)
 					.accessibilityHidden(true)
 				Text(category.title)
@@ -89,17 +91,9 @@ struct VaultSettingsOverlay: View {
 		.frame(height: Self.headerHeight)
 	}
 
+	/// The close every sheet has, so the overlay closes as they do.
 	private var closeButton: some View {
-		Button { store.closeAccountPage() } label: {
-			Image(systemName: "xmark")
-				.font(.system(size: 10, weight: .semibold))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.frame(width: 26, height: 26)
-				.background(Circle().fill(VaultPalette.neutralTint))
-		}
-		.buttonStyle(VaultPressStyle(shape: Circle()))
-		.help("Close (Esc)")
-		.accessibilityLabel("Close Settings")
+		VaultSheetCloseButton(label: "Close Settings") { store.closeAccountPage() }
 	}
 
 	private var menu: some View {

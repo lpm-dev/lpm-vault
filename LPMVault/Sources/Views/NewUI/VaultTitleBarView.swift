@@ -144,7 +144,12 @@ struct VaultTitleBarView: View {
 	private var breadcrumb: some View {
 		// The app's mark, then where the window is: the project and its environment, or the app's name without one.
 		HStack(spacing: 7) {
-			VaultAppMark(size: 18)
+			// The project's own icon, as the sidebar shows it; the app's mark only without one.
+			if let project {
+				VaultProjectIconView(appearance: store.projectIcons.appearance(for: project.id), size: 18)
+			} else {
+				VaultAppMark(size: 18)
+			}
 			if let project {
 				Text(project.name)
 					.font(.system(size: 13, weight: .semibold))

@@ -95,10 +95,11 @@ enum VaultPalette {
 	static let switchOffBorder = adaptive(light: 0x8E8E99, dark: 0x6E6E78)
 	/// Darkens a control while it's pressed, over whatever fill it has.
 	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
-	/// A default button while it's off: its accent, faded, so it keeps its place
-	/// beside Cancel; fainter in dark, where a faded accent still reads as on.
-	static let accentOff = adaptive(light: 0x5E5CE6, dark: 0x5E5CE6, lightOpacity: 0.4, darkOpacity: 0.2)
-	static let accentOffText = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightOpacity: 0.8, darkOpacity: 0.36)
+	/// A default button while it's off: the accent's tint, so it keeps its
+	/// place beside Cancel without passing for a working one, and its title in
+	/// the tint's text, faded, still legible at 3:1.
+	static let accentOff = accentTint
+	static let accentOffText = adaptive(light: 0x2E2C8A, dark: 0xD5D4FF, lightOpacity: 0.6, darkOpacity: 0.6)
 	/// What dims the window behind an overlay, such as Settings.
 	static let scrim = adaptive(light: 0x1C1C1E, dark: 0x000000, lightOpacity: 0.2, darkOpacity: 0.5)
 
@@ -207,6 +208,19 @@ extension Color {
 }
 
 extension View {
+	/// Fades the last `height` points of a scroll view's content into the
+	/// surface below it, so a line the edge cuts reads as more below rather
+	/// than sliced through. A mask, not an overlay: the surface shows through.
+	func vaultBottomFade(_ height: CGFloat = 16) -> some View {
+		mask {
+			VStack(spacing: 0) {
+				Color.black
+				LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+					.frame(height: height)
+			}
+		}
+	}
+
 	/// A settings-style page's column of cards: the page's inset, and no wider
 	/// than lines of text stay easy to read.
 	func vaultFormColumn() -> some View {

@@ -361,8 +361,8 @@ extension SheetInteractionTests {
 			// Inside each button's padding, clear of its title and of its edge.
 			let addFill = color(at: CGPoint(x: add.minX + 4, y: add.midY))
 			let cancelFill = color(at: CGPoint(x: cancel.minX + 4, y: cancel.midY))
-			#expect(addFill.blue - max(addFill.red, addFill.green) > 20, "Add Key is tinted with the accent: \(addFill)")
-			#expect(abs(addFill.blue - cancelFill.blue) + abs(addFill.red - cancelFill.red) > 30, "Add Key \(addFill), Cancel \(cancelFill)")
+			#expect(addFill.blue - max(addFill.red, addFill.green) > 10, "Add Key is tinted with the accent: \(addFill)")
+			#expect(abs(addFill.blue - cancelFill.blue) + abs(addFill.red - cancelFill.red) > 15, "Add Key \(addFill), Cancel \(cancelFill)")
 			if scheme == .dark {
 				// Its title, the whitest ink across the button's middle, is dimmed as disabled text is, not near white as a working button's.
 				var whitest = 0
@@ -374,6 +374,30 @@ extension SheetInteractionTests {
 			}
 			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.texts.contains { $0.contains("↩") } },
 				"Its shortcut waits until it's on")
+		}
+
+		@Test("a scroll view's content fades into the surface at its bottom edge, so a line cut there reads as more below")
+		func bottomFade() async throws {
+			let view = ScrollView { Color.black.frame(height: 600) }
+				.vaultBottomFade(16)
+				.frame(width: 120, height: 200)
+				.background(Color.white)
+			let host = SheetTestHost(view, size: NSSize(width: 120, height: 200), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			let image = try host.snapshot(host.view)
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+				space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			func red(atY y: CGFloat) -> Int {
+				let pixel = (Int((host.view.bounds.height - y) * scale) * image.width + Int(60 * scale)) * 4
+				return Int(pixels[pixel])
+			}
+			#expect(red(atY: 100) < 30, "The content shows as it is above the fade")
+			#expect(red(atY: 1) > 200, "At the very edge, the surface shows: \(red(atY: 1))")
+			#expect(red(atY: 8) > red(atY: 20), "And the fade runs toward it")
 		}
 
 		/// A stroked capsule drawn into a bitmap had short vertical marks at its

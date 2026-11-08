@@ -182,6 +182,8 @@ private struct VaultKeyEditor: View {
 				.padding(.bottom, VaultMetrics.scrollEndPadding)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
+			// History can run past the footer; its cut line fades instead of being sliced through.
+			.vaultBottomFade()
 			VaultHairline()
 			footer(draft, issue: issue)
 		}

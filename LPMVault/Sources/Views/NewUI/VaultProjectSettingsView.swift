@@ -338,7 +338,7 @@ struct VaultProjectSettingsView: View {
 	}
 
 	private var deleteRow: some View {
-		row("Delete locally") {
+		row("Delete from this Mac") {
 			Text("Removes the project, its Keychain values and its local history from this Mac. Its folder, its lpm.json and a synced cloud copy stay.")
 		} controls: {
 			VaultBarButton(title: "Delete Locally…", destructive: true, disabled: isSaving, height: 28, action: onDelete)
