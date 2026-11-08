@@ -8,6 +8,8 @@ struct VaultHistoryInspector: View {
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
 	@State private var failure: String?
+	/// The value whose More menu is showing.
+	@State private var openMenu: String?
 
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
@@ -15,29 +17,43 @@ struct VaultHistoryInspector: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			if let entry = history.selectedEntry {
-				ScrollView {
+				// The actions follow a short change directly, and stay in reach below a long one.
+				ViewThatFits(in: .vertical) {
 					VStack(alignment: .leading, spacing: 0) {
-						header(entry)
+						details(entry)
 						VaultHairline()
-						ForEach(Array(entry.environments.enumerated()), id: \.offset) { index, environment in
-							environmentSection(entry, environment: environment, index: index)
-						}
-						if let failure {
-							Text(failure)
-								.font(.system(size: 12))
-								.foregroundStyle(VaultPalette.redText)
-								.padding(16)
-						}
+						footer(entry)
+						Spacer(minLength: 0)
 					}
-					.padding(.bottom, VaultMetrics.scrollEndPadding)
+					VStack(spacing: 0) {
+						ScrollView {
+							details(entry).padding(.bottom, VaultMetrics.scrollEndPadding)
+						}
+						VaultHairline()
+						footer(entry)
+					}
 				}
-				.vaultScrollEndFade()
-				VaultHairline()
-				footer(entry)
 			}
 		}
 		.background(VaultPalette.inspector)
 		.onChange(of: history.selectedEntryID) { _, _ in failure = nil }
+	}
+
+	private func details(_ entry: HistoryEngine.Entry) -> some View {
+		VStack(alignment: .leading, spacing: 0) {
+			header(entry)
+			VaultHairline()
+			ForEach(Array(entry.environments.enumerated()), id: \.offset) { index, environment in
+				environmentSection(entry, environment: environment, index: index)
+			}
+			if let failure {
+				Text(failure)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.redText)
+					.padding(16)
+			}
+		}
+		.frame(maxWidth: .infinity, alignment: .leading)
 	}
 
 	private func header(_ entry: HistoryEngine.Entry) -> some View {
@@ -219,19 +235,16 @@ struct VaultHistoryInspector: View {
 							resting: !hovering) {
 							Task { await copy(valueSide) }
 						}
-						Menu {
-							Button("Remove from History…") {
-								Task { await reviewRemoval(entry: entry, environment: environment, key: key, side: sideName) }
-							}
-						} label: {
-							VaultMoreGlyph(resting: !hovering, size: 24)
+						let menuID = "\(environment)\u{0}\(key)\u{0}\(sideName)"
+						VaultRowIconButton(systemImage: "ellipsis", help: "More for the \(side) value of \(key)", compact: true,
+							resting: !hovering, active: openMenu == menuID) {
+							openMenu = openMenu == menuID ? nil : menuID
 						}
-						.menuStyle(.button)
-						.buttonStyle(VaultPressStyle(cornerRadius: 6))
-						.menuIndicator(.hidden)
-						.fixedSize()
-						.help("More for the \(side) value of \(key)")
-						.accessibilityLabel("More for the \(side) value of \(key)")
+						.vaultMenu(isPresented: Binding(get: { openMenu == menuID }, set: { if !$0, openMenu == menuID { openMenu = nil } }),
+							rows: [VaultMenuList<Int>.Row(id: 0, title: "Remove from History…", destructive: true)],
+							width: 220, label: "More for the \(side) value of \(key)") { _ in
+							Task { await reviewRemoval(entry: entry, environment: environment, key: key, side: sideName) }
+						}
 					}
 				}
 				.padding(.leading, hasValue ? 8 : 0)
@@ -255,19 +268,20 @@ struct VaultHistoryInspector: View {
 
 	/// Both ways back open a review, which holds the one filled button, so neither looks like the safe default here.
 	private func footer(_ entry: HistoryEngine.Entry) -> some View {
+		// The narrower action first: it touches only this change.
 		VStack(alignment: .leading, spacing: 14) {
+			VStack(alignment: .leading, spacing: 6) {
+				VaultBarButton(systemImage: "arrow.uturn.backward.circle", title: "Undo This Change…", height: 30, fillsWidth: true) {
+					Task { await review(.undo(entry: entry.id, only: nil)) }
+				}
+				footerNote("Reverses only this change and keeps the ones after it.")
+			}
 			VStack(alignment: .leading, spacing: 6) {
 				VaultBarButton(systemImage: "arrow.uturn.backward", title: "Roll Back to This Point…",
 					disabled: entry.environments.isEmpty, height: 30, fillsWidth: true) {
 					Task { await review(rollbackTarget(entry)) }
 				}
 				footerNote("Restores the values as they were just after this change, undoing every later one.")
-			}
-			VStack(alignment: .leading, spacing: 6) {
-				VaultBarButton(systemImage: "arrow.uturn.backward.circle", title: "Undo This Change…", height: 30, fillsWidth: true) {
-					Task { await review(.undo(entry: entry.id, only: nil)) }
-				}
-				footerNote("Reverses only this change and keeps the ones after it.")
 			}
 		}
 		.padding(16)

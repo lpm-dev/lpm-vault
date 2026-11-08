@@ -1,5 +1,25 @@
 import SwiftUI
 
+extension View {
+	/// Shows `rows` as a menu in the app's popover while `isPresented`, and
+	/// closes it as a row is chosen, before `onChoose` runs.
+	func vaultMenu<ID: Hashable>(
+		isPresented: Binding<Bool>, rows: [VaultMenuList<ID>.Row], width: CGFloat = 240, label: String,
+		arrowEdge: Edge = .bottom, onChoose: @escaping (ID) -> Void
+	) -> some View {
+		vaultPopover(isPresented: isPresented, arrowEdge: arrowEdge) {
+			VaultMenuList(rows: rows, width: width, label: label) { id in
+				isPresented.wrappedValue = false
+				onChoose(id)
+			}
+		}
+	}
+}
+
+/// The coordinate space a scrolling menu measures its rows in. Outside the
+/// generic list, so a geometry reader's sendable closure can name it.
+private let vaultMenuScrollSpace = "VaultMenuList.scroll"
+
 /// A menu's choices in a popover, drawn as the app's other lists are: the row
 /// under the pointer or the arrow keys tinted, a title on the leading side and
 /// what it needs, or its shortcut, on the trailing side, grouped under
@@ -15,6 +35,14 @@ struct VaultMenuList<ID: Hashable>: View {
 		var isEnabled = true
 		/// The section label the row starts, when it starts one.
 		var section: String?
+		/// Starts a group without a label, after a line.
+		var separated = false
+		/// Marks the row as the current choice, as a menu of options does.
+		var isChecked = false
+		/// A symbol before the title.
+		var systemImage: String?
+		/// Draws the title in red, for a row that deletes or removes.
+		var destructive = false
 	}
 
 	let rows: [Row]
@@ -30,9 +58,17 @@ struct VaultMenuList<ID: Hashable>: View {
 
 	@Environment(\.vaultPopoverDismiss) private var dismiss
 	@State private var highlighted: ID?
+	/// Where the rows sit in a menu that scrolls, against its visible height.
+	@State private var scrolledFrame: CGRect = .zero
+	@State private var visibleHeight: CGFloat = 0
+
+	/// The strips above and below a menu that scrolls, which point to the rows past them.
+	private static var scrollCue: CGFloat { 14 }
 
 	var body: some View {
 		let columnRows = Self.columns(of: rows, count: columns)
+		// A menu of options keeps a column for the check, so titles line up whichever is chosen.
+		let checks = rows.contains(where: \.isChecked)
 		let list = HStack(alignment: .top, spacing: 6) {
 			ForEach(columnRows.indices, id: \.self) { index in
 				VStack(alignment: .leading, spacing: 1) {
@@ -44,8 +80,13 @@ struct VaultMenuList<ID: Hashable>: View {
 								.padding(.top, row.id == columnRows[index].first?.id ? 4 : 10)
 								.padding(.bottom, 3)
 								.accessibilityAddTraits(.isHeader)
+						} else if row.separated, row.id != columnRows[index].first?.id {
+							VaultHairline()
+								.padding(.horizontal, 10)
+								.padding(.vertical, 5)
+								.accessibilityHidden(true)
 						}
-						rowView(row)
+						rowView(row, checks: checks)
 					}
 				}
 				.frame(maxWidth: .infinity, alignment: .topLeading)
@@ -55,11 +96,20 @@ struct VaultMenuList<ID: Hashable>: View {
 		CappedHeight(maximum: maximumHeight) {
 			ViewThatFits(in: .vertical) {
 				list
-				ScrollViewReader { proxy in
-					ScrollView { list }
+				// Its own strips, as a long menu's, so a row is never hidden under them.
+				VStack(spacing: 0) {
+					scrollCue(pointing: .top, shown: scrolledFrame.minY < -0.5)
+					ScrollViewReader { proxy in
+						ScrollView {
+							list.onGeometryChange(for: CGRect.self) { $0.frame(in: .named(vaultMenuScrollSpace)) } action: { scrolledFrame = $0 }
+						}
+						.coordinateSpace(name: vaultMenuScrollSpace)
+						.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }
 						.onChange(of: highlighted) { _, id in
 							if let id { proxy.scrollTo(id) }
 						}
+					}
+					scrollCue(pointing: .bottom, shown: scrolledFrame.maxY > visibleHeight + 0.5)
 				}
 			}
 		}
@@ -81,19 +131,44 @@ struct VaultMenuList<ID: Hashable>: View {
 		.accessibilityLabel(label)
 	}
 
-	private func rowView(_ row: Row) -> some View {
+	private func scrollCue(pointing edge: VerticalEdge, shown: Bool) -> some View {
+		Image(systemName: edge == .top ? "chevron.up" : "chevron.down")
+			.font(.system(size: 8, weight: .bold))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.opacity(shown ? 1 : 0)
+			.frame(maxWidth: .infinity)
+			.frame(height: Self.scrollCue)
+			.accessibilityHidden(true)
+	}
+
+	private func rowView(_ row: Row, checks: Bool) -> some View {
 		let isHighlighted = highlighted == row.id && row.isEnabled
 		return Button { onChoose(row.id) } label: {
-			HStack(spacing: 10) {
+			HStack(spacing: 8) {
+				if checks {
+					Image(systemName: "checkmark")
+						.font(.system(size: 10, weight: .semibold))
+						.foregroundStyle(row.isChecked ? VaultPalette.textPrimary : .clear)
+						.frame(width: 12)
+						.accessibilityHidden(true)
+				}
+				if let systemImage = row.systemImage {
+					Image(systemName: systemImage)
+						.font(.system(size: 11))
+						.foregroundStyle(row.isEnabled ? VaultPalette.textSecondary : VaultPalette.textFaint)
+						.frame(width: 14)
+						.accessibilityHidden(true)
+				}
 				Text(row.title)
 					.font(.system(size: 12.5))
-					.foregroundStyle(row.isEnabled ? VaultPalette.textPrimary : VaultPalette.textFaint)
+					.foregroundStyle(!row.isEnabled ? VaultPalette.textFaint : (row.destructive ? VaultPalette.redText : VaultPalette.textPrimary))
 					.lineLimit(1)
-				Spacer(minLength: 12)
+				Spacer(minLength: 4)
 				if let detail = row.detail {
 					Text(detail)
 						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: 11))
-						.foregroundStyle(row.isEnabled ? VaultPalette.textTertiary : VaultPalette.textFaint)
+						// A row that can't be chosen says why, so its reason stays readable.
+						.foregroundStyle(VaultPalette.textTertiary)
 						.lineLimit(1)
 				}
 			}
@@ -116,7 +191,7 @@ struct VaultMenuList<ID: Hashable>: View {
 		.id(row.id)
 		.accessibilityLabel(row.title)
 		.accessibilityHint(row.detail ?? "")
-		.accessibilityAddTraits(isHighlighted ? .isSelected : [])
+		.accessibilityAddTraits(row.isChecked ? .isSelected : [])
 	}
 
 	/// `rows` split into at most `count` columns at section starts, keeping

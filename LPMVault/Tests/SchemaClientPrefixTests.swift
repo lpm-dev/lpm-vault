@@ -450,9 +450,10 @@ extension SheetInteractionTests {
 			try await host.click("Client prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("WIDGET_", in: popover))
-			try host.typeText("API_", placeholder: "NEW_PREFIX_", in: popover)
+			#expect(try await host.waitForText("2 of 32 custom prefixes", in: popover))
+			try host.typeText("API_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("is Secret", in: popover))
-			try host.typeText("ACME_PUBLIC_", placeholder: "NEW_PREFIX_", in: popover)
+			try host.typeText("ACME_PUBLIC_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
 			try await host.click("Add", in: popover)
 			#expect(try await host.waitUntil {
@@ -461,6 +462,12 @@ extension SheetInteractionTests {
 					&& draft?.declaration(of: .key("ACME_PUBLIC_CDN")).json?["client"] == .bool(true)
 			})
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-prefixes")?.rejection == nil && store.currentSchemaDraftEvaluation(for: "schema-prefixes") != nil })
+			#expect(try await host.waitForText("3 of 32 custom prefixes", in: popover), "lpm.json's two and the imported SHOP_")
+			try await host.click("Review & save…", in: popover)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The popover's Review & save opens the review")
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
+			#expect(try await host.waitUntil { !popover.isVisible }, "The review takes over from the popover")
 		}
 
 		/// A text field takes Esc for completion, so it never reached the popover.
@@ -475,7 +482,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { !popover.isVisible }, "Esc closes the popover as it opens")
 			try await host.click("Client prefixes")
 			let reopened = try await host.popoverWindow()
-			try host.typeText("ACME_", placeholder: "NEW_PREFIX_", in: reopened)
+			try host.typeText("ACME_", placeholder: "e.g. PUBLIC_", in: reopened)
 			try host.key("\u{1b}", code: 53, in: reopened)
 			#expect(try await host.waitUntil { !reopened.isVisible }, "Esc closes the popover while its field is being edited")
 			#expect(store.isUnlocked)
@@ -488,14 +495,14 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Client prefixes")
 			let popover = try await host.popoverWindow()
-			try host.typeText("ACME_PUBLIC_", placeholder: "NEW_PREFIX_", in: popover)
+			try host.typeText("ACME_PUBLIC_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
 			// No render between the new text and Return: the change shown is still ACME_PUBLIC_'s.
-			try host.typeText("ACME_PUBLIC_EXTRA", placeholder: "NEW_PREFIX_", in: popover)
+			try host.typeText("ACME_PUBLIC_EXTRA", placeholder: "e.g. PUBLIC_", in: popover)
 			try host.pressWhileEditing("\r", code: 36, in: popover)
 			try await host.settle()
 			#expect(store.schemaDraft(for: "schema-prefixes") == nil, "A prefix without its underscore isn't added")
-			try host.typeText("ACME_PUBLIC_", placeholder: "NEW_PREFIX_", in: popover)
+			try host.typeText("ACME_PUBLIC_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
 			try host.pressWhileEditing("\r", code: 36, in: popover)
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-prefixes").map(ProjectEnvSchemaClientPrefixes.own(in:)) == ["WIDGET_", "ACME_PUBLIC_"] })
@@ -586,14 +593,14 @@ extension SheetInteractionTests {
 			let gate = EvaluationGate()
 			defer { gate.open() }
 			store.schemaDraftEvaluator = gate.evaluator()
-			try host.typeText("ACME_PUBLIC_", placeholder: "NEW_PREFIX_", in: popover)
+			try host.typeText("ACME_PUBLIC_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
 			try host.pressWhileEditing("\r", code: 36, in: popover)
 			#expect(try await host.waitUntil { store.schemaPrefixAvailability(for: "schema-prefixes") == .checking })
 			try await host.settle()
 			#expect(try await host.text(in: popover).contains("SHOP_"), "The imported prefix stays while the draft is checked")
 			#expect(store.schemaPrefixAvailability(for: "schema-prefixes") == .checking)
-			#expect(host.isEditing(placeholder: "NEW_PREFIX_", in: popover), "The field keeps focus")
+			#expect(host.isEditing(placeholder: "e.g. PUBLIC_", in: popover), "The field keeps focus")
 		}
 
 		@Test("a key lpm.json declares that a prefix marks has nothing to discard, and says why it changed")

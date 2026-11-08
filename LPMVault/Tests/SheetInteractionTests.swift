@@ -106,6 +106,11 @@ enum NativeTestClick {
 	}
 }
 
+extension NSTextField {
+	/// The placeholder as drawn: SwiftUI sets a styled prompt as attributed text only.
+	var shownPlaceholder: String? { placeholderAttributedString?.string ?? placeholderString }
+}
+
 @MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView
@@ -520,7 +525,7 @@ final class SheetTestHost<V: View> {
 
 	/// Types into the plain text field showing `placeholder`, replacing its text.
 	func enterText(_ text: String, placeholder: String) throws {
-		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		let field = try #require(textFields(in: view).first { $0.shownPlaceholder == placeholder }, "Missing field \(placeholder)")
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -533,7 +538,7 @@ final class SheetTestHost<V: View> {
 	func typeText(_ text: String, placeholder: String, in targetWindow: NSWindow? = nil) throws {
 		let window = targetWindow ?? self.window
 		let root = try #require(window.contentView)
-		let field = try #require(textFields(in: root).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		let field = try #require(textFields(in: root).first { $0.shownPlaceholder == placeholder }, "Missing field \(placeholder)")
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -553,18 +558,18 @@ final class SheetTestHost<V: View> {
 
 	/// Whether a plain text field shows `placeholder`.
 	func hasField(placeholder: String) -> Bool {
-		textFields(in: view).contains { $0.placeholderString == placeholder }
+		textFields(in: view).contains { $0.shownPlaceholder == placeholder }
 	}
 
 	/// The text of the field showing `placeholder`.
 	func fieldText(placeholder: String) -> String? {
-		textFields(in: view).first { $0.placeholderString == placeholder }?.stringValue
+		textFields(in: view).first { $0.shownPlaceholder == placeholder }?.stringValue
 	}
 
 	/// Whether the field showing `placeholder` is being edited, in the host's window or `targetWindow`.
 	func isEditing(placeholder: String, in targetWindow: NSWindow? = nil) -> Bool {
 		let window = targetWindow ?? self.window
-		guard let root = window.contentView, let field = textFields(in: root).first(where: { $0.placeholderString == placeholder }),
+		guard let root = window.contentView, let field = textFields(in: root).first(where: { $0.shownPlaceholder == placeholder }),
 			let editor = field.currentEditor()
 		else { return false }
 		return window.firstResponder === editor
@@ -649,45 +654,6 @@ final class SheetTestHost<V: View> {
 		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + control.rawValue, y: frame.midY))
 	}
 
-	/// Bounds, in points from the bottom-left, of everything drawn over the solid
-	/// background within the bottom `band` points, leaving out the last `trailing`
-	/// points of each row, plus the text said there.
-	func bottomInk(band: CGFloat, ignoringTrailing trailing: CGFloat = 0) async throws -> (bounds: CGRect, text: AccessibleText) {
-		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
-		let scale = CGFloat(image.width) / view.bounds.width
-		let width = image.width, height = image.height
-		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-		context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-		// Bitmap memory starts with the top row. Sample the background mid-band and
-		// skip the window's rounded corners.
-		let margin = Int(12 * scale)
-		let sample = ((height / 2) * width + margin) * 4
-		let red = Int(pixels[sample]), green = Int(pixels[sample + 1]), blue = Int(pixels[sample + 2])
-		var minX = Int.max, maxX = Int.min, minTop = Int.max, maxTop = Int.min
-		for top in 0..<height {
-			var pixel = (top * width + margin) * 4
-			for column in margin..<(width - max(margin, Int(trailing * scale))) {
-				let difference = abs(Int(pixels[pixel]) - red) + abs(Int(pixels[pixel + 1]) - green) + abs(Int(pixels[pixel + 2]) - blue)
-				if difference > 24 {
-					if column < minX { minX = column }
-					if column > maxX { maxX = column }
-					if top < minTop { minTop = top }
-					if top > maxTop { maxTop = top }
-				}
-				pixel += 4
-			}
-		}
-		try #require(minX <= maxX, "Nothing drawn in the bottom \(band) points")
-		let bounds = CGRect(
-			x: CGFloat(minX) / scale,
-			y: CGFloat(height - 1 - maxTop) / scale,
-			width: CGFloat(maxX - minX + 1) / scale,
-			height: CGFloat(maxTop - minTop + 1) / scale
-		)
-		return (bounds, AccessibilityTree.text(in: view, root: window, area: bottomBand(of: view, height: band)))
-	}
-
 	/// The line saying `label` within `rect` (view coordinates).
 	func line(containing label: String, rect: NSRect) async throws -> String {
 		let text = AccessibilityTree.text(in: view, root: window, area: rect)
@@ -724,7 +690,7 @@ final class SheetTestHost<V: View> {
 
 	/// The editable text field showing `placeholder`.
 	func textField(placeholder: String) -> NSTextField? {
-		textFields(in: view).first { $0.placeholderString == placeholder }
+		textFields(in: view).first { $0.shownPlaceholder == placeholder }
 	}
 
 	/// Editable text fields in reading order: top to bottom, then left to right.
@@ -844,19 +810,18 @@ struct SheetInteractionTests {
 		#expect(try await host.waitUntil { store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new" })
 	}
 
-	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
-	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
+	@Test("the lock screen's encryption note sits centered just under Unlock, on the card with it", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
+	func lockScreenNote(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
 		store.lock()
 		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size, keepsRequestedSize: true)
 		defer { host.window.close() }
 		try await host.settle()
-		// Past the Settings button in the bottom-right corner.
-		let note = try await host.bottomInk(band: 60, ignoringTrailing: 48)
 		#expect(host.view.bounds.size == size)
-		#expect(note.text.contains("Values stay encrypted"))
-		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
-		#expect((15...28).contains(note.bounds.minY))
+		let note = try await host.drawnFrame(saying: "Values stay encrypted on this Mac until you unlock.")
+		let button = try await host.drawnFrame(saying: "Unlock")
+		#expect(abs(note.midX - host.view.bounds.width / 2) < 3, "The note is centered: \(note)")
+		#expect(note.maxY < button.minY && button.minY - note.maxY < 60, "The note sits just under Unlock: \(note) \(button)")
 		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
 		let unlock = try await host.line(containing: "Unlock", rect: center)
 		#expect(unlock.range(of: #"Unlock\W+⌘L"#, options: .regularExpression) != nil, "The Unlock button says \(unlock)")

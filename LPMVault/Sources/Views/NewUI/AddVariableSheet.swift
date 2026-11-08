@@ -283,11 +283,12 @@ struct AddVariableSheet: View {
 				if let rule = overview?.rule(for: draft.key) {
 					ruleSummary(rule)
 				} else {
-					VaultTagBadge(
-						text: "SECRET",
-						foreground: VaultPalette.textSecondary,
-						background: VaultPalette.neutralTint
-					)
+					// A fact about where the value goes, said as the inspector says it, not a chip that looks like a switch.
+					HStack(spacing: 4) {
+						Image(systemName: "lock.fill").font(.system(size: 8.5, weight: .semibold)).accessibilityHidden(true)
+						Text("Encrypted on this Mac").font(.system(size: 11))
+					}
+					.foregroundStyle(VaultPalette.textTertiary)
 				}
 				Spacer()
 				if !value.isEmpty, overview?.rule(for: draft.key)?.hasLengthRule == true {

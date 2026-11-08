@@ -107,18 +107,15 @@ struct VaultHistoryView: View {
 	}
 
 	private var environmentMenu: some View {
-		VaultBarMenu(accessibilityLabel: "Environment, \(history.filter.environment ?? "All environments")", field: true) {
-			Button("All environments") { setEnvironment(nil) }
-			if let environments = history.timeline?.environments, !environments.isEmpty {
-				Divider()
-				ForEach(environments, id: \.name) { environment in
-					Button(environment.deletedAt == nil ? environment.name : "\(environment.name) (deleted)") {
-						setEnvironment(environment.name)
-					}
-				}
+		let current = history.filter.environment
+		let environments = history.timeline?.environments ?? []
+		let rows: [VaultMenuList<String?>.Row] = [.init(id: nil, title: "All environments", isChecked: current == nil)]
+			+ environments.enumerated().map { index, environment in
+				.init(id: environment.name, title: environment.name, detail: environment.deletedAt == nil ? nil : "deleted",
+					separated: index == 0, isChecked: current == environment.name)
 			}
-		} label: {
-			Text(history.filter.environment ?? "All environments")
+		return VaultBarMenu(accessibilityLabel: "Environment, \(current ?? "All environments")", rows: rows, onChoose: setEnvironment) {
+			Text(current ?? "All environments")
 				.font(.system(size: 12.5, weight: .medium))
 		}
 	}
@@ -128,17 +125,14 @@ struct VaultHistoryView: View {
 		let selected = VaultHistoryText.sources.first { $0.0 == history.filter.source }?.1 ?? "All"
 		let title = history.filter.source == nil ? "All sources" : selected
 		let selectedCount = count(history.filter.source)
-		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")", field: true) {
-			ForEach(VaultHistoryText.sources, id: \.1) { source, name in
-				Button {
-					history.filter.source = source
-					Task { await history.reload() }
-				} label: {
-					let label = source == nil ? "All sources" : name
-					Text(count(source).map { "\(label)  \($0)" } ?? label)
-				}
-				if source == nil { Divider() }
-			}
+		let rows = VaultHistoryText.sources.enumerated().map { index, entry in
+			VaultMenuList<VaultLocalHistory.Source?>.Row(
+				id: entry.0, title: entry.0 == nil ? "All sources" : entry.1, detail: count(entry.0).map { "\($0)" },
+				detailIsShortcut: true, separated: index == 1, isChecked: history.filter.source == entry.0)
+		}
+		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")", rows: rows) { source in
+			history.filter.source = source
+			Task { await history.reload() }
 		} label: {
 			HStack(spacing: 6) {
 				Text(title).font(.system(size: 12.5, weight: .medium))
@@ -372,7 +366,11 @@ struct VaultHistoryView: View {
 							.foregroundStyle(badge.foreground)
 							.labelStyle(.titleAndIcon)
 					} else {
-						VaultTagBadge(text: badge.text, foreground: badge.foreground, background: badge.background)
+						// Where a change came from reads after its time, as words, not one more chip on the row.
+						Text(badge.text)
+							.font(.system(size: 12))
+							.foregroundStyle(badge.foreground)
+							.lineLimit(1)
 					}
 				}
 				.frame(width: 88, alignment: .leading)

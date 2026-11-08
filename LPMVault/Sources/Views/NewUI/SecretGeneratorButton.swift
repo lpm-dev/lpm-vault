@@ -73,6 +73,8 @@ struct SecretGeneratorPanel: View {
 	@Binding var length: Int
 	let onGenerate: () -> Void
 
+	@State private var choosingLength = false
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
 			Text("GENERATE VALUE")
@@ -143,18 +145,18 @@ struct SecretGeneratorPanel: View {
 					.accessibilityLabel("\(preset) \(kind.lengthUnit?.label ?? "")")
 				}
 				segmentDivider
-				Menu {
-					ForEach(SecretValueGenerator.additionalLengths, id: \.self) { option in
-						Button("\(option)") { select(length: option) }
-					}
-				} label: {
+				Button { choosingLength.toggle() } label: {
 					segmentLabel(customLengthLabel, selected: !SecretValueGenerator.presetLengths.contains(length))
 				}
-				.menuStyle(.button)
 				.buttonStyle(.plain)
-				.menuIndicator(.hidden)
 				.fixedSize()
 				.accessibilityLabel("Other length")
+				.accessibilityHint("Shows a menu")
+				.vaultMenu(isPresented: $choosingLength, rows: SecretValueGenerator.additionalLengths.map {
+					VaultMenuList<Int>.Row(id: $0, title: "\($0)", detail: kind.lengthUnit?.label, isChecked: $0 == length)
+				}, width: 160, label: "Other length") { option in
+					select(length: option)
+				}
 			}
 			.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.clipShape(RoundedRectangle(cornerRadius: 6))

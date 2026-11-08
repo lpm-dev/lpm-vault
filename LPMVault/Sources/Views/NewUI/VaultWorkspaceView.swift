@@ -116,11 +116,16 @@ struct VaultWorkspaceView: View {
 	/// ⌘S with the side panel closed: opens the review when there's a draft
 	/// and nothing blocks it; returns whether it did.
 	private func reviewSchemaFromPage(in project: VaultProject) -> Bool {
-		guard !schemaPanelVisible, (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0, store.canEditSchema(of: project.id),
-			VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil)?.blocksReview != true
-		else { return false }
+		guard canReviewSchema(in: project) else { return false }
 		schemaReview = SchemaReviewTarget(projectID: project.id)
 		return true
+	}
+
+	/// Whether the page can open the review: there's a draft, nothing blocks
+	/// it, and no side panel is open, whose own footer reviews what it holds.
+	private func canReviewSchema(in project: VaultProject) -> Bool {
+		!schemaPanelVisible && (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0 && store.canEditSchema(of: project.id)
+			&& VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil)?.blocksReview != true
 	}
 
 	/// Moves the side panel's selection through `rows`, the table's order. A
@@ -403,7 +408,9 @@ struct VaultWorkspaceView: View {
 								onAddKey: { selectSchema(.newKey) },
 								onAddGroup: { selectSchema(.newGroup) },
 								clientPrefixCount: store.schemaClientPrefixesInEffect(for: project.id).count,
-								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
+								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(
+									store: store, project: project, onOpenKey: { selectSchema(.key($0)) },
+									onReview: canReviewSchema(in: project) ? { schemaReview = SchemaReviewTarget(projectID: project.id) } : nil)),
 								storedKeyCount: store.workspaceSnapshots[project.id]?.allSecretKeys.count ?? 0,
 								failures: schemaFailures(in: project),
 								saveFailed: VaultSchemaEditorFooter.saveFailure(store: store, projectID: project.id) != nil,

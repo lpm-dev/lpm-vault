@@ -398,4 +398,11 @@ struct VaultValueTextTests {
 		#expect(VaultValueText.withoutScheme("https://") == nil)
 		#expect(VaultValueText.withoutScheme("not a url: https://example.com") == nil, "Only a value that begins with a scheme is a URL")
 	}
+
+	@Test("a narrow cell drops a passing URL's scheme, but a failing URL keeps it, since the scheme can be why it fails")
+	func failingURLKeepsScheme() {
+		#expect(VaultValueText.compactForm(of: "https://api.acme.io", masked: false, fails: false) == "api.acme.io")
+		#expect(VaultValueText.compactForm(of: "http://localhost:3000", masked: false, fails: true) == nil)
+		#expect(VaultValueText.compactForm(of: "https://api.acme.io", masked: true, fails: false) == nil, "A hidden value has no URL to show")
+	}
 }

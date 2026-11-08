@@ -65,6 +65,8 @@ enum VaultPalette {
 	static let rowHover = adaptive(light: 0xF8F8FA, dark: 0x212124)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
+	/// A band that starts a section inside a list, set off from the rows on both sides.
+	static let sectionBand = adaptive(light: 0xF4F4F7, dark: 0x19191C)
 	/// A menu row under the pointer or the arrow keys: a step up from the popover's card in both appearances.
 	static let menuHighlight = adaptive(light: 0xE9E9EE, dark: 0x37373D)
 	static let sidebarHover = adaptive(light: 0xEDEDF1, dark: 0x202023)
@@ -78,8 +80,8 @@ enum VaultPalette {
 	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
 	/// A switch's track while it's off: visible on every surface, with its own edge.
-	static let switchOff = adaptive(light: 0xE4E3E9, dark: 0x3A3A3F)
-	static let switchOffBorder = adaptive(light: 0xCFCED6, dark: 0x4A4A50)
+	static let switchOff = adaptive(light: 0xD9D8DF, dark: 0x3A3A3F)
+	static let switchOffBorder = adaptive(light: 0xBEBDC6, dark: 0x4A4A50)
 	/// Darkens a control while it's pressed, over whatever fill it has.
 	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
 
@@ -137,13 +139,11 @@ enum VaultMetrics {
 	static let fileRow: CGFloat = 44
 	static let statusBar: CGFloat = 30
 	static let keyColumn: CGFloat = 270
-	/// How far a scroll view's content fades before a pinned footer.
-	static let scrollEndFade: CGFloat = 24
-	/// The padding after a scroll view's content that keeps its end clear of the fade.
+	/// The space after a scroll view's content, so its end scrolls clear of a pinned footer's line.
 	static let scrollEndPadding: CGFloat = 32
 	static let environmentColumn: CGFloat = 190
 	static let environmentValueColumn: CGFloat = 280
-	static let environmentActionsColumn: CGFloat = 132
+	static let environmentActionsColumn: CGFloat = 142
 	/// The widest a settings-style page's column of cards grows.
 	static let formWidth: CGFloat = 720
 	/// Below this window width, opening the inspector hides the sidebar, so the
@@ -206,6 +206,14 @@ extension View {
 			.foregroundStyle(VaultPalette.textSecondary)
 	}
 
+	/// A section's band inside a list: its own fill, with a line on each
+	/// edge that takes the place of the row line above it.
+	func vaultSectionBand() -> some View {
+		background(VaultPalette.sectionBand)
+			.overlay(alignment: .top) { VaultHairline().offset(y: -1) }
+			.overlay(alignment: .bottom) { VaultHairline() }
+	}
+
 	func vaultSectionLabel(_ color: Color = VaultPalette.textQuaternary) -> some View {
 		font(VaultTypography.sectionLabel)
 			.tracking(0.5)
@@ -265,19 +273,6 @@ private struct VaultPointingHand: ViewModifier {
 }
 
 extension View {
-	/// Fades a scroll view's content out over its last points, so content that
-	/// runs on under a pinned footer reads as continuing rather than cut off.
-	/// It needs `VaultMetrics.scrollEndPadding` inside the scroll view, so
-	/// nothing but space is faded once the content's end is in view.
-	func vaultScrollEndFade(_ height: CGFloat = VaultMetrics.scrollEndFade) -> some View {
-		mask {
-			VStack(spacing: 0) {
-				Color.black
-				LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
-					.frame(height: height)
-			}
-		}
-	}
 
 	/// Hides the view but keeps its space, so neighboring controls don't move.
 	func hidden(_ isHidden: Bool) -> some View {
@@ -568,7 +563,8 @@ struct VaultBarButton: View {
 	}
 
 	private var background: Color {
-		if disabled { return filled ? VaultPalette.neutralTint : .clear }
+		// Off, even a filled button is only outlined, so it never passes for a working secondary one.
+		if disabled { return .clear }
 		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
 		if active { return VaultPalette.selectedFill }
@@ -579,7 +575,7 @@ struct VaultBarButton: View {
 	private var border: Color {
 		if filled && !disabled { return .clear }
 		if active { return VaultPalette.selectedBorder }
-		if disabled && !filled && !borderless { return VaultPalette.border.opacity(0.6) }
+		if disabled && !borderless { return VaultPalette.border }
 		return borderless ? .clear : VaultPalette.border
 	}
 
@@ -588,10 +584,11 @@ struct VaultBarButton: View {
 			HStack(spacing: 6) {
 				if let leadingDot { VaultStatusDot(color: leadingDot) }
 				if let systemImage {
-					Image(systemName: systemImage).font(.system(size: 11.5, weight: .medium))
+					Image(systemName: systemImage).font(.system(size: 11.5, weight: borderless ? .regular : .medium))
 				}
 				if let title {
-					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : .medium))
+					// A borderless button is chrome, so it reads quieter than the page it serves.
+					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : (borderless ? .regular : .medium)))
 				}
 				if let shortcut {
 					Text(shortcut)
@@ -600,6 +597,7 @@ struct VaultBarButton: View {
 				}
 			}
 			.foregroundStyle(foreground)
+			.opacity(disabled ? 0.75 : 1)
 			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
 			.frame(minWidth: title == nil ? height : nil, maxWidth: fillsWidth ? .infinity : nil)
 			.frame(height: height)
@@ -614,54 +612,56 @@ struct VaultBarButton: View {
 	}
 }
 
-/// A control that opens a menu, drawn like a `VaultBarButton` with a chevron after its label.
-struct VaultBarMenu<Items: View, Label: View>: View {
+/// A control that opens a menu of `rows` in the app's popover, drawn like a
+/// `VaultBarButton` with a chevron after its label.
+struct VaultBarMenu<ID: Hashable, Label: View>: View {
 	let accessibilityLabel: String
 	/// Drawn without a border or fill until the pointer is over it, as in the title bar.
 	var borderless = false
-	/// Edged like a text field, for a row of filters it shares with one.
-	var field = false
 	var height: CGFloat = 28
-	let items: Items
+	var menuWidth: CGFloat = 240
+	let rows: [VaultMenuList<ID>.Row]
+	let onChoose: (ID) -> Void
 	let label: Label
 
+	@Environment(\.isEnabled) private var isEnabled
 	@State private var hovering = false
+	@State private var isOpen = false
 
-	init(accessibilityLabel: String, borderless: Bool = false, field: Bool = false, height: CGFloat = 28,
-		@ViewBuilder items: () -> Items, @ViewBuilder label: () -> Label) {
+	init(accessibilityLabel: String, borderless: Bool = false, height: CGFloat = 28, menuWidth: CGFloat = 240,
+		rows: [VaultMenuList<ID>.Row], onChoose: @escaping (ID) -> Void, @ViewBuilder label: () -> Label) {
 		self.accessibilityLabel = accessibilityLabel
 		self.borderless = borderless
-		self.field = field
 		self.height = height
-		self.items = items()
+		self.menuWidth = menuWidth
+		self.rows = rows
+		self.onChoose = onChoose
 		self.label = label()
 	}
 
 	var body: some View {
-		Menu {
-			items
-		} label: {
+		let lit = (hovering || isOpen) && isEnabled
+		Button { isOpen.toggle() } label: {
 			HStack(spacing: 6) {
 				label
 				Image(systemName: "chevron.down")
 					.font(.system(size: 8, weight: .bold))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			.foregroundStyle(borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary)
+			.foregroundStyle(!isEnabled ? VaultPalette.textFaint : (borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary))
 			.padding(.horizontal, borderless ? 8 : 11)
 			.frame(height: height)
-			.background(RoundedRectangle(cornerRadius: 7).fill(hovering ? VaultPalette.controlHover : (borderless ? .clear : VaultPalette.control)))
-			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(borderless ? .clear : (field ? VaultPalette.inputBorder : VaultPalette.border), lineWidth: 1) }
-			.vaultHoverAnimation(hovering)
-			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
-			.accessibilityElement(children: .combine)
+			.background(RoundedRectangle(cornerRadius: 7).fill(lit ? VaultPalette.controlHover : (borderless ? .clear : VaultPalette.control)))
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(borderless ? .clear : VaultPalette.border, lineWidth: 1) }
+			.vaultHoverAnimation(lit)
+			.contentShape(Rectangle())
 		}
-		.menuStyle(.button)
 		.buttonStyle(VaultPressStyle())
-		.menuIndicator(.hidden)
 		.fixedSize()
 		.onHover { hovering = $0 }
 		.accessibilityLabel(accessibilityLabel)
+		.accessibilityHint("Shows a menu")
+		.vaultMenu(isPresented: $isOpen, rows: rows, width: menuWidth, label: accessibilityLabel, onChoose: onChoose)
 	}
 }
 
@@ -694,7 +694,7 @@ struct VaultOutlineButton: View {
 			HStack(spacing: 6) {
 				if let systemImage {
 					Image(systemName: systemImage)
-						.font(.system(size: 11.5, weight: .medium))
+						.font(.system(size: 11.5, weight: borderless ? .regular : .medium))
 						.frame(width: 14)
 				}
 				if let title {
@@ -702,7 +702,8 @@ struct VaultOutlineButton: View {
 						ForEach(reservedTitles, id: \.self) { Text($0).hidden().accessibilityHidden(true) }
 						Text(title)
 					}
-					.font(.system(size: 12.5, weight: .medium))
+					// One weight in every state, so a title that changes, as Copy All's does, never moves the row.
+					.font(.system(size: 12.5, weight: borderless ? .regular : .medium))
 				}
 			}
 			.foregroundStyle(disabled ? VaultPalette.textFaint
@@ -739,23 +740,22 @@ struct VaultRowIconButton: View {
 	/// Draws nothing until the pointer or keyboard focus reaches it, as on a
 	/// table row that isn't hovered or selected. It stays pressable and named.
 	var resting = false
+	/// Drawn as if hovered, as while the menu or popover it opens is showing.
+	var active = false
 	let action: () -> Void
 
 	@State private var hovering = false
 
 	var body: some View {
+		let lit = (hovering || active) && !disabled
 		Button(action: action) {
-			VaultRowIconGlyph(systemImage: systemImage, compact: compact, resting: resting, hovering: hovering)
-				.foregroundStyle(
-					hovering && !disabled
-						? (destructive ? VaultPalette.redText : VaultPalette.textPrimary)
-						: VaultPalette.textTertiary
-				)
+			VaultRowIconGlyph(systemImage: systemImage, compact: compact, resting: resting && !active, hovering: hovering)
+				.foregroundStyle(lit ? (destructive ? VaultPalette.redText : VaultPalette.textPrimary) : VaultPalette.textTertiary)
 				.opacity(disabled ? 0.45 : 1)
 				.frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
 				.background {
 					RoundedRectangle(cornerRadius: 6)
-						.fill(hovering && !disabled ? (destructive ? VaultPalette.redTint : VaultPalette.controlHover) : .clear)
+						.fill(lit ? (destructive ? VaultPalette.redTint : VaultPalette.controlHover) : .clear)
 				}
 				.vaultHoverAnimation(hovering)
 		}
@@ -811,6 +811,39 @@ private struct VaultRowIconGlyph: View {
 	}
 }
 
+/// Lays its first view out as wide as it would be, up to the room the
+/// others leave, with the others just after it, as a name with its rename
+/// button; with `fits` off, the first takes all that room, as while editing.
+/// The views keep their identity either way, so a field keeps its focus.
+struct VaultLeadingFitLayout: Layout {
+	var fits = true
+	var spacing: CGFloat = 6
+
+	func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+		let widths = widths(proposal: proposal, subviews: subviews)
+		let height = zip(subviews, widths).map { $0.sizeThatFits(ProposedViewSize(width: $1, height: proposal.height)).height }.max() ?? 0
+		let width = widths.reduce(0, +) + spacing * CGFloat(max(subviews.count - 1, 0))
+		return CGSize(width: width, height: height)
+	}
+
+	func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+		var x = bounds.minX
+		for (subview, width) in zip(subviews, widths(proposal: ProposedViewSize(width: bounds.width, height: bounds.height), subviews: subviews)) {
+			subview.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(width: width, height: bounds.height))
+			x += width + spacing
+		}
+	}
+
+	private func widths(proposal: ProposedViewSize, subviews: Subviews) -> [CGFloat] {
+		guard let first = subviews.first else { return [] }
+		let rest = subviews.dropFirst().map { $0.sizeThatFits(.unspecified).width }
+		let ideal = first.sizeThatFits(.unspecified).width
+		let room = max((proposal.width ?? .infinity) - rest.reduce(0, +) - spacing * CGFloat(rest.count), 0)
+		guard room.isFinite else { return [ideal] + rest }
+		return [fits ? min(ideal, room) : room] + rest
+	}
+}
+
 struct VaultFilterChip: View {
 	let title: String
 	var dot: Color?
@@ -857,7 +890,8 @@ struct VaultFilterChip: View {
 				if let trailing {
 					Text(trailing)
 						.font(VaultTypography.tabular(11, .medium))
-						.foregroundStyle(alert ? VaultPalette.redText : (selected ? foreground : VaultPalette.textTertiary))
+						// Only the symbol carries the status color; every count reads the same.
+						.foregroundStyle(selected ? foreground : VaultPalette.textTertiary)
 				}
 			}
 			.foregroundStyle(foreground)
@@ -928,7 +962,7 @@ struct VaultKeyStatusMarks: View {
 	/// of mark stays in its own column.
 	var slotted = false
 	/// Draws the drift mark in the secondary text color, as on a hovered or
-	/// selected row; at rest it's faint, since most keys drift somewhere.
+	/// selected row; at rest it's quieter, since drift is often intended.
 	var emphasized = false
 
 	var body: some View {
@@ -1060,7 +1094,8 @@ struct VaultCheckedValue: View {
 					if problem != nil { glyph(.invalid) }
 					VaultValueText(text: isRevealed ? value : VaultValueText.mask, masked: !isRevealed, size: size, fails: problem != nil)
 				}
-				.help(problem ?? "")
+				// A shown value that fails is named with its reason, in full where the cell cuts it.
+				.help(problem.map { isRevealed ? "\(value)\n\($0)" : $0 } ?? "")
 			} else if isRequired {
 				HStack(spacing: 5) {
 					glyph(.invalid)
@@ -1106,7 +1141,7 @@ struct VaultValueText: View {
 	var body: some View {
 		// A URL too long for its cell gives up its scheme before its host, so
 		// environments that differ by host still read differently side by side.
-		if !masked, let compact = Self.withoutScheme(text) {
+		if let compact = Self.compactForm(of: text, masked: masked, fails: fails) {
 			ViewThatFits(in: .horizontal) {
 				styled(text).fixedSize()
 				styled(compact)
@@ -1124,6 +1159,12 @@ struct VaultValueText: View {
 			.lineLimit(1)
 			.truncationMode(.tail)
 			.accessibilityHidden(true)
+	}
+
+	/// The shorter form a cell too narrow for `text` shows instead: a URL
+	/// without its scheme, unless the value fails, when the scheme can be why.
+	nonisolated static func compactForm(of text: String, masked: Bool, fails: Bool) -> String? {
+		masked || fails ? nil : withoutScheme(text)
 	}
 
 	/// A URL without its scheme, such as "api.acme.io/v1" for "https://api.acme.io/v1";

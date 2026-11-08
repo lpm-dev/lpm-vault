@@ -159,6 +159,8 @@ struct ConnectCLISheet: View {
 			CopyButton(isCopied: copiedItem == "vault-id") {
 				copy(projectId, as: "vault-id")
 			}
+			// Every Copy in the sheet ends the same distance in from the content's edge.
+			.padding(.trailing, Self.copyInset)
 			.accessibilityLabel("Copy vault ID")
 			.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
 		}
@@ -188,7 +190,7 @@ struct ConnectCLISheet: View {
 						writeFileAction
 					}
 				}
-				.padding(.horizontal, 12)
+				.padding(.horizontal, Self.copyInset)
 				.frame(height: 32)
 				VaultHairline()
 				Group {
@@ -229,7 +231,7 @@ struct ConnectCLISheet: View {
 				Button { showsTaskExample.toggle() } label: {
 					Label("Optional task environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
 						.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-				}.buttonStyle(.plain).foregroundStyle(VaultPalette.accentForeground)
+				}.buttonStyle(.plain).foregroundStyle(VaultPalette.textSecondary)
 					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
 				if showsTaskExample {
 					VStack(alignment: .leading, spacing: 10) {
@@ -368,7 +370,7 @@ struct ConnectCLISheet: View {
 					}
 					.buttonStyle(.plain)
 					.font(.system(size: 11.5, weight: .medium))
-					.foregroundStyle(VaultPalette.accentForeground)
+					.foregroundStyle(VaultPalette.textSecondary)
 					.vaultPointingHand()
 					.fixedSize()
 				}
@@ -530,6 +532,9 @@ struct ConnectCLISheet: View {
 		ProjectCLILink.configURL(inFolder: folder)
 	}
 
+	/// How far in from the content's edge each Copy button's box ends.
+	fileprivate static let copyInset: CGFloat = 12
+
 	private static func shortID(_ id: String) -> String {
 		id.count > 16 ? "\(id.prefix(8))…\(id.suffix(6))" : id
 	}
@@ -615,8 +620,10 @@ private struct CommandRow: View {
 						.font(.system(size: 12, weight: .semibold))
 				}
 				.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
+				// Where a Copy button's title ends, inside its box.
+				.padding(.trailing, 8)
 			}
-			.padding(.horizontal, 12)
+			.padding(.horizontal, ConnectCLISheet.copyInset)
 			.frame(height: 34)
 			.background(hovering ? VaultPalette.controlHover : .clear)
 			.vaultHoverAnimation(hovering)

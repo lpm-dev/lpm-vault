@@ -72,22 +72,29 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Delete Locally"))
 		}
 
-		@Test("Import and Export show their names where there's room, and only their icons where there isn't, keeping what they're called")
+		@Test("Import and Export show their names where there's room, and go into a More menu where there isn't, rather than becoming bare icons")
 		func importExportLabels() async throws {
-			for (width, inspector, labeled) in [(CGFloat(1400), false, true), (1040, true, false)] {
-				let fixture = try makeFixture()
-				defer { fixture.tearDown() }
-				let host = try await workspace(fixture.store, width: width)
-				defer { host.window.close() }
-				if inspector {
-					try await host.click("Show inspector")
-					#expect(try await host.waitForText("Hide inspector", exactly: true))
-				}
-				for name in ["Import variables into .env", "Export .env"] {
-					let drawn = try await host.drawnFrame(saying: name)
-					#expect((drawn.width > 30) == labeled, "\(name) at \(width) points draws \(drawn)")
-				}
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let wide = try await workspace(fixture.store, width: 1400)
+			for name in ["Import variables into .env", "Export .env"] {
+				let drawn = try await wide.drawnFrame(saying: name)
+				#expect(drawn.width > 30, "\(name) shows its name: \(drawn)")
 			}
+			wide.window.close()
+
+			let narrow = try await workspace(fixture.store, width: 1040)
+			defer { narrow.window.close() }
+			try await narrow.click("Show inspector")
+			#expect(try await narrow.waitForText("Hide inspector", exactly: true))
+			let elements = AccessibilityTree.visibleElements(in: narrow.window, of: narrow.view)
+			#expect(!elements.contains { $0.says("Import variables into .env") }, "Import isn't a bare icon")
+			try await narrow.click("More actions")
+			let menu = try await narrow.popoverWindow()
+			#expect(try await narrow.waitForText("Import into .env…", in: menu))
+			#expect(try await narrow.waitForText("Export .env…", in: menu))
+			try await narrow.click("Import into .env…", in: menu)
+			#expect(try await narrow.waitUntil { narrow.window.sheets.first != nil }, "Import opens its sheet from the menu")
 		}
 
 		@Test("the inspector toggle says whether it shows or hides the inspector")
@@ -173,16 +180,18 @@ extension SheetInteractionTests {
 			try await host.click("Sync status: Local")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("Sign In to Sync…", in: popover))
+			#expect(try await host.waitForText("Values stay on this Mac. Sign in to sync them with lpm.dev.", in: popover),
+				"It says what Local means before what can be done")
 			try host.key("\u{1b}", code: 53, in: popover)
 			#expect(try await host.waitUntil { !popover.isVisible }, "Esc closes it")
 		}
 
-		@Test("a title bar menu is one control however many parts its label has")
+		@Test("a bar menu is one control however many parts its label has, and opens its rows in the app's popover")
 		func barMenuIsOneControl() async throws {
+			let chosen = ChosenRow()
 			let host = SheetTestHost(
-				VaultBarMenu(accessibilityLabel: "Publish") {
-					Button("New destination…") {}
-				} label: {
+				VaultBarMenu(accessibilityLabel: "Publish", rows: [VaultMenuList<Int>.Row(id: 1, title: "New destination…")],
+					onChoose: { chosen.id = $0 }) {
 					Image(systemName: "arrow.up.to.line")
 					Text("Publish")
 				}
@@ -190,10 +199,14 @@ extension SheetInteractionTests {
 				size: NSSize(width: 240, height: 80), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			try await host.settle()
-			let menus = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .menuButton }
+			let menus = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Publish") }
 			#expect(menus.count == 1)
-			#expect(menus.first?.says("Publish") == true)
-			#expect((menus.first?.frame.height ?? 0) >= 26)
+			#expect(menus.allSatisfy { $0.role == .button && $0.frame.height >= 26 })
+			try await host.click("Publish")
+			let popover = try await host.popoverWindow()
+			try await host.click("New destination…", in: popover)
+			#expect(try await host.waitUntil { chosen.id == 1 })
+			#expect(try await host.waitUntil { !popover.isVisible }, "Choosing a row closes the menu")
 		}
 
 		@Test("sidebar counts say one in the singular")
@@ -276,4 +289,9 @@ extension SheetInteractionTests {
 			return host
 		}
 	}
+}
+
+@MainActor
+private final class ChosenRow {
+	var id: Int?
 }

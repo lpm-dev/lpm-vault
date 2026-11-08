@@ -360,6 +360,16 @@ enum VaultCopyFormat: CaseIterable, Identifiable, Sendable {
     }
   }
 
+  /// What a menu lists the format as, under a "Copy as" heading.
+  var shortTitle: String {
+    switch self {
+    case .value: "Value"
+    case .dotenv: "KEY=value"
+    case .export: "export KEY=value"
+    case .reference: "process.env.KEY"
+    }
+  }
+
   /// Whether the copied text contains the secret value.
   var includesValue: Bool { self != .reference }
 

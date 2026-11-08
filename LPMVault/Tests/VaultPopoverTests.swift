@@ -12,31 +12,72 @@ struct VaultPopoverTests {
 	@Test("a popover sits below its view from the view's leading edge, or above it when the screen ends")
 	func belowOrAbove() {
 		let anchor = CGRect(x: 400, y: 600, width: 80, height: 28)
-		let below = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .bottom, within: screen)
+		let below = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .bottom, window: screen, screen: screen)
 		#expect(below.minX == anchor.minX)
 		#expect(below.maxY == anchor.minY - VaultPopoverPresenter.gap)
 		let low = CGRect(x: 400, y: 40, width: 80, height: 28)
-		let flipped = VaultPopoverPresenter.frame(size: size, beside: low, on: .bottom, within: screen)
+		let flipped = VaultPopoverPresenter.frame(size: size, beside: low, on: .bottom, window: screen, screen: screen)
 		#expect(flipped.minY == low.maxY + VaultPopoverPresenter.gap, "No room below, so it goes above")
 	}
 
 	@Test("a popover beside its view is centered on it, and goes to the other side when there's no room")
 	func beside() {
 		let anchor = CGRect(x: 600, y: 400, width: 28, height: 28)
-		let leading = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .leading, within: screen)
+		let leading = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .leading, window: screen, screen: screen)
 		#expect(leading.maxX == anchor.minX - VaultPopoverPresenter.gap)
 		#expect(leading.midY == anchor.midY)
 		let nearEdge = CGRect(x: 20, y: 400, width: 28, height: 28)
-		let flipped = VaultPopoverPresenter.frame(size: size, beside: nearEdge, on: .leading, within: screen)
+		let flipped = VaultPopoverPresenter.frame(size: size, beside: nearEdge, on: .leading, window: screen, screen: screen)
 		#expect(flipped.minX == nearEdge.maxX + VaultPopoverPresenter.gap)
 	}
 
 	@Test("a popover stays inside the screen's margins")
 	func staysOnScreen() {
 		let anchor = CGRect(x: 1400, y: 600, width: 30, height: 28)
-		let frame = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .bottom, within: screen)
+		let frame = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .bottom, window: screen, screen: screen)
 		#expect(frame.maxX <= screen.maxX - VaultPopoverPresenter.screenMargin)
 		#expect(frame.minX >= screen.minX + VaultPopoverPresenter.screenMargin)
+	}
+
+	@Test("a popover stays inside its window when there's room, rather than running past its edge")
+	func staysInWindow() {
+		let window = CGRect(x: 100, y: 50, width: 1280, height: 754)
+		let anchor = CGRect(x: 1000, y: 400, width: 120, height: 28)
+		let wide = CGSize(width: 540, height: 300)
+		let frame = VaultPopoverPresenter.frame(size: wide, beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(frame.maxX <= window.maxX - VaultPopoverPresenter.screenMargin, "It moves left to end inside the window")
+		#expect(frame.maxY == anchor.minY - VaultPopoverPresenter.gap, "It still opens below")
+	}
+
+	@Test("a popover that doesn't fit below its view inside the window opens above it there, not past the window's bottom")
+	func flipsInsideWindow() {
+		let window = CGRect(x: 100, y: 150, width: 1280, height: 740)
+		let anchor = CGRect(x: 400, y: 400, width: 120, height: 28)
+		let frame = VaultPopoverPresenter.frame(size: CGSize(width: 240, height: 300), beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(frame.minY == anchor.maxY + VaultPopoverPresenter.gap)
+		#expect(frame.maxY <= window.maxY - VaultPopoverPresenter.screenMargin)
+	}
+
+	@Test("a popover too big for the room in its window goes where the screen has room")
+	func screenWhenWindowIsFull() {
+		let window = CGRect(x: 100, y: 300, width: 1040, height: 400)
+		let anchor = CGRect(x: 400, y: 480, width: 120, height: 28)
+		let frame = VaultPopoverPresenter.frame(size: CGSize(width: 240, height: 320), beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(frame.maxY == anchor.minY - VaultPopoverPresenter.gap, "Below, past the window, as a menu goes")
+		#expect(frame.minY >= screen.minY + VaultPopoverPresenter.screenMargin)
+	}
+
+	@Test("the area a popover may use leaves out the window's title bar, unless the popover's view is in it")
+	func clearOfTitleBar() {
+		let screen = CGRect(x: 0, y: 0, width: 1440, height: 1200)
+		let window = CGRect(x: 100, y: 50, width: 1280, height: 800)
+		let content = CGRect(x: 400, y: 500, width: 120, height: 28)
+		#expect(VaultPopoverPresenter.area(of: window, for: content).maxY == window.maxY - VaultMetrics.titleBar)
+		let inTitleBar = CGRect(x: 1100, y: window.maxY - 37, width: 120, height: 28)
+		#expect(VaultPopoverPresenter.area(of: window, for: inTitleBar) == window)
+		let tall = CGSize(width: 240, height: 400)
+		let frame = VaultPopoverPresenter.frame(size: tall, beside: content, on: .top, window: VaultPopoverPresenter.area(of: window, for: content), screen: screen)
+		#expect(frame.maxY <= window.maxY - VaultMetrics.titleBar, "No room above under the title bar, so it opens below")
 	}
 
 	@Test("the arrow keys step through a menu's enabled rows, around from either end")
@@ -73,5 +114,27 @@ struct VaultMenuColumnTests {
 		#expect(List.columns(of: rows, count: 1).count == 1)
 		#expect(List.columns(of: section("P", 3), count: 2).count == 1, "One section stays whole")
 		#expect(List.columns(of: rows, count: 2).flatMap { $0 }.map(\.id) == rows.map(\.id), "Reading order is kept")
+	}
+}
+
+@Suite("The sync menu's explanation")
+@MainActor
+struct VaultSyncExplanationTests {
+	private let date = Date(timeIntervalSinceReferenceDate: 815_000_000)
+
+	@Test("it says what each sync state means, with the last sync's direction and time when one is known")
+	func explanations() {
+		let shown = date.formatted(date: .abbreviated, time: .shortened)
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: false, status: .synced, last: nil)
+			== "Values stay on this Mac. Sign in to sync them with lpm.dev.")
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: nil, last: nil) == "Choose a project to sync it.")
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: .synced, last: (date, true))
+			== "Matches lpm.dev as of the last push, \(shown).")
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: .localChanges, last: (date, false))
+			== "Changed on this Mac since the last pull, \(shown).")
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: .localChanges, last: nil)
+			== "Changed on this Mac since the last sync.")
+		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: .neverSynced, last: nil)
+			== "Not pulled or pushed with this account yet.")
 	}
 }

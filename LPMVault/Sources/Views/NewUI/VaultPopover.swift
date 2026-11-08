@@ -153,6 +153,7 @@ final class VaultPopoverPresenter: NSObject {
 
 	func close() {
 		guard let panel else { return }
+		let hadKeys = panel.isKeyWindow
 		if let monitor { NSEvent.removeMonitor(monitor) }
 		monitor = nil
 		if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -165,8 +166,9 @@ final class VaultPopoverPresenter: NSObject {
 		self.panel = nil
 		hosting = nil
 		size = .zero
-		// Keys go back to the window the popover was shown over.
-		if let parent, parent.isVisible { parent.makeKey() }
+		// Keys go back to the window the popover was shown over, unless they've
+		// gone elsewhere already, as to a popover opened in its place.
+		if hadKeys, let parent, parent.isVisible { parent.makeKey() }
 	}
 
 	private func watch(parent: NSWindow) {
@@ -203,7 +205,13 @@ final class VaultPopoverPresenter: NSObject {
 	/// A click outside the popover closes it, and still does what it does there;
 	/// a click on the view it's shown for is left to that view, which toggles it.
 	private func closeIfOutside(_ event: NSEvent) {
-		guard let panel, event.window !== panel else { return }
+		guard let panel else { return }
+		// A click in a popover shown from this one, such as a menu, is inside it.
+		var window = event.window
+		while let current = window {
+			if current === panel { return }
+			window = current.parent
+		}
 		if let anchor, let window = anchor.window, event.window === window,
 			anchor.convert(anchor.bounds, to: nil).contains(event.locationInWindow)
 		{
@@ -215,41 +223,73 @@ final class VaultPopoverPresenter: NSObject {
 	private func resize(to newSize: CGSize) {
 		guard let panel, let anchor, let window = anchor.window, newSize.width > 0, newSize.height > 0 else { return }
 		size = newSize
+		let anchorFrame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+		let content = window.contentView.map { window.convertToScreen($0.convert($0.bounds, to: nil)) } ?? window.frame
 		let frame = Self.frame(
 			size: newSize,
-			beside: window.convertToScreen(anchor.convert(anchor.bounds, to: nil)),
+			beside: anchorFrame,
 			on: edge,
-			within: (window.screen ?? NSScreen.main)?.visibleFrame ?? .infinite
+			window: Self.area(of: content, for: anchorFrame),
+			screen: (window.screen ?? NSScreen.main)?.visibleFrame ?? .infinite
 		)
 		panel.setFrame(frame, display: true)
 		panel.invalidateShadow()
 	}
 
+	/// The part of `window` a popover for `anchor` may cover: all of it but
+	/// the app's title bar, which a popover from the content leaves clear.
+	nonisolated static func area(of window: CGRect, for anchor: CGRect) -> CGRect {
+		let content = window.divided(atDistance: VaultMetrics.titleBar, from: .maxYEdge).remainder
+		return anchor.maxY <= content.maxY ? content : window
+	}
+
 	/// Where a popover of `size` goes beside `anchor`: on `edge`, or on the
-	/// opposite edge when there's no room, kept inside `screen`. Below or
-	/// above, it starts at the anchor's leading edge, as a menu does; beside,
-	/// it's centered on it.
-	nonisolated static func frame(size: CGSize, beside anchor: CGRect, on edge: Edge, within screen: CGRect) -> CGRect {
-		var origin: CGPoint
-		switch edge {
-		case .bottom:
-			origin = CGPoint(x: anchor.minX, y: anchor.minY - gap - size.height)
-			if origin.y < screen.minY + screenMargin { origin.y = anchor.maxY + gap }
-		case .top:
-			origin = CGPoint(x: anchor.minX, y: anchor.maxY + gap)
-			if origin.y + size.height > screen.maxY - screenMargin { origin.y = anchor.minY - gap - size.height }
-		case .leading:
-			origin = CGPoint(x: anchor.minX - gap - size.width, y: anchor.midY - size.height / 2)
-			if origin.x < screen.minX + screenMargin { origin.x = anchor.maxX + gap }
-		case .trailing:
-			origin = CGPoint(x: anchor.maxX + gap, y: anchor.midY - size.height / 2)
-			if origin.x + size.width > screen.maxX - screenMargin { origin.x = anchor.minX - gap - size.width }
+	/// opposite edge when there's no room, inside `window` when either has
+	/// room there and otherwise inside `screen`, as a menu goes past its
+	/// window. Below or above, it starts at the anchor's leading edge, as a
+	/// menu does; beside, it's centered on it.
+	nonisolated static func frame(size: CGSize, beside anchor: CGRect, on edge: Edge, window: CGRect, screen: CGRect) -> CGRect {
+		let screenBounds = screen.insetBy(dx: screenMargin, dy: screenMargin)
+		for bounds in [window.intersection(screen).insetBy(dx: screenMargin, dy: screenMargin), screenBounds] {
+			if let origin = origin(size: size, beside: anchor, on: edge, in: bounds) { return CGRect(origin: origin, size: size) }
 		}
-		if screen.width.isFinite {
-			origin.x = min(max(origin.x, screen.minX + screenMargin), screen.maxX - screenMargin - size.width)
-			origin.y = min(max(origin.y, screen.minY + screenMargin), screen.maxY - screenMargin - size.height)
+		// No room on either side: on `edge`, over the anchor if it must be, on the screen.
+		var origin = switch edge {
+		case .bottom: CGPoint(x: anchor.minX, y: anchor.minY - gap - size.height)
+		case .top: CGPoint(x: anchor.minX, y: anchor.maxY + gap)
+		case .leading: CGPoint(x: anchor.minX - gap - size.width, y: anchor.midY - size.height / 2)
+		case .trailing: CGPoint(x: anchor.maxX + gap, y: anchor.midY - size.height / 2)
+		}
+		if screenBounds.width.isFinite, screenBounds.height.isFinite {
+			origin.x = min(max(origin.x, screenBounds.minX), screenBounds.maxX - size.width)
+			origin.y = min(max(origin.y, screenBounds.minY), screenBounds.maxY - size.height)
 		}
 		return CGRect(origin: origin, size: size)
+	}
+
+	/// The popover's origin on `edge` of `anchor`, or on the opposite edge,
+	/// kept inside `bounds` along the edge; nil when neither side has room.
+	private nonisolated static func origin(size: CGSize, beside anchor: CGRect, on edge: Edge, in bounds: CGRect) -> CGPoint? {
+		guard !bounds.isNull, size.width <= bounds.width, size.height <= bounds.height else { return nil }
+		func along(_ value: CGFloat, from low: CGFloat, to high: CGFloat) -> CGFloat { min(max(value, low), high) }
+		switch edge {
+		case .bottom, .top:
+			let below = anchor.minY - gap - size.height
+			let above = anchor.maxY + gap
+			let fitsBelow = below >= bounds.minY
+			let fitsAbove = above + size.height <= bounds.maxY
+			guard fitsBelow || fitsAbove else { return nil }
+			let y = edge == .bottom ? (fitsBelow ? below : above) : (fitsAbove ? above : below)
+			return CGPoint(x: along(anchor.minX, from: bounds.minX, to: bounds.maxX - size.width), y: y)
+		case .leading, .trailing:
+			let before = anchor.minX - gap - size.width
+			let after = anchor.maxX + gap
+			let fitsBefore = before >= bounds.minX
+			let fitsAfter = after + size.width <= bounds.maxX
+			guard fitsBefore || fitsAfter else { return nil }
+			let x = edge == .leading ? (fitsBefore ? before : after) : (fitsAfter ? after : before)
+			return CGPoint(x: x, y: along(anchor.midY - size.height / 2, from: bounds.minY, to: bounds.maxY - size.height))
+		}
 	}
 }
 

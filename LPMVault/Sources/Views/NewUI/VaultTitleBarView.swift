@@ -32,12 +32,29 @@ struct VaultTitleBarView: View {
 		}
 	}
 
+	/// Gray while the vault is only local, amber while lpm.dev is behind, and
+	/// green when it matches; the label always says which.
 	private var syncColor: Color {
-		guard let project else { return VaultPalette.textFaint }
+		guard let project, store.isLoggedIn else { return VaultPalette.textFaint }
 		switch store.syncStatus(for: project.id) {
-		case .synced: return VaultPalette.green
-		case .localChanges: return VaultPalette.orange
-		case .neverSynced: return VaultPalette.textFaint
+		case .synced: return VaultPalette.greenTintText
+		case .localChanges, .neverSynced: return VaultPalette.warningMark
+		}
+	}
+
+	/// What the sync state means, under it in the sync menu. `last` is when
+	/// the project last synced under the selected account, and which way.
+	static func syncExplanation(isLoggedIn: Bool, status: ProjectSyncStatus?, last: (date: Date, pushed: Bool)?) -> String {
+		guard isLoggedIn else { return "Values stay on this Mac. Sign in to sync them with lpm.dev." }
+		guard let status else { return "Choose a project to sync it." }
+		let when = last.map { "\($0.pushed ? "push" : "pull"), \($0.date.formatted(date: .abbreviated, time: .shortened))" }
+		switch status {
+		case .synced:
+			return when.map { "Matches lpm.dev as of the last \($0)." } ?? "Matches lpm.dev."
+		case .localChanges:
+			return when.map { "Changed on this Mac since the last \($0)." } ?? "Changed on this Mac since the last sync."
+		case .neverSynced:
+			return "Not pulled or pushed with this account yet."
 		}
 	}
 
@@ -167,7 +184,7 @@ struct VaultTitleBarView: View {
 				} else {
 					VaultStatusDot(color: syncColor)
 				}
-				Text(syncLabel).font(.system(size: 12.5, weight: .medium))
+				Text(syncLabel).font(.system(size: 12.5))
 				Image(systemName: "chevron.down")
 					.font(.system(size: 8, weight: .bold))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -185,15 +202,47 @@ struct VaultTitleBarView: View {
 		.accessibilityLabel("Sync status: \(syncLabel)")
 		.accessibilityHint("Shows how to sync this project")
 		.vaultPopover(isPresented: $showsSyncMenu, arrowEdge: .bottom) {
-			VaultMenuList(rows: syncRows, width: 220, label: "Sync") { choice in
-				showsSyncMenu = false
-				switch choice {
-				case .pull: onPull()
-				case .push: onPush()
-				case .signIn: store.showSettings()
+			VStack(alignment: .leading, spacing: 0) {
+				syncSummary
+				VaultHairline()
+				VaultMenuList(rows: syncRows, width: Self.syncMenuWidth, label: "Sync") { choice in
+					showsSyncMenu = false
+					switch choice {
+					case .pull: onPull()
+					case .push: onPush()
+					case .signIn: store.showSettings()
+					}
 				}
 			}
+			.frame(width: Self.syncMenuWidth)
 		}
+	}
+
+	private static let syncMenuWidth: CGFloat = 264
+
+	/// The state the button shows and what it means, above what can be done about it.
+	private var syncSummary: some View {
+		VStack(alignment: .leading, spacing: 3) {
+			HStack(spacing: 7) {
+				VaultStatusDot(color: syncColor)
+				Text(syncLabel)
+					.font(.system(size: 12.5, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+			}
+			Text(Self.syncExplanation(
+				isLoggedIn: store.isLoggedIn,
+				status: project.map { store.syncStatus(for: $0.id) },
+				last: project.flatMap { store.lastSync(for: $0.id) }))
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.leading, 13)
+		}
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.padding(.horizontal, 16)
+		.padding(.top, 12)
+		.padding(.bottom, 10)
+		.accessibilityElement(children: .combine)
 	}
 
 	private var syncRows: [VaultMenuList<SyncChoice>.Row] {
@@ -201,8 +250,8 @@ struct VaultTitleBarView: View {
 			return [.init(id: .signIn, title: "Sign In to Sync…", detail: "Settings")]
 		}
 		return [
-			.init(id: .pull, title: "Pull…", detail: "⇧⌘L", detailIsShortcut: true),
-			.init(id: .push, title: isOrganization ? "Share…" : "Push…", detail: "⇧⌘P", detailIsShortcut: true),
+			.init(id: .pull, title: "Pull from lpm.dev…", detail: "⇧⌘L", detailIsShortcut: true),
+			.init(id: .push, title: isOrganization ? "Share with Organization…" : "Push to lpm.dev…", detail: "⇧⌘P", detailIsShortcut: true),
 		]
 	}
 

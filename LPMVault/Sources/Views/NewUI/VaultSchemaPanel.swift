@@ -96,6 +96,8 @@ private struct VaultSchemaKeyEditor: View {
 	@State private var addingRule = false
 	@State private var scopeTarget: ScopeTarget?
 	@State private var pickingKey = false
+	@State private var choosingFormat = false
+	@State private var choosingCondition = false
 	@State private var removal: RemovalPrompt?
 
 	/// Removing the key: from lpm.json, or explaining why it can't be here.
@@ -1139,19 +1141,19 @@ private struct VaultSchemaKeyEditor: View {
 			segmented(Rule.CIStorage.allCases, selection: rule.ci ?? .secret, title: \.rawValue, label: "CI storage",
 				disabled: rule.secret ? [.variable] : []) { value in update { $0.ci = value } }
 		case .format:
-			Menu {
-				ForEach(Rule.Format.allCases, id: \.self) { format in
-					Button(format.title) { update { $0.format = format } }
-				}
-			} label: {
-				fieldBox(rule.format?.title ?? "None", placeholder: rule.format == nil, chevron: true)
+			Button { choosingFormat.toggle() } label: {
+				fieldBox(rule.format?.title ?? "None", placeholder: rule.format == nil, chevron: true, open: choosingFormat)
 			}
-			.menuStyle(.button)
 			.buttonStyle(.plain)
-			.menuIndicator(.hidden)
 			.disabled(!canEdit)
 			.accessibilityLabel("Format")
 			.accessibilityValue(rule.format?.title ?? "None")
+			.accessibilityHint("Shows a menu")
+			.vaultMenu(isPresented: $choosingFormat, rows: Rule.Format.allCases.map {
+				VaultMenuList<Rule.Format>.Row(id: $0, title: $0.title, isChecked: rule.format == $0)
+			}, width: 200, label: "Format") { format in
+				update { $0.format = format }
+			}
 		case .bounds:
 			HStack(spacing: 6) {
 				textField("min", label: "Minimum value", text: \.min, field: "min")
@@ -1233,7 +1235,22 @@ private struct VaultSchemaKeyEditor: View {
 		.fixedSize()
 	}
 
-	private func fieldBox(_ text: String, placeholder: Bool = false, chevron: Bool = false) -> some View {
+	/// What Required when can check of the key it names.
+	private enum ConditionChoice: Hashable { case equals, set, unset }
+
+	/// Equals compares a value, which a secret key's can't be.
+	private static func conditionRows(_ condition: Rule.RequiredWhen, secretKeys: Set<String>) -> [VaultMenuList<ConditionChoice>.Row] {
+		let current: ConditionChoice = switch condition.condition {
+		case .equals: .equals
+		case .present(true): .set
+		case .present(false): .unset
+		}
+		let choices: [(ConditionChoice, String)] = (secretKeys.contains(condition.variable) ? [] : [(.equals, "equals")])
+			+ [(.set, "is set"), (.unset, "is not set")]
+		return choices.map { VaultMenuList<ConditionChoice>.Row(id: $0.0, title: $0.1, isChecked: $0.0 == current) }
+	}
+
+	private func fieldBox(_ text: String, placeholder: Bool = false, chevron: Bool = false, open: Bool = false) -> some View {
 		HStack(spacing: 6) {
 			Text(text)
 				.font(.system(size: 12))
@@ -1245,7 +1262,7 @@ private struct VaultSchemaKeyEditor: View {
 		.padding(.horizontal, 9)
 		.frame(height: 28)
 		.frame(maxWidth: .infinity)
-		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
+		.background(RoundedRectangle(cornerRadius: 7).fill(open ? VaultPalette.controlHover : VaultPalette.control))
 		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.contentShape(Rectangle())
 	}
@@ -1303,25 +1320,25 @@ private struct VaultSchemaKeyEditor: View {
 			}
 			if let condition {
 				HStack(spacing: 6) {
-					Menu {
-						if !context.secretKeys.contains(condition.variable) {
-							Button("equals") {
-								if case .equals = condition.condition { return }
-								update { $0.requiredWhen = .init(variable: condition.variable, condition: .equals("")) }
-							}
-						}
-						Button("is set") { update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(true)) } }
-						Button("is not set") { update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(false)) } }
-					} label: {
-						fieldBox(Self.conditionTitle(condition.condition), chevron: true).frame(width: 110)
+					Button { choosingCondition.toggle() } label: {
+						fieldBox(Self.conditionTitle(condition.condition), chevron: true, open: choosingCondition).frame(width: 110)
 					}
-					.menuStyle(.button)
 					.buttonStyle(.plain)
-					.menuIndicator(.hidden)
 					.fixedSize()
 					.disabled(!canEdit)
 					.accessibilityLabel("Required when condition")
 					.accessibilityValue(Self.conditionTitle(condition.condition))
+					.accessibilityHint("Shows a menu")
+					.vaultMenu(isPresented: $choosingCondition, rows: Self.conditionRows(condition, secretKeys: context.secretKeys),
+						width: 160, label: "Required when condition") { choice in
+						switch choice {
+						case .equals:
+							if case .equals = condition.condition { return }
+							update { $0.requiredWhen = .init(variable: condition.variable, condition: .equals("")) }
+						case .set: update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(true)) }
+						case .unset: update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(false)) }
+						}
+					}
 					if case .equals = condition.condition {
 						TextField("value", text: Binding(
 							get: { if case .equals(let value)? = self.rule.requiredWhen?.condition { value } else { "" } },

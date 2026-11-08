@@ -8952,6 +8952,14 @@ final class VaultStore {
 
   private static let syncMetadataKey = "lpm-vault-sync-metadata"
 
+  /// When the project last synced with lpm.dev under the selected account, and whether it pushed.
+  func lastSync(for vaultId: String) -> (date: Date, pushed: Bool)? {
+    guard let binding = currentSyncBinding(), let info = syncMetadata[vaultId]?.syncInfo(boundTo: binding) else {
+      return nil
+    }
+    return (info.date, info.action == "push")
+  }
+
   func syncStatus(for vaultId: String) -> ProjectSyncStatus {
     guard let meta = syncMetadata[vaultId] else { return .neverSynced }
     if meta.isDirty { return .localChanges }

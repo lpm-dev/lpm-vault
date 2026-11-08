@@ -197,6 +197,11 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("VALUES", exactly: true))
 			try await save(host, "02-matrix-inspector", dark: dark)
 
+			try await host.click("More for the .env value")
+			let more = try await host.popoverWindow()
+			try await saveWithPopover(host, "18-popover-value-more", dark: dark, popover: more)
+			try await closePopover(more, in: host)
+
 			_ = try await host.clickSidebarEnvironment(".env.production")
 			#expect(try await host.waitForText("ACTIONS", exactly: true))
 			try await save(host, "03-environment", dark: dark)

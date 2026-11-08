@@ -88,26 +88,16 @@ struct VaultMenuField<Value: Hashable>: View {
 
 	@FocusState private var focused: Bool
 	@State private var hovering = false
+	@State private var isOpen = false
+	/// The field's width, which its menu takes too, as a pop-up button's does.
+	@State private var width: CGFloat = 0
 
 	private var selected: VaultMenuOption<Value>? {
 		selection.flatMap { value in options.first { $0.value == value } }
 	}
 
 	var body: some View {
-		Menu {
-			ForEach(options) { option in
-				Button {
-					selection = option.value
-				} label: {
-					if let systemImage = option.systemImage {
-						Label(option.label, systemImage: systemImage)
-					} else {
-						Text(option.label)
-					}
-				}
-				.disabled(option.disabled)
-			}
-		} label: {
+		Button { isOpen.toggle() } label: {
 			HStack(spacing: 7) {
 				if let systemImage = selected?.systemImage {
 					Image(systemName: systemImage).font(.system(size: 10)).foregroundStyle(VaultPalette.textPrimary)
@@ -126,20 +116,23 @@ struct VaultMenuField<Value: Hashable>: View {
 			.frame(height: 30)
 			.frame(maxWidth: .infinity)
 			.contentShape(Rectangle())
-			.vaultInputField(focused: focused, background: hovering && !disabled ? VaultPalette.controlHover : VaultPalette.control)
+			.vaultInputField(focused: focused || isOpen, background: (hovering || isOpen) && !disabled ? VaultPalette.controlHover : VaultPalette.control)
 			.vaultHoverAnimation(hovering)
-			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
-			.accessibilityElement(children: .combine)
 		}
-		.menuStyle(.button)
 		.buttonStyle(.plain)
-		.menuIndicator(.hidden)
 		.focusEffectDisabled()
 		.focused($focused)
 		.onHover { hovering = $0 }
 		.disabled(disabled)
+		.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
 		.accessibilityLabel(title)
 		.accessibilityValue(selected?.label ?? placeholder)
+		.accessibilityHint("Shows a menu")
+		.vaultMenu(isPresented: $isOpen, rows: options.map {
+			VaultMenuList<Value>.Row(id: $0.value, title: $0.label, isEnabled: !$0.disabled, isChecked: $0.value == selection, systemImage: $0.systemImage)
+		}, width: max(width, 180), label: title) { value in
+			selection = value
+		}
 	}
 }
 

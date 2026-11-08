@@ -13,6 +13,7 @@ struct VaultHistoryRollbackSheet: View {
 	@State private var working = false
 	@State private var failure: Failure?
 	@State private var listHeight: CGFloat = 0
+	@State private var choosingEnvironment = false
 
 	private enum Failure: Equatable {
 		/// The values changed since the review, so it has to be made again.
@@ -132,19 +133,24 @@ struct VaultHistoryRollbackSheet: View {
 			Text("Environment:")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textSecondary)
-			Menu {
-				ForEach(names, id: \.self) { name in
-					Button(name) {
-						Task { await review(.environment(name, entry: entry, side: side), entry: history.rollbackReview?.pointEntry) }
-					}
+			Button { choosingEnvironment.toggle() } label: {
+				HStack(spacing: 5) {
+					VaultHistoryEnvironmentChip(current, in: ordered)
+					Image(systemName: "chevron.down")
+						.font(.system(size: 8, weight: .bold))
+						.foregroundStyle(VaultPalette.textTertiary)
 				}
-			} label: {
-				VaultHistoryEnvironmentChip(current, in: ordered)
+				.contentShape(Rectangle())
 			}
-			.menuStyle(.borderlessButton)
+			.buttonStyle(VaultPressStyle(cornerRadius: 6))
 			.fixedSize()
 			.disabled(working)
 			.accessibilityLabel("Environment: \(current)")
+			.accessibilityHint("Shows a menu")
+			.vaultMenu(isPresented: $choosingEnvironment, rows: names.map { VaultMenuList<String>.Row(id: $0, title: $0, isChecked: $0 == current) },
+				width: 220, label: "Environment") { name in
+				Task { await review(.environment(name, entry: entry, side: side), entry: history.rollbackReview?.pointEntry) }
+			}
 			Text("This entry touched \(names.formatted(.list(type: .and))). A rollback acts on one.")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textTertiary)

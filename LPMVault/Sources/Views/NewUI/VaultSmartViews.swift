@@ -31,7 +31,7 @@ enum VaultSmartView: CaseIterable {
 	/// Drift is often intended, so its glyph stays quiet; the others need fixing.
 	var tint: Color {
 		switch self {
-		case .drift: VaultPalette.textFaint
+		case .drift: VaultPalette.textTertiary
 		case .missing: VaultPalette.warningMark
 		case .invalid: VaultPalette.problemMark
 		}

@@ -145,11 +145,11 @@ extension SheetInteractionTests {
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
-			@Test("drift marks a drifting key in All variables at rest, at the key cell's trailing edge apart from the key, and not in one environment's table",
+			@Test("drift marks every drifting key in All variables at rest, however many drift, at the key cell's trailing edge apart from the key, and not in one environment's table",
 				arguments: [VaultAppearance.light, .dark])
 			func driftMarkShowsWhereItHelps(appearance: VaultAppearance) async throws {
-				// One of two keys drifts, so the mark is news at rest.
-				let (store, _) = makeStore(environments: ["default": ["A_PORT": "1", "Z_HOST": "x"], "production": ["A_PORT": "2", "Z_HOST": "x"]])
+				// Every key drifts: masked values look alike, so the mark is how a row says it.
+				let (store, _) = makeStore(environments: ["default": ["A_PORT": "1", "Z_HOST": "x"], "production": ["A_PORT": "2", "Z_HOST": "y"]])
 				defer { store.lock() }
 				let suite = "drift-mark-\(UUID().uuidString)"
 				let defaults = try #require(UserDefaults(suiteName: suite))
@@ -183,15 +183,6 @@ extension SheetInteractionTests {
 				try await host.settle()
 				let single = try keyCellRuns(rowHeight: VaultMetrics.fileRow, named: "drift-one-environment")
 				#expect(single.runs.count == 1, "One environment's table doesn't mark drift: \(single.runs)")
-			}
-
-			@Test("rows show drift at rest while at most half the keys drift, and always under the Drift filter")
-			func driftAtRestRule() {
-				#expect(VaultContentView.showsDriftAtRest(filter: .all, drifting: 1, keys: 2))
-				#expect(VaultContentView.showsDriftAtRest(filter: .all, drifting: 0, keys: 0))
-				#expect(!VaultContentView.showsDriftAtRest(filter: .all, drifting: 9, keys: 10), "A mark on most rows marks nothing")
-				#expect(!VaultContentView.showsDriftAtRest(filter: .missing, drifting: 3, keys: 5))
-				#expect(VaultContentView.showsDriftAtRest(filter: .drift, drifting: 9, keys: 10), "The Drift view shows what it lists")
 			}
 
 			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])

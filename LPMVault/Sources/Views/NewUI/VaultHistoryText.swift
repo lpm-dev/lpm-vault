@@ -136,14 +136,14 @@ struct VaultHistoryText {
 	/// The badge a row shows for where its change came from.
 	static func badge(_ entry: HistoryEngine.Entry) -> Badge {
 		switch entry.source {
-		case "app": Badge(text: "LPM Vault", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
-		case "cli": Badge(text: "LPM CLI", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
+		case "app": Badge(text: "LPM Vault", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
+		case "cli": Badge(text: "LPM CLI", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
 		case "import": Badge(text: "Import", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
 		case "restore": Badge(text: "Restore", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
-		case "pull": Badge(text: "Pull", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
+		case "pull": Badge(text: "Pull", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
 		case "rollback": Badge(text: "Rollback", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
 		case "outside": Badge(text: "Outside", foreground: VaultPalette.orangeTintText, background: .clear, warns: true)
-		default: Badge(text: "Other", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
+		default: Badge(text: "Other", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
 		}
 	}
 

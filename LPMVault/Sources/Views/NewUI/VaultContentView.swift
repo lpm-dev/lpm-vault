@@ -62,13 +62,6 @@ struct VaultCliApprovalLink: View {
 }
 
 struct VaultContentView: View {
-	/// Whether rows at rest show their drift mark: under the Drift filter, and
-	/// while at most half the keys drift. A mark on most rows marks nothing, and
-	/// the Drift chip already counts them; a hovered or selected row always shows its own.
-	nonisolated static func showsDriftAtRest(filter: VaultWorkspaceFilter, drifting: Int, keys: Int) -> Bool {
-		filter == .drift || drifting * 2 <= keys
-	}
-
 	let project: VaultProject
 	let snapshot: VaultWorkspaceSnapshot
 	let environments: [String]
@@ -129,6 +122,7 @@ struct VaultContentView: View {
 	var onFindValue: (_ key: String, _ environment: String) -> Void = { _, _ in }
 
 	@State private var rawSelectedLineCount = 0
+	@State private var showsTransferMenu = false
 	@State private var rowClicks = VaultRowClicks()
 
 	var body: some View {
@@ -270,8 +264,9 @@ struct VaultContentView: View {
 		.fixedSize()
 	}
 
-	/// Raw text's hint goes first, then Import and Export lose their names,
-	/// then Reveal and Copy all.
+	/// Raw text's hint goes first, then Import and Export move into a menu,
+	/// then Reveal and Copy All lose their names, so a row never mixes named
+	/// buttons with bare icons that do as much.
 	private func valueRow(_ derived: VaultContentDerivation) -> some View {
 		ViewThatFits(in: .horizontal) {
 			if showsRawText {
@@ -287,7 +282,7 @@ struct VaultContentView: View {
 				Spacer(minLength: 8)
 				valueActions(compact: false, namesTransfers: true, derived: derived)
 			}
-			// Reveal and Copy All keep their names longest; Import and Export go to their icons first.
+			// Reveal and Copy All keep their names longest; Import and Export go into a menu first.
 			HStack(spacing: 6) {
 				viewControls
 				Spacer(minLength: 8)
@@ -363,11 +358,9 @@ struct VaultContentView: View {
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			} else {
-				HStack(spacing: 8) {
-					VaultEnvSwatch(color: VaultPalette.environment(environments.firstIndex(of: selectedEnvironment) ?? 0), size: 9)
-					Text(VaultProject.displayName(for: selectedEnvironment))
-						.vaultPageTitle()
-				}
+				// No swatch before the name: every page's title starts at the same edge, and the sidebar keeps the color.
+				Text(VaultProject.displayName(for: selectedEnvironment))
+					.vaultPageTitle()
 				if showsCounts {
 					let stored = project.secretCount(for: selectedEnvironment)
 					let declaredOnly = max(0, derived.environmentKeys.count - stored)
@@ -464,26 +457,57 @@ struct VaultContentView: View {
 					action: { onEditRaw(rawEditOrder) }
 				)
 			}
-			VaultOutlineButton(
-				systemImage: "tray.and.arrow.down",
-				title: namesTransfers ? "Import" : nil,
-				help: importName,
-				label: importName,
-				disabled: !canEditValues,
-				borderless: true,
-				action: onImport
-			)
-			VaultOutlineButton(
-				systemImage: "tray.and.arrow.up",
-				title: namesTransfers ? "Export" : nil,
-				help: exportName,
-				label: exportName,
-				disabled: !canUseSecrets,
-				borderless: true,
-				action: onExport
-			)
+			if namesTransfers {
+				VaultOutlineButton(
+					systemImage: "tray.and.arrow.down",
+					title: "Import",
+					help: importName,
+					label: importName,
+					disabled: !canEditValues,
+					borderless: true,
+					action: onImport
+				)
+				VaultOutlineButton(
+					systemImage: "tray.and.arrow.up",
+					title: "Export",
+					help: exportName,
+					label: exportName,
+					disabled: !canUseSecrets,
+					borderless: true,
+					action: onExport
+				)
+			} else {
+				transferMenu(environmentName: environmentName)
+			}
 		}
 		.fixedSize()
+	}
+
+	private enum Transfer: Hashable { case importing, exporting }
+
+	/// Import and Export behind one button, where the row has no room to name them.
+	private func transferMenu(environmentName: String) -> some View {
+		VaultOutlineButton(
+			systemImage: "ellipsis",
+			title: nil,
+			help: "Import into or export \(environmentName)",
+			label: "More actions",
+			active: showsTransferMenu,
+			disabled: !canEditValues && !canUseSecrets,
+			borderless: true
+		) { showsTransferMenu.toggle() }
+		.vaultPopover(isPresented: $showsTransferMenu, arrowEdge: .bottom) {
+			VaultMenuList(rows: [
+				.init(id: Transfer.importing, title: "Import into \(environmentName)…", isEnabled: canEditValues),
+				.init(id: Transfer.exporting, title: "Export \(environmentName)…", isEnabled: canUseSecrets),
+			], width: 240, label: "More actions") { choice in
+				showsTransferMenu = false
+				switch choice {
+				case .importing: onImport()
+				case .exporting: onExport()
+				}
+			}
+		}
 	}
 
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
@@ -516,8 +540,6 @@ struct VaultContentView: View {
 									isEdited: editedKeys.contains(key),
 									checks: valueChecks,
 									found: foundValues[key] ?? [],
-									showsDriftAtRest: Self.showsDriftAtRest(filter: filter, drifting: snapshot.driftingKeyCount,
-										keys: snapshot.allSecretKeys.count),
 									onSelect: {
 										if snapshot.summaries[key] == nil {
 											onAddKey(key)
@@ -1132,8 +1154,6 @@ private struct VaultMatrixRow: View {
 	var checks: VaultValueCheckPresentation = .none
 	/// The environments where a value search found the key's value.
 	var found: Set<String> = []
-	/// Shows the drift mark on rows at rest, not only on the hovered or selected row.
-	var showsDriftAtRest = true
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 	var onFindValue: (_ environment: String) -> Void = { _ in }
@@ -1162,7 +1182,7 @@ private struct VaultMatrixRow: View {
 					VaultKeyStatusMarks(
 						invalid: checks.invalidKeys.contains(key),
 						missing: snapshot.isMissingSomewhere(key),
-						drifts: snapshot.hasDrift(for: key) && (showsDriftAtRest || hovering || isSelected),
+						drifts: snapshot.hasDrift(for: key),
 						slotted: true,
 						emphasized: hovering || isSelected
 					)
@@ -1336,8 +1356,10 @@ private struct VaultEnvironmentRow: View {
 						.hidden(isPublic)
 					VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", resting: !showsActions, action: onCopy)
 					VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", disabled: !canEdit, resting: !showsActions, action: onEdit)
+					// Set apart from the actions that only read or edit, so it isn't hit in passing.
 					VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, disabled: !canEdit,
 						resting: !showsActions, action: onDelete)
+						.padding(.leading, 10)
 				}
 			}
 			.padding(.trailing, 14)

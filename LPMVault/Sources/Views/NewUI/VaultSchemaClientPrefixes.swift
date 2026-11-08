@@ -10,6 +10,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 	let project: VaultProject
 	/// Opens a key in the side panel, such as the Secret key that blocks a prefix.
 	let onOpenKey: (String) -> Void
+	/// Opens the review that saves the draft to lpm.json; nil while there's nothing to review or it can't open.
+	var onReview: (() -> Void)?
 
 	@State private var showsFrameworks = false
 	/// lpm.json's prefix whose removal waits for confirmation, because keys rely on it.
@@ -32,16 +34,28 @@ struct VaultSchemaClientPrefixesPopover: View {
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Client prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
-				(Text("Keys starting with these are public. ") + Text("lpm.json › envSchema.clientPrefixes").font(VaultTypography.tabular(11)))
+				Text("Keys that start with one of these are public, so their values can ship in client code.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
+				Text("lpm.json › envSchema.clientPrefixes")
+					.font(VaultTypography.tabular(11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+					.padding(.top, 2)
 			}
 			.padding(.horizontal, 14)
 			.padding(.top, 14)
 			.padding(.bottom, 10)
 
 			frameworks
+			Text("CUSTOM PREFIXES")
+				.vaultSectionLabel()
+				.padding(.horizontal, 14)
+				.padding(.top, 6)
+				.padding(.bottom, 2)
+				.accessibilityAddTraits(.isHeader)
 			ForEach(imported, id: \.self) { prefix in
 				row(prefix, keys: counts[prefix], source: importedSources[prefix], removable: false, unavailable: availability.reason)
 			}
@@ -56,15 +70,18 @@ struct VaultSchemaClientPrefixesPopover: View {
 				VaultSchemaPrefixField(store: store, project: project, availability: availability, onOpenKey: onOpenKey)
 			}
 			VaultHairline()
-			HStack {
-				Text("\(Set(own).union(importedSources.keys).count) of \(Prefixes.maximum)")
+			HStack(spacing: 8) {
+				Text("\(Set(own).union(importedSources.keys).count) of \(Prefixes.maximum) custom prefixes")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
 				Spacer(minLength: 8)
-				Text("Changes join the draft")
+				if canEdit {
+					VaultBarButton(title: "Review & save…", disabled: onReview == nil, height: 24) { onReview?() }
+						.help("Changes here join the Schema draft until you review and save them to lpm.json (⌘S)")
+				}
 			}
-			.font(.system(size: 11))
-			.foregroundStyle(VaultPalette.textTertiary)
 			.padding(.horizontal, 14)
-			.padding(.vertical, 10)
+			.padding(.vertical, 8)
 		}
 		.frame(width: 340)
 		// A removal waiting for confirmation ends when its prefix goes some other way, such as an undo.
@@ -80,11 +97,11 @@ struct VaultSchemaClientPrefixesPopover: View {
 			} label: {
 				HStack(spacing: 6) {
 					Image(systemName: showsFrameworks ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
-					Text("Framework prefixes — always public").font(.system(size: 11.5))
+					Text("Framework prefixes, always public").font(.system(size: 11.5))
 					Spacer(minLength: 8)
-					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(VaultTypography.tabular(11))
+					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(VaultTypography.tabular(11)).foregroundStyle(VaultPalette.textTertiary)
 				}
-				.foregroundStyle(VaultPalette.textTertiary)
+				.foregroundStyle(VaultPalette.textSecondary)
 				.padding(.horizontal, 4)
 				.frame(height: 24)
 				.contentShape(Rectangle())
@@ -274,7 +291,7 @@ private struct VaultSchemaPrefixField: View {
 		let change = prefix.isEmpty || issue != nil ? nil : context.map { Prefixes.adding(prefix, in: $0) }
 		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 6) {
-				TextField("NEW_PREFIX_", text: $entry)
+				TextField("Custom prefix", text: $entry, prompt: Text("e.g. PUBLIC_").foregroundStyle(VaultPalette.textFaint))
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12))
 					.autocorrectionDisabled()

@@ -486,12 +486,12 @@ extension ProjectEnvSchemaRule {
 			context.declaredKeys?.contains(where: { $0 != context.key }) == false
 				? .init(isAvailable: false, hint: "no other keys") : .init(isAvailable: true, hint: "another key")
 		case .empty: .init(isAvailable: true, hint: "unset / allow / reject")
-		case .format: .init(isAvailable: true, hint: "url, port, email…")
+		case .format: .init(isAvailable: true, hint: "URL, port, email…")
 		case .bounds:
-			format?.allowsBounds == true ? .init(isAvailable: true, hint: "inclusive bounds") : .init(isAvailable: false, hint: "needs integer or port format")
+			format?.allowsBounds == true ? .init(isAvailable: true, hint: "inclusive bounds") : .init(isAvailable: false, hint: "needs Integer or Port format")
 		case .length: .init(isAvailable: true, hint: "chars")
 		case .protocols:
-			format == .url ? .init(isAvailable: true, hint: "url schemes") : .init(isAvailable: false, hint: "needs url format")
+			format == .url ? .init(isAvailable: true, hint: "URL schemes") : .init(isAvailable: false, hint: "needs URL format")
 		case .pattern: .init(isAvailable: true, hint: "regular expression")
 		case .allowedValues: secret ? .init(isAvailable: false, hint: "not for secret keys") : .init(isAvailable: true, hint: "enum")
 		case .defaultValue: secret ? .init(isAvailable: false, hint: "not for secret keys") : .init(isAvailable: true, hint: "value")

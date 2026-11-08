@@ -105,7 +105,7 @@ struct ProjectEnvSchemaRuleTests {
 		let secret = try rule(#"{"secret":true,"format":"url"}"#)
 		let key = Rule.Context(key: "KEY")
 		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "not for secret keys"))
-		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "needs integer or port format"))
+		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "needs Integer or Port format"))
 		#expect(secret.availability(of: .protocols, in: key).isAvailable)
 		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "not for public keys"))
 		#expect(Rule().availability(of: .secret, in: .init(key: "MODE", comparedBy: ["X"])) == .init(isAvailable: false, hint: "X compares its value"))

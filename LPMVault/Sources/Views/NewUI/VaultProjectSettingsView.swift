@@ -79,38 +79,23 @@ struct VaultProjectSettingsView: View {
 
 	// MARK: - Header
 
-	/// The way back on a line of its own above the title, so the title starts
-	/// where every page's does.
+	/// The page's place as a path: the way back is where the path starts, so
+	/// the title row starts and stands as every page's does.
 	private var header: some View {
-		VStack(alignment: .leading, spacing: 2) {
-			Button(action: onBack) {
-				HStack(spacing: 4) {
-					Image(systemName: "chevron.left").font(.system(size: 9.5, weight: .semibold))
-					Text("All variables").font(.system(size: 12))
-				}
-				.foregroundStyle(VaultPalette.accentForeground)
-				.padding(.horizontal, 4)
-				.frame(height: 20)
-				.contentShape(Rectangle())
-			}
-			.buttonStyle(VaultPressStyle(cornerRadius: 5))
-			.padding(.horizontal, -4)
-			.vaultPointingHand()
-			.accessibilityLabel("Back to all variables")
-			titleRow
-		}
-		.padding(.horizontal, 20)
-		.padding(.top, 10)
-		.padding(.bottom, 12)
-	}
-
-	private var titleRow: some View {
 		HStack(spacing: 12) {
-			Text("Project Settings")
-				.vaultPageTitle()
-				.lineLimit(1)
-				.accessibilityAddTraits(.isHeader)
-				.accessibilityFocused($titleFocused)
+			HStack(spacing: 8) {
+				VaultBackTitle(title: "All variables", action: onBack)
+				Image(systemName: "chevron.right")
+					.font(.system(size: 12, weight: .semibold))
+					.foregroundStyle(VaultPalette.textFaint)
+					.accessibilityHidden(true)
+				Text("Project Settings")
+					.vaultPageTitle()
+					.lineLimit(1)
+					.accessibilityAddTraits(.isHeader)
+					.accessibilityFocused($titleFocused)
+			}
+			.fixedSize()
 			Spacer(minLength: 12)
 			if let error = store.projectSettingsErrors[project.id] {
 				Text(error)
@@ -132,7 +117,8 @@ struct VaultProjectSettingsView: View {
 					.keyboardShortcut("s", modifiers: .command)
 			}
 		}
-		.frame(minHeight: 28)
+		.padding(.horizontal, 20)
+		.frame(height: 60)
 	}
 
 	private var identity: some View {
@@ -435,5 +421,30 @@ struct VaultProjectSettingsView: View {
 		case .notAnImage: "That file isn't an image LPM Vault can show."
 		case .couldNotSave: "The image couldn't be copied into LPM Vault."
 		}
+	}
+}
+
+/// The start of a page's path, in the title's size but quieter, which goes back to it.
+private struct VaultBackTitle: View {
+	let title: String
+	let action: () -> Void
+
+	@State private var hovering = false
+
+	var body: some View {
+		Button(action: action) {
+			Text(title)
+				.font(.system(size: 20, weight: .semibold))
+				.tracking(-0.3)
+				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
+				.lineLimit(1)
+				.contentShape(Rectangle())
+				.vaultHoverAnimation(hovering)
+		}
+		.buttonStyle(VaultPressStyle(cornerRadius: 5))
+		.vaultPointingHand()
+		.onHover { hovering = $0 }
+		.help("Back to All variables")
+		.accessibilityLabel("Back to all variables")
 	}
 }

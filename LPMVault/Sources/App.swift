@@ -274,12 +274,12 @@ struct LPMVaultApp: App {
 
 				// The title bar's sync status offers these too; their shortcuts live here.
 				let cannotSync = !store.isUnlocked || store.selectedProject == nil || !store.isLoggedIn || store.isSyncing
-				Button("Pull…") {
+				Button("Pull from lpm.dev…") {
 					NotificationCenter.default.post(name: .pullProject, object: nil)
 				}
 				.keyboardShortcut("l", modifiers: [.command, .shift])
 				.disabled(cannotSync)
-				Button(store.selectedAccountIsOrganization ? "Share…" : "Push…") {
+				Button(store.selectedAccountIsOrganization ? "Share with Organization…" : "Push to lpm.dev…") {
 					NotificationCenter.default.post(name: .pushProject, object: nil)
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])

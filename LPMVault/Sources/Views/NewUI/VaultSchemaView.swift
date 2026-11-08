@@ -144,13 +144,14 @@ struct VaultSchemaView: View {
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
-				HStack(spacing: 5) {
-					Image(systemName: "doc").font(.system(size: 11))
-					Text("lpm.json › envSchema").font(VaultTypography.tabular(11.5))
-					Text("· plain text, shared with the team").font(.system(size: 12.5))
+				// Whole parts go as the header narrows, the note first, never part of a word.
+				ViewThatFits(in: .horizontal) {
+					location(path: "lpm.json › envSchema", note: "· plain text, shared with the team")
+					location(path: "lpm.json › envSchema", note: nil)
+					location(path: "lpm.json", note: nil)
+					Color.clear.frame(width: 0, height: 0)
 				}
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
+				.help("lpm.json › envSchema, in plain text, shared with the team through the repository")
 			}
 			Spacer(minLength: 8)
 			if state != nil {
@@ -174,6 +175,17 @@ struct VaultSchemaView: View {
 		}
 		.padding(.horizontal, 20)
 		.frame(height: 60)
+	}
+
+	private func location(path: String, note: String?) -> some View {
+		HStack(spacing: 5) {
+			Image(systemName: "doc").font(.system(size: 11)).accessibilityHidden(true)
+			Text(path).font(VaultTypography.tabular(11.5))
+			if let note { Text(note).font(.system(size: 12.5)) }
+		}
+		.foregroundStyle(VaultPalette.textTertiary)
+		.lineLimit(1)
+		.fixedSize()
 	}
 
 	// MARK: - Changes on disk
@@ -432,10 +444,11 @@ struct VaultSchemaView: View {
 							groupsHeader(count: listed.groupCount)
 							if listed.groups.isEmpty {
 								Text("No groups yet. A group asks the LPM CLI for all, one or none of its keys.")
-									.font(.system(size: 12))
+									.font(.system(size: 12.5))
 									.foregroundStyle(VaultPalette.textTertiary)
 									.padding(.horizontal, 20)
-									.frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+									.padding(.vertical, 12)
+									.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 							}
 							ForEach(listed.groups, id: \.name) { group in
@@ -687,8 +700,7 @@ struct VaultSchemaView: View {
 		.padding(.horizontal, 20)
 		.padding(.vertical, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(VaultPalette.headerRow)
-		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+		.vaultSectionBand()
 	}
 
 	private func undeclaredRow(_ stored: VaultStore.StoredSchemaKey) -> some View {
@@ -756,8 +768,7 @@ struct VaultSchemaView: View {
 		.padding(.horizontal, 20)
 		.padding(.vertical, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(VaultPalette.headerRow)
-		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+		.vaultSectionBand()
 	}
 
 	private func groupRow(_ group: ProjectEnvSchemaOverview.Group, state: RowState) -> some View {
@@ -802,11 +813,25 @@ struct VaultSchemaView: View {
 
 	// MARK: - Status bar
 
-	/// A narrow bar names only the smart views' counts.
+	/// How much the status bar says: as it narrows, whole parts go, the
+	/// least needed first, so no count or word is ever cut.
+	private enum StatusDetail: Comparable {
+		/// Everything, with the note that the LPM CLI enforces the rules.
+		case full
+		/// Without the note.
+		case counts
+		/// The declared keys, the failing ones and the draft, and the smart views by name.
+		case essential
+		/// The failing keys and the draft, and only the smart views' counts.
+		case compact
+	}
+
 	private func statusBar(_ listed: Listed?) -> some View {
 		ViewThatFits(in: .horizontal) {
-			statusLine(listed, compactLinks: false)
-			statusLine(listed, compactLinks: true)
+			statusLine(listed, detail: .full)
+			statusLine(listed, detail: .counts)
+			statusLine(listed, detail: .essential)
+			statusLine(listed, detail: .compact)
 		}
 		.font(.system(size: 11))
 		.foregroundStyle(VaultPalette.textTertiary)
@@ -824,13 +849,13 @@ struct VaultSchemaView: View {
 		}
 	}
 
-	private func statusLine(_ listed: Listed?, compactLinks: Bool) -> some View {
+	private func statusLine(_ listed: Listed?, detail: StatusDetail) -> some View {
 		HStack(spacing: 12) {
 			HStack(spacing: 12) {
 				switch state {
 				case .loaded?:
 					if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
-						loadedStatus(listed)
+						loadedStatus(listed, detail: detail)
 					} else {
 						Text(storedKeyCount.counted("stored key"))
 						Text("·")
@@ -856,23 +881,31 @@ struct VaultSchemaView: View {
 			Spacer(minLength: 0)
 			if let smartViews {
 				// The left side already counts the keys that fail, in the Schema's own words.
-				VaultSmartViewLinks(counts: smartViews, scope: "Project", compact: compactLinks,
+				VaultSmartViewLinks(counts: smartViews, scope: detail <= .counts ? "Project" : nil, compact: detail == .compact,
 					omitted: failureSummary == nil ? [] : [.invalid], open: onOpenSmartView)
 			}
 			draftActions
 		}
 	}
 
+	/// What the loaded schema holds, the parts `detail` keeps, between dots.
+	/// A count of none says nothing the page doesn't, so it's left out.
 	@ViewBuilder
-	private func loadedStatus(_ listed: Listed) -> some View {
-		Text(listed.declaredCount.counted("declared key"))
-		Text("·")
-		Text(listed.groupCount.counted("group"))
-		Text("·")
-		Text("\(listed.inheritedCount) inherited")
-		draftStatus
+	private func loadedStatus(_ listed: Listed, detail: StatusDetail) -> some View {
+		let changes = draft?.changeCount ?? 0
+		let counts: [String] = detail == .compact ? [] : [listed.declaredCount.counted("declared key")]
+			+ (detail <= .counts && listed.groupCount > 0 ? [listed.groupCount.counted("group")] : [])
+			+ (detail <= .counts && listed.inheritedCount > 0 ? ["\(listed.inheritedCount) inherited"] : [])
+		ForEach(Array(counts.enumerated()), id: \.offset) { index, count in
+			if index > 0 { Text("·") }
+			Text(count)
+		}
+		if changes > 0 {
+			if !counts.isEmpty { Text("·") }
+			draftLabel(changes)
+		}
 		if let failing = failureSummary {
-			Text("·")
+			if !counts.isEmpty || changes > 0 { Text("·") }
 			HStack(spacing: 4) {
 				Image(systemName: VaultSmartView.invalid.symbol)
 					.font(.system(size: 9.5, weight: .semibold))
@@ -883,7 +916,7 @@ struct VaultSchemaView: View {
 			}
 			.layoutPriority(1)
 		}
-		if (draft?.changeCount ?? 0) == 0 {
+		if changes == 0, detail == .full {
 			Text("·")
 			Text("enforced by LPM CLI")
 		}
@@ -893,11 +926,15 @@ struct VaultSchemaView: View {
 	private var draftStatus: some View {
 		if let changes = draft?.changeCount, changes > 0 {
 			Text("·")
-			Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
-				.fontWeight(.semibold)
-				.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
-				.layoutPriority(1)
+			draftLabel(changes)
 		}
+	}
+
+	private func draftLabel(_ changes: Int) -> some View {
+		Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
+			.fontWeight(.semibold)
+			.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
+			.layoutPriority(1)
 	}
 
 	/// Review & save and Discard for the whole draft, while the panel that
