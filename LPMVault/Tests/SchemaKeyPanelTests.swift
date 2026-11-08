@@ -333,7 +333,8 @@ extension SheetInteractionTests {
 
 		@Test("adding the CI storage row writes nothing until a storage is chosen")
 		func addingCIStorageWritesNothing() async throws {
-			let (store, host, folder) = try await workspace()
+			// A window that fits CI's 1024 × 768 screen, so the button is on screen, where a menu can line up with it.
+			let (store, host, folder) = try await workspace(size: NSSize(width: 1000, height: 640))
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
@@ -344,10 +345,13 @@ extension SheetInteractionTests {
 			let storage = try await host.waitForElement(saying: "CI storage", in: menu)
 			#expect(menu.frame.contains(CGPoint(x: storage.frame.midX, y: storage.frame.midY)), "Shown without scrolling")
 			#expect(menu.frame.height < 360, "Half a one-column menu's height: \(menu.frame.height)")
+			let screen = try #require(host.window.screen?.visibleFrame)
+			try #require(screen.contains(button.frame), "A menu stays on screen, so its button must be: \(button.frame) on \(screen)")
 			let below = abs(menu.frame.maxY - (button.frame.minY - VaultPopoverPresenter.gap)) < 1
 			let above = abs(menu.frame.minY - (button.frame.maxY + VaultPopoverPresenter.gap)) < 1
 			#expect(below || above, "Against the button: menu \(menu.frame), button \(button.frame)")
-			#expect(abs(menu.frame.maxX - button.frame.maxX) < 1 || abs(menu.frame.minX - button.frame.minX) < 1, "Lined up with one of its edges")
+			#expect(abs(menu.frame.maxX - button.frame.maxX) < 1 || abs(menu.frame.minX - button.frame.minX) < 1,
+				"Lined up with one of its edges: menu \(menu.frame), button \(button.frame)")
 			try await host.click("CI storage", in: menu)
 			#expect(try await host.waitUntil { !menu.isVisible })
 			#expect(try await host.waitForText("variable"))
@@ -441,7 +445,9 @@ extension SheetInteractionTests {
 			}}
 			"""#
 
-		private func workspace(_ sample: String = Self.sample) async throws -> (VaultStore, SheetTestHost<some View>, String) {
+		private func workspace(_ sample: String = Self.sample, size: NSSize = NSSize(width: 1400, height: 760))
+			async throws -> (VaultStore, SheetTestHost<some View>, String)
+		{
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-panel-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
@@ -461,7 +467,7 @@ extension SheetInteractionTests {
 			let defaults = try #require(UserDefaults(suiteName: "schema-panel-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
-				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
+				size: size, keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			try await host.click("Schema")
 			#expect(try await host.waitForText("enforced by LPM CLI"))
