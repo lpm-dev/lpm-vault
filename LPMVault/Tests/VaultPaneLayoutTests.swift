@@ -261,6 +261,22 @@ struct VaultPaneLayoutTests {
 @Suite("Workspace table column layout")
 @MainActor
 struct VaultTableColumnLayoutTests {
+	@Test("while values are shown to be read, value columns keep a readable width and the key column its keys', and the table scrolls instead")
+	func readableValues() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production"), .environment("staging")]
+		let keyWidth: CGFloat = 286
+		let squeezed = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: keyWidth)
+		#expect(squeezed[.environment("default")] < VaultMetrics.environmentColumn, "Masked values share what's left")
+		let readable = VaultTableColumnLayout(columns: columns, available: 709, keyWidth: keyWidth, valueMinimum: VaultMetrics.readableValueColumn)
+		for environment in ["default", "production", "staging"] {
+			#expect(readable[.environment(environment)] >= VaultMetrics.readableValueColumn)
+		}
+		#expect(readable[.key] == keyWidth, "The key column keeps what its keys need")
+		#expect(readable.totalWidth > 709, "So the table is wider than the view, and scrolls")
+		let roomy = VaultTableColumnLayout(columns: columns, available: 1100, keyWidth: keyWidth, valueMinimum: VaultMetrics.readableValueColumn)
+		#expect(abs(roomy.totalWidth - 1100) < 0.5, "With room, nothing scrolls")
+	}
+
 	@Test("the key column fits the longest key shown, up to a little past its default, and gives what it doesn't need to the values")
 	func keyColumnFitsKeys() {
 		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production")]

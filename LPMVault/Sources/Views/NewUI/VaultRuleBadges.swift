@@ -17,7 +17,7 @@ struct VaultRuleBadge: View {
 	}
 }
 
-/// Where a key's stored values fail its rules, as the first of its rules: the
+/// Where a key's stored values fail its rules, under the key's name: the
 /// environment when there's one, else how many, each named in the help.
 struct VaultRuleFailureBadge: View {
 	/// The failing environments as shown, such as ".env.production".
@@ -34,13 +34,10 @@ struct VaultRuleFailureBadge: View {
 				.foregroundStyle(VaultSmartView.invalid.tint)
 				.accessibilityHidden(true)
 			Text(text)
-				.font(.system(size: 11, weight: .medium))
+				.font(.system(size: 11.5, weight: .medium))
 				.foregroundStyle(VaultPalette.redText)
 				.lineLimit(1)
 		}
-		.padding(.horizontal, 7)
-		.padding(.vertical, 3)
-		.background(RoundedRectangle(cornerRadius: 5).fill(VaultPalette.redTint))
 		.help("A stored value fails these rules in \(environments.joined(separator: ", "))")
 		.accessibilityElement(children: .ignore)
 		.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")

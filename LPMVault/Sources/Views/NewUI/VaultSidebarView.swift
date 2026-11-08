@@ -154,11 +154,7 @@ struct VaultSidebarView: View {
 		}
 		.padding(.horizontal, 10)
 		.frame(height: 30)
-		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay {
-			RoundedRectangle(cornerRadius: 8)
-				.strokeBorder(searchFocused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
-		}
+		.vaultSearchField(focused: searchFocused)
 	}
 
 	/// Offers to look for what was typed among stored values, as typed text
@@ -222,7 +218,7 @@ struct VaultSidebarView: View {
 				Button(action: onCloudProjects) {
 					Image(systemName: "icloud.and.arrow.down")
 						.font(.system(size: 11, weight: .medium))
-						.foregroundStyle(VaultPalette.accentForeground)
+						.foregroundStyle(VaultPalette.textTertiary)
 						.frame(width: 24, height: 22)
 						.contentShape(Rectangle())
 				}
@@ -305,7 +301,7 @@ struct VaultSidebarView: View {
 			projectButton(project, selected: selected, expanded: expanded, lifted: lifted, hovered: hovered, cliAccess: cliAccess, order: order)
 		}
 		// The project at a glance, beside its row, once the pointer rests there; never while it's being moved.
-		.vaultHoverPopover(arrowEdge: .trailing, enabled: reorder.lift == nil && store.isUnlocked) {
+		.vaultHoverPopover(delay: .milliseconds(400), arrowEdge: .trailing, enabled: reorder.lift == nil && store.isUnlocked) {
 			VaultProjectHoverCard(store: store, project: project)
 		}
 		.accessibilityLabel("\(project.name), \(project.secretCount.counted("secret")), \(approvalDescription)")
@@ -801,7 +797,7 @@ struct VaultAccountSwitcher: View {
 		.background {
 			RoundedRectangle(cornerRadius: 10)
 				.fill(VaultPalette.control)
-				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
+				.shadow(color: VaultPalette.shadow.opacity(0.12), radius: 10, y: 4)
 		}
 		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.onExitCommand { isPresented = false }
@@ -820,7 +816,8 @@ struct VaultAccountSwitcher: View {
 
 	/// A vault: the person's own in a round avatar, an organization's in a rounded square, the open one checked.
 	private func accountRow(name: String, initials: String, round: Bool, account: SelectedAccount) -> some View {
-		let selected = store.selectedAccount == account && !store.isShowingAccountPage
+		// The vault in use stays checked while Settings or Platforms shows over it.
+		let selected = store.selectedAccount == account
 		return Button {
 			store.selectAccount(account)
 			isPresented = false

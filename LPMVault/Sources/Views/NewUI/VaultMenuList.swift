@@ -173,14 +173,15 @@ struct VaultMenuList<ID: Hashable>: View {
 				}
 				Text(row.title)
 					.font(row.code ? VaultTypography.code(12) : .system(size: 12.5))
-					.foregroundStyle(!row.isEnabled ? VaultPalette.textFaint : (row.destructive ? VaultPalette.redText : VaultPalette.textPrimary))
+					.foregroundStyle(!row.isEnabled ? VaultPalette.disabledText : (row.destructive ? VaultPalette.redText : VaultPalette.textPrimary))
 					.lineLimit(1)
 				Spacer(minLength: 4)
 				if let detail = row.detail {
-					// The same strength on every row, undimmed: a row that can't be chosen says what it needs.
+					// A row that can't be chosen still says what it needs, a step quieter than a working row's
+					// detail and a step stronger than its own title, so the reason reads.
 					Text(detail)
 						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: 11))
-						.foregroundStyle(VaultPalette.textTertiary)
+						.foregroundStyle(row.isEnabled ? VaultPalette.textTertiary : VaultPalette.textFaint)
 						.lineLimit(1)
 				}
 			}

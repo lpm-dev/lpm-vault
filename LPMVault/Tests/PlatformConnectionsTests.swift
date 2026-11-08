@@ -1215,7 +1215,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("No platforms connected"))
 			#expect(try await host.waitForText("Touch ID or your password confirms every publish."))
-			#expect(try await host.waitForText("CONNECTED", exactly: true))
+			#expect(!host.lines().contains { $0.text == "CONNECTED" }, "The empty card says it, with no heading over it")
 			let states = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Not connected") }
 			#expect(states.count == 5, "\(states.map(\.texts))")
 			#expect(!host.lines().contains { $0.text.contains("Disconnecting forgets") }, "Nothing listed, nothing to disconnect")

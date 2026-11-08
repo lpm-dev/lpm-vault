@@ -643,6 +643,10 @@ struct VaultSchemaView: View {
 							.help("Renamed from \(original) in your draft")
 					}
 				}
+				// Where the key's values fail sits with the key, as a status; the Rules column holds only rules.
+				if state != .removed, let failing = failures[rule.key] {
+					VaultRuleFailureBadge(environments: failing)
+				}
 				if let description, !description.isEmpty {
 					Text(description)
 						.font(.system(size: 11.5))
@@ -655,14 +659,12 @@ struct VaultSchemaView: View {
 			.frame(width: Self.keyWidth, alignment: .leading)
 
 			Group {
-				let failing = state == .removed ? nil : failures[rule.key]
-				if rule.badges.isEmpty, rule.source == nil, rule.overrides == nil, failing == nil {
+				if rule.badges.isEmpty, rule.source == nil, rule.overrides == nil {
 					Text("No rules")
 						.font(.system(size: 11.5).italic())
 						.foregroundStyle(VaultPalette.textFaint)
 				} else {
 					VaultFlowLayout {
-						if let failing { VaultRuleFailureBadge(environments: failing) }
 						ForEach(rule.badges, id: \.self) { VaultRuleBadge(badge: $0) }
 						if let source = rule.source { VaultSourceBadge(source: source) }
 						if let source = rule.overrides { VaultSourceBadge(source: source, isOverridden: true) }

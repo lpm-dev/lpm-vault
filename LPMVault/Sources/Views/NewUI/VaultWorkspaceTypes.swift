@@ -84,10 +84,22 @@ struct VaultTableColumnLayout {
 
   /// `keyWidth` is the width the keys shown need, which the key column takes
   /// instead of its default when narrower, so the value columns get the rest.
-  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil) {
+  /// `valueMinimum`, while values are shown to be read, keeps each value
+  /// column at least that wide and the key column at what its keys need:
+  /// the table scrolls, with the key column pinned, rather than cut values
+  /// short where they're compared.
+  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil,
+    valueMinimum: CGFloat? = nil) {
     let fittedKey = keyWidth.map { min(Self.fittedKeyMaximum, max(Self.fittedKeyMinimum, $0)) }
     func defaultWidth(_ column: VaultTableColumn) -> CGFloat {
       column == .key ? (fittedKey ?? column.defaultWidth) : column.defaultWidth
+    }
+    func minimum(_ column: VaultTableColumn) -> CGFloat {
+      switch column {
+      case .environment, .value: max(column.minimumWidth, valueMinimum ?? 0)
+      case .key: valueMinimum == nil ? Self.fittedKeyMinimum : defaultWidth(column)
+      case .actions: column.minimumWidth
+      }
     }
     let defaultTotal = columns.reduce(CGFloat.zero) { $0 + defaultWidth($1) }
     let environmentCount = columns.reduce(0) { count, column in
@@ -100,7 +112,7 @@ struct VaultTableColumnLayout {
     // before any of them scrolls.
     let deficit = requested.isEmpty ? max(0, defaultTotal - available) : 0
     func slack(_ column: VaultTableColumn) -> CGFloat {
-      max(0, defaultWidth(column) - (column == .key ? Self.fittedKeyMinimum : column.minimumWidth))
+      max(0, defaultWidth(column) - minimum(column))
     }
     let valueSlack = columns.filter { $0 != .key }.reduce(CGFloat.zero) { $0 + slack($1) }
     let valueShrink = valueSlack > 0 ? min(1, deficit / valueSlack) : 0
@@ -116,7 +128,7 @@ struct VaultTableColumnLayout {
         share = environmentCount == 0 && column == .value ? extra : 0
       }
       let fitted = defaultWidth(column) - slack(column) * (column == .key ? keyShrink : valueShrink)
-      let width = max(column.minimumWidth, requested[column] ?? (fitted + share))
+      let width = max(column.minimumWidth, requested[column] ?? max(minimum(column), fitted + share))
       widths[column] = width
       position += width
       boundaries.append(Boundary(id: column, position: position))

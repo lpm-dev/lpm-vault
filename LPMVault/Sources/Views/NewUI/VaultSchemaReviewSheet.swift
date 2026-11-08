@@ -339,7 +339,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			ForEach(Array(effects.prefix(limit).enumerated()), id: \.offset) { index, effect in
 				HStack(alignment: .top, spacing: 8) {
-					VaultStatusDot(color: environmentColor(effect.environment)).padding(.top, 5)
+					VaultEnvSwatch(color: environmentColor(effect.environment)).padding(.top, 5)
 					Text(VaultProject.displayName(for: effect.environment))
 						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textSecondary)

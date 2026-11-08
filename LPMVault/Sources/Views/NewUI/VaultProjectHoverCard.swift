@@ -19,28 +19,33 @@ struct VaultProjectHoverCard: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			HStack(spacing: 10) {
-				VaultProjectIconView(appearance: store.projectIcons.appearance(for: project.id), size: 26)
+			// The project's icon heads the column the lines' icons sit in, so its name starts where their text does.
+			HStack(spacing: Self.iconGap) {
+				VaultProjectIconView(appearance: store.projectIcons.appearance(for: project.id), size: Self.iconColumn)
 				Text(project.name)
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(2)
 					.fixedSize(horizontal: false, vertical: true)
 			}
-			.padding(.bottom, 10)
+			.padding(.bottom, 12)
 
-			VStack(alignment: .leading, spacing: 7) {
+			VStack(alignment: .leading, spacing: 8) {
 				line(approval)
 				line(schema)
 				line(changed)
 			}
-			VaultHairline().padding(.vertical, 10)
-			VStack(alignment: .leading, spacing: 7) {
+			VaultHairline().padding(.vertical, 11)
+			// The worst first, as the matrix's marks are: invalid, missing, then drifting.
+			VStack(alignment: .leading, spacing: 8) {
 				line(.init(symbol: "doc", text: project.environmentNames.count.counted("env file")))
+				if let invalid = invalidKeyCount, invalid > 0 {
+					line(.init(symbol: VaultSmartView.invalid.symbol, text: "\(invalid) invalid", tint: VaultSmartView.invalid.tint))
+				}
 				if let snapshot = store.workspaceSnapshots[project.id] {
-					line(.init(symbol: VaultSmartView.drift.symbol, text: "\(snapshot.driftingKeyCount) drifting"))
 					line(.init(symbol: VaultSmartView.missing.symbol, text: "\(snapshot.missingKeyCount) missing",
 						tint: snapshot.missingKeyCount > 0 ? VaultSmartView.missing.tint : nil))
+					line(.init(symbol: VaultSmartView.drift.symbol, text: "\(snapshot.driftingKeyCount) drifting"))
 				}
 			}
 		}
@@ -57,12 +62,16 @@ struct VaultProjectHoverCard: View {
 		var tint: Color?
 	}
 
+	/// The icon column's width, which the project's icon fills and each line's icon is centered in.
+	private static let iconColumn: CGFloat = 22
+	private static let iconGap: CGFloat = 10
+
 	private func line(_ line: Line) -> some View {
-		HStack(spacing: 9) {
+		HStack(spacing: Self.iconGap) {
 			Image(systemName: line.symbol)
-				.font(.system(size: 11, weight: .medium))
+				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(line.tint ?? VaultPalette.textTertiary)
-				.frame(width: 16)
+				.frame(width: Self.iconColumn)
 				.accessibilityHidden(true)
 			Text(line.text)
 				.font(.system(size: 12))
@@ -79,6 +88,11 @@ struct VaultProjectHoverCard: View {
 		}
 	}
 
+	/// Keys whose stored values fail lpm.json, once they've been checked.
+	private var invalidKeyCount: Int? {
+		store.valueChecks[project.id].map { Set($0.environments.values.flatMap(\.problems.keys)).count }
+	}
+
 	private var schema: Line {
 		Self.schemaLine(state: store.keyDescriptions[project.id]?.schema, check: store.valueChecks[project.id], hasFolder: !project.path.isEmpty)
 	}
@@ -86,10 +100,11 @@ struct VaultProjectHoverCard: View {
 	/// What the project's lpm.json says of its values, from what's been read.
 	static func schemaLine(state: ProjectEnvSchemaState?, check: ProjectEnvValueCheck?, hasFolder: Bool) -> Line {
 		let symbol = "curlybraces"
-		guard hasFolder else { return .init(symbol: symbol, text: "No project folder on this Mac") }
+		let noFolder = Line(symbol: "folder.badge.questionmark", text: "No project folder on this Mac")
+		guard hasFolder else { return noFolder }
 		switch state {
 		case nil: return .init(symbol: symbol, text: "lpm.json not read yet")
-		case .noFolder?: return .init(symbol: symbol, text: "No project folder on this Mac")
+		case .noFolder?: return noFolder
 		case .unreadable?: return .init(symbol: symbol, text: "lpm.json can't be read", tint: VaultPalette.warningMark)
 		case .loaded(let overview, _)?:
 			guard !overview.rules.isEmpty else { return .init(symbol: symbol, text: "No rules in lpm.json") }

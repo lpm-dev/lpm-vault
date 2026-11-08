@@ -92,6 +92,17 @@ extension SheetInteractionTests {
 			#expect(personal.isSelected, "The open vault is the checked one")
 		}
 
+		@Test("the vault in use stays checked while Settings shows over it")
+		func checkedOverSettings() async throws {
+			let store = store(signedIn: true)
+			store.showSettings()
+			let host = menu(store)
+			defer { host.window.close() }
+			let personal = try await host.waitForElement(saying: "tolga")
+			#expect(personal.isSelected)
+			#expect(try await !host.waitForElement(saying: "Acme").isSelected)
+		}
+
 		@Test("choosing an organization opens its vault and closes the menu")
 		func choosesOrganization() async throws {
 			let store = store(signedIn: true)

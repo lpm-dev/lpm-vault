@@ -137,7 +137,8 @@ struct PlatformsView: View {
 			.accessibilityAddTraits(.isHeader)
 		return VStack(alignment: .leading, spacing: 7) {
 			if connections.isEmpty {
-				label
+				// Once read, an empty list's card says it's empty, so it needs no heading saying "Connected" above it.
+				if platforms.isLoading { label }
 			} else {
 				let note = Text(Self.disconnectingNote(revokesCloudflare: connections.contains { $0.platform == .cloudflare }))
 					.font(.system(size: 11.5))

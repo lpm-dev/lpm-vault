@@ -61,6 +61,10 @@ struct VaultCliApprovalLink: View {
 	}
 }
 
+/// The coordinate space the matrix measures its sideways scroll in, outside
+/// the view so a geometry reader's sendable closure can name it.
+private let vaultMatrixSpace = "VaultContentView.matrix"
+
 struct VaultContentView: View {
 	let project: VaultProject
 	let snapshot: VaultWorkspaceSnapshot
@@ -123,6 +127,8 @@ struct VaultContentView: View {
 
 	@State private var rawSelectedLineCount = 0
 	@State private var showsTransferMenu = false
+	/// How far the matrix has scrolled sideways, which pins its key column.
+	@State private var matrixScrollX: CGFloat = 0
 	@State private var rowClicks = VaultRowClicks()
 
 	var body: some View {
@@ -475,6 +481,8 @@ struct VaultContentView: View {
 			}
 		}
 		.fixedSize()
+		// The last borderless control's label ends where the filled New Key above does; its hover fill reaches past.
+		.padding(.trailing, -9)
 	}
 
 	private enum Transfer: Hashable { case importing, exporting }
@@ -506,10 +514,14 @@ struct VaultContentView: View {
 
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
 		GeometryReader { geometry in
+			// Shown values are read side by side, so their columns keep a readable width and the table scrolls instead.
+			let readsValues = derived.filteredKeys.contains(where: isShown)
 			let layout = VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
 				available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.matrix.requested,
-				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3))
+				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3),
+				valueMinimum: readsValues ? VaultMetrics.readableValueColumn : nil)
 			let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
+			let overflows = matrixScrollX < tableWidth - geometry.size.width - 1
 
 			ScrollView([.horizontal, .vertical]) {
 				LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -534,6 +546,7 @@ struct VaultContentView: View {
 									isEdited: editedKeys.contains(key),
 									checks: valueChecks,
 									found: foundValues[key] ?? [],
+									pinnedOffset: matrixScrollX,
 									onSelect: {
 										if snapshot.summaries[key] == nil {
 											onAddKey(key)
@@ -556,7 +569,8 @@ struct VaultContentView: View {
 							tableWidth: tableWidth,
 							sortOrder: $sortOrder,
 							onResize: { column, width in columnWidths.matrix.resize(column, to: width, in: layout) },
-							onResizeActivity: onResizeColumns
+							onResizeActivity: onResizeColumns,
+							pinnedOffset: matrixScrollX
 						)
 						.background(VaultPalette.headerRow)
 						.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
@@ -564,10 +578,22 @@ struct VaultContentView: View {
 				}
 				.frame(width: tableWidth, alignment: .leading)
 				.frame(minHeight: geometry.size.height, alignment: .top)
+				.onGeometryChange(for: CGFloat.self) { max(0, -$0.frame(in: .named(vaultMatrixSpace)).minX) } action: { matrixScrollX = $0 }
 			}
+			.coordinateSpace(.named(vaultMatrixSpace))
 			.defaultScrollAnchor(.topLeading)
+			// More columns past the view's edge fade into it, so the table says it goes on.
+			.overlay(alignment: .trailing) {
+				if overflows {
+					LinearGradient(colors: [VaultPalette.content.opacity(0), VaultPalette.content], startPoint: .leading, endPoint: .trailing)
+						.frame(width: 20)
+						.allowsHitTesting(false)
+						.accessibilityHidden(true)
+				}
+			}
 		}
 	}
+
 
 	@ViewBuilder
 	private func environmentDetail(_ derived: VaultContentDerivation, raw: VaultRawText?, editing: VaultRawTextEditing?) -> some View {
@@ -1066,12 +1092,16 @@ private struct VaultMatrixHeader: View {
 	@Binding var sortOrder: VaultKeySortOrder
 	let onResize: (VaultTableColumn, CGFloat) -> Void
 	let onResizeActivity: () -> Void
+	var pinnedOffset: CGFloat = 0
 
 	var body: some View {
 		HStack(spacing: 0) {
-			VaultKeySortHeader(order: $sortOrder)
-				.frame(width: layout[.key])
-			VaultTableColumnLine()
+			HStack(spacing: 0) {
+				VaultKeySortHeader(order: $sortOrder)
+					.frame(width: layout[.key])
+				VaultTableColumnLine()
+			}
+			.vaultPinnedColumn(offset: pinnedOffset) { VaultPalette.headerRow }
 
 			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
 				HStack(spacing: 7) {
@@ -1148,6 +1178,8 @@ private struct VaultMatrixRow: View {
 	var checks: VaultValueCheckPresentation = .none
 	/// The environments where a value search found the key's value.
 	var found: Set<String> = []
+	/// How far the table has scrolled sideways, which the key cell moves back by to stay in view.
+	var pinnedOffset: CGFloat = 0
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 	var onFindValue: (_ environment: String) -> Void = { _ in }
@@ -1162,6 +1194,7 @@ private struct VaultMatrixRow: View {
 	var body: some View {
 		Button(action: onSelect) {
 			HStack(spacing: 0) {
+				HStack(spacing: 0) {
 				HStack(spacing: 8) {
 					Text(key)
 						.font(VaultTypography.tabular(13, .medium))
@@ -1185,6 +1218,8 @@ private struct VaultMatrixRow: View {
 				.padding(.trailing, 14)
 				.frame(width: layout[.key])
 				VaultTableColumnLine()
+				}
+				.vaultPinnedColumn(offset: pinnedOffset) { VaultRowFill(selected: isSelected, hovering: hovering, resting: VaultPalette.content) }
 
 				ForEach(environments, id: \.self) { environment in
 					HStack(spacing: 6) {

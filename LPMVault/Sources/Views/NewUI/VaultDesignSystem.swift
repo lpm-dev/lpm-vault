@@ -22,6 +22,8 @@ enum VaultPalette {
 	static let textQuaternary = textTertiary
 	/// Hints and placeholders: still 4.5:1 on the content, the weakest text that says something.
 	static let textFaint = adaptive(light: 0x6C6C74, dark: 0xFFFFFF, darkOpacity: 0.48)
+	/// A control that's off: plainly fainter than any working control's text, in both appearances.
+	static let disabledText = adaptive(light: 0xA3A3AB, dark: 0xFFFFFF, darkOpacity: 0.36)
 	static let masked = textFaint
 
 	static let border = adaptive(light: 0xDCDBE2, dark: 0x3A3A3F)
@@ -120,7 +122,8 @@ enum VaultPalette {
 		environmentColors[index % environmentColors.count]
 	}
 
-	private static let environmentColors = [0x2FA6C0, 0x8D6BEA, 0xD6579A, 0x3D84F2, 0x8B909A, 0xA97C52].map { Color(hex: $0) }
+	// Purple, nearest the accent, comes late, so a second environment never reads as part of a selection.
+	private static let environmentColors = [0x2FA6C0, 0x3D84F2, 0xD6579A, 0xA97C52, 0x8D6BEA, 0x8B909A].map { Color(hex: $0) }
 }
 
 enum VaultMetrics {
@@ -145,6 +148,9 @@ enum VaultMetrics {
 	/// The space after a scroll view's content, so its end scrolls clear of a pinned footer's line.
 	static let scrollEndPadding: CGFloat = 32
 	static let environmentColumn: CGFloat = 190
+	/// The narrowest a value column gets while its values are shown to be read:
+	/// a local URL with its port, and a mark before it, fits whole.
+	static let readableValueColumn: CGFloat = 206
 	static let environmentValueColumn: CGFloat = 280
 	static let environmentActionsColumn: CGFloat = 142
 	/// The widest a settings-style page's column of cards grows.
@@ -207,6 +213,17 @@ extension View {
 	func vaultColumnHeader() -> some View {
 		font(.system(size: 12, weight: .semibold))
 			.foregroundStyle(VaultPalette.textSecondary)
+	}
+
+	/// A table's leading column kept in view while the table scrolls sideways
+	/// by `offset`: it moves back by as much, on `background` once cells slide
+	/// under it, and stays above them.
+	func vaultPinnedColumn<Background: View>(offset: CGFloat, @ViewBuilder background: () -> Background) -> some View {
+		let fill = background()
+		return self
+			.background { if offset > 0 { fill } }
+			.offset(x: offset)
+			.zIndex(1)
 	}
 
 	/// A section's band inside a list: its own fill, with a line on each
@@ -558,7 +575,7 @@ struct VaultBarButton: View {
 	@State private var hovering = false
 
 	private var foreground: Color {
-		if disabled { return VaultPalette.textFaint }
+		if disabled { return VaultPalette.disabledText }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
 		if active { return VaultPalette.selectedText }
@@ -714,7 +731,7 @@ struct VaultOutlineButton: View {
 			}
 			// Hidden by color, not opacity, so it stays named for accessibility.
 			.foregroundStyle(resting && !hovering && !focused ? Color.clear
-				: disabled ? VaultPalette.textFaint
+				: disabled ? VaultPalette.disabledText
 				: (active ? VaultPalette.selectedText : (borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary)))
 			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
 			.frame(width: title == nil ? 28 : nil, height: 28)

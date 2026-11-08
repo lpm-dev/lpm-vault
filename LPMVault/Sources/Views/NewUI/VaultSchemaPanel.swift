@@ -597,7 +597,7 @@ private struct VaultSchemaKeyEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(renamable ? VaultPalette.control : .clear))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.strokeBorder(issue != nil ? VaultPalette.red : (renamable ? VaultPalette.border : .clear), lineWidth: issue != nil ? 1.5 : 1)
+					.strokeBorder(issue != nil ? VaultPalette.problemMark : (renamable ? VaultPalette.inputBorder : .clear), lineWidth: issue != nil ? 1.5 : 1)
 			}
 			if changed, renamable {
 				if let issue {
@@ -757,7 +757,7 @@ private struct VaultSchemaKeyEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.strokeBorder(invalid ? VaultPalette.red : (nameFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: invalid || nameFocused ? 1.5 : 1)
+					.strokeBorder(invalid ? VaultPalette.problemMark : (nameFocused ? VaultPalette.focusRing : VaultPalette.inputBorder), lineWidth: nameFocused ? 2 : (invalid ? 1.5 : 1))
 			}
 			switch status {
 			case .empty:
@@ -1019,8 +1019,7 @@ private struct VaultSchemaKeyEditor: View {
 			.lineLimit(1...4)
 			.padding(.horizontal, 9)
 			.padding(.vertical, 8)
-			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			.vaultInputBox()
 			.disabled(!canEdit)
 			.accessibilityLabel("Description")
 	}
@@ -1263,7 +1262,8 @@ private struct VaultSchemaKeyEditor: View {
 		.frame(height: 28)
 		.frame(maxWidth: .infinity)
 		.background(RoundedRectangle(cornerRadius: 7).fill(open ? VaultPalette.controlHover : VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		// Edged as the panel's text fields are, so every value it edits reads as one.
+		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.inputBorder, lineWidth: 1) }
 		.contentShape(Rectangle())
 	}
 
@@ -1289,8 +1289,7 @@ private struct VaultSchemaKeyEditor: View {
 			.autocorrectionDisabled()
 			.padding(.horizontal, 9)
 			.frame(height: 28)
-			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			.vaultInputBox()
 			.disabled(!canEdit)
 			.accessibilityLabel(label)
 	}
@@ -1353,8 +1352,7 @@ private struct VaultSchemaKeyEditor: View {
 						.font(VaultTypography.tabular(12))
 						.padding(.horizontal, 9)
 						.frame(height: 28)
-						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-						.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
+						.vaultInputBox()
 						.disabled(!canEdit)
 						.accessibilityLabel("Required when value")
 					}
@@ -1902,7 +1900,7 @@ struct VaultSchemaStoredValues: View {
 				ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
 					let status = status(in: environment, presentations: presentations)
 					HStack(alignment: .top, spacing: 7) {
-						VaultStatusDot(color: VaultPalette.environment(index))
+						VaultEnvSwatch(color: VaultPalette.environment(index))
 							.padding(.top, 4)
 						Text(VaultProject.displayName(for: environment))
 							.font(VaultTypography.tabular(11))

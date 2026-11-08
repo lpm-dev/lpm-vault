@@ -9,7 +9,7 @@ struct VaultGeneralSettingsSection: View {
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Quit shortcut", detail: quitSettings.selection.explanation) {
 				VaultSegmentedPicker(title: "Quit shortcut", options: VaultQuitShortcut.allCases.map { ($0, $0.title) },
-					selection: $quitSettings.selection)
+					selection: $quitSettings.selection, segmentWidth: VaultSettingsLayout.segment)
 					.accessibilityHint(quitSettings.selection.explanation)
 			}
 		}
@@ -27,7 +27,7 @@ struct VaultAppearanceSettingsSection: View {
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
 				VaultSegmentedPicker(title: "Appearance", options: VaultAppearance.allCases.map { ($0, $0.title) },
-					selection: $appearanceSettings.selection)
+					selection: $appearanceSettings.selection, segmentWidth: VaultSettingsLayout.segment)
 					.accessibilityHint(Self.themeExplanation)
 			}
 		}
@@ -49,7 +49,7 @@ struct VaultUpdateSettingsSection: View {
 			VaultHairline()
 			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
 				VaultSegmentedPicker(title: "Update channel", options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
-					selection: $updates.channel)
+					selection: $updates.channel, segmentWidth: VaultSettingsLayout.segment)
 					.disabled(!updates.canChangeChannel)
 				.accessibilityHint(updates.channelDescription)
 			}
@@ -273,4 +273,10 @@ private struct VaultSettingsRow<Control: View>: View {
 			control
 		}
 	}
+}
+
+/// What the Settings page's controls share, so they line up down the page.
+enum VaultSettingsLayout {
+	/// Each segment's width in the page's segmented pickers: "Double press" with room to spare.
+	static let segment: CGFloat = 104
 }

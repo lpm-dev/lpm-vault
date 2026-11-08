@@ -382,7 +382,8 @@ private struct VaultKeyEditor: View {
 		let allRevealed = store.canUseLocalSecrets
 			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
 		if !isPublic, cards.count > 1 {
-			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values", compact: true) {
+			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye",
+				help: allRevealed ? "Hide this key in all environments" : "Reveal this key in all environments", compact: true) {
 				toggleRevealAll(allRevealed)
 			}
 			.disabled(!store.canUseLocalSecrets)
@@ -475,11 +476,11 @@ private struct VaultKeyEditor: View {
 	private func sameValueMenu(_ draft: VaultKeyDraft?, cards: [String]) -> some View {
 		let sources = cards.filter { environments.contains($0) && !currentValue(in: $0, draft: draft).isEmpty }
 		let rows = sources.map { VaultMenuList<String>.Row(id: $0, title: "Use the \(VaultProject.displayName(for: $0)) value") }
-		return VaultBarMenu(accessibilityLabel: "Use One Value for All", borderless: true, height: 24, menuWidth: 260, rows: rows) { source in
+		return VaultBarMenu(accessibilityLabel: "Set All Environments", borderless: true, height: 24, menuWidth: 260, rows: rows) { source in
 			let value = currentValue(in: source, draft: draft)
 			edit { $0.setValue(value, in: environments) }
 		} label: {
-			Text("Use One Value for All")
+			Text("Set All Environments")
 				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(sources.isEmpty ? VaultPalette.textFaint : VaultPalette.textSecondary)
 		}
@@ -656,7 +657,7 @@ private struct VaultKeyEditor: View {
 				get: { moreMenuEnvironment == environment },
 				set: { if !$0, moreMenuEnvironment == environment { moreMenuEnvironment = nil } }
 			), arrowEdge: .bottom) {
-				VaultMenuList(rows: valueActionRows(canCopy: canCopy, canGenerate: canGenerate, search: search), width: 264,
+				VaultMenuList(rows: valueActionRows(canCopy: canCopy, canGenerate: canGenerate, search: search), width: 240,
 					label: "More for the \(displayName) value") { action in
 					moreMenuEnvironment = nil
 					switch action {

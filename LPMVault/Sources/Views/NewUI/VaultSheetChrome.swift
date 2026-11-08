@@ -56,14 +56,41 @@ struct VaultFieldLabel: View {
 extension View {
 	/// Rounded input frame used by sheet fields. Focus draws one crisp accent
 	/// border inside the frame, never a halo around it.
-	func vaultInputField(focused: Bool, invalid: Bool = false, background: Color = VaultPalette.control) -> some View {
-		let stroke = invalid ? VaultPalette.problemMark : (focused ? VaultPalette.focusRing : VaultPalette.inputBorder)
+	func vaultInputField(focused: Bool, invalid: Bool = false, background: Color = VaultPalette.control,
+		restingEdge: Color = VaultPalette.inputBorder) -> some View {
+		let stroke = invalid ? VaultPalette.problemMark : (focused ? VaultPalette.focusRing : restingEdge)
 		return self
 			.background(RoundedRectangle(cornerRadius: 7).fill(background))
 			.overlay {
 				RoundedRectangle(cornerRadius: 7)
 					.strokeBorder(stroke, lineWidth: focused ? 2 : 1)
 			}
+	}
+}
+
+extension View {
+	/// A search field's box, the same in the sidebar and a page's filter row:
+	/// edged as the menus beside it are at rest, and in the focus ring while it
+	/// has the keyboard.
+	func vaultSearchField(focused: Bool) -> some View {
+		vaultInputField(focused: focused, restingEdge: VaultPalette.border)
+	}
+
+	/// The app's input box around a text field that keeps its own focus: the
+	/// 3:1 edge at rest and the focus ring while it has the keyboard.
+	func vaultInputBox(invalid: Bool = false) -> some View {
+		modifier(VaultInputBox(invalid: invalid))
+	}
+}
+
+private struct VaultInputBox: ViewModifier {
+	let invalid: Bool
+	@FocusState private var focused: Bool
+
+	func body(content: Content) -> some View {
+		content
+			.focused($focused)
+			.vaultInputField(focused: focused, invalid: invalid)
 	}
 }
 

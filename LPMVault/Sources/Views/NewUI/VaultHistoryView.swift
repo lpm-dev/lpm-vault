@@ -7,6 +7,7 @@ struct VaultHistoryView: View {
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
 	@State private var keySearch = ""
+	@FocusState private var keySearchFocused: Bool
 	@State private var searchTask: Task<Void, Never>?
 
 	private var history: VaultLocalHistory { store.history }
@@ -93,12 +94,13 @@ struct VaultHistoryView: View {
 					TextField("Key name", text: $keySearch)
 						.textFieldStyle(.plain)
 						.font(.system(size: 12.5))
+						.focused($keySearchFocused)
 						.accessibilityLabel("Key name")
 						.onChange(of: keySearch) { _, value in search(value) }
 				}
 				.padding(.horizontal, 10)
 				.frame(width: 220, height: 28)
-				.vaultInputField(focused: false)
+				.vaultSearchField(focused: keySearchFocused)
 				Spacer(minLength: 0)
 			}
 		}

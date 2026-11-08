@@ -10,15 +10,17 @@ struct VaultSegmentedPicker<Value: Hashable>: View {
 	let title: String
 	let options: [(value: Value, title: String)]
 	@Binding var selection: Value
+	/// Every segment's width, for pickers that line up on a page; at least the longest title's.
+	var segmentWidth: CGFloat?
 
 	@Environment(\.isEnabled) private var isEnabled
 
 	private static var font: NSFont { .systemFont(ofSize: 12, weight: .semibold) }
 
 	/// Wide enough for the longest title in the bolder selected weight, so selecting never moves a segment.
-	private var segmentWidth: CGFloat {
+	private var fittedSegmentWidth: CGFloat {
 		let widest = options.map { ($0.title as NSString).size(withAttributes: [.font: Self.font]).width }.max() ?? 0
-		return ceil(widest) + 24
+		return max(ceil(widest) + 24, segmentWidth ?? 0)
 	}
 
 	private var selectedIndex: Int? { options.firstIndex { $0.value == selection } }
@@ -30,7 +32,7 @@ struct VaultSegmentedPicker<Value: Hashable>: View {
 			selectedIndex: selectedIndex,
 			onSelect: { index in if options.indices.contains(index) { selection = options[index].value } }
 		)
-		.frame(width: segmentWidth * CGFloat(options.count), height: 26)
+		.frame(width: fittedSegmentWidth * CGFloat(options.count), height: 26)
 		.overlay { look.allowsHitTesting(false).accessibilityHidden(true) }
 	}
 
