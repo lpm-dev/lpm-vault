@@ -151,7 +151,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 					.help(removable
 						? "\(file), which lpm.json imports, lists it too, so it stays in effect if you remove it here"
-						: "Listed in \(file), which lpm.json imports, so it can't be removed here")
+						: "Listed in \(file), which lpm.json imports, so it can’t be removed here")
 					.accessibilityLabel(removable ? "Also listed in \(file)" : "Listed in \(file)")
 			}
 			if let keys {
@@ -179,8 +179,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 			HStack(alignment: .top, spacing: 6) {
 				Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).padding(.top, 1)
 				Text(removal.keys.count == 1
-					? "1 public key uses it — it'll become private in the same change."
-					: "\(removal.keys.count) public keys use it — they'll become private in the same change.")
+					? "1 public key uses it — it’ll become private in the same change."
+					: "\(removal.keys.count) public keys use it — they’ll become private in the same change.")
 					.font(.system(size: 11.5))
 					.fixedSize(horizontal: false, vertical: true)
 			}
@@ -214,7 +214,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		if overridden > 0 {
 			let them = overridden == 1 ? "it" : "them"
 			Text((overridden == 1 ? "1 of them is declared in an imported schema" : "\(overridden) of them are declared in imported schemas")
-				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "public" : "private"). Later changes to that rule in the imported schema won't apply to \(them).")
+				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "public" : "private"). Later changes to that rule in the imported schema won’t apply to \(them).")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -222,8 +222,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 		}
 		if restored > 0 {
 			Text(restored == 1
-				? "1 of them goes back to its imported rule: lpm.json's override only marked it."
-				: "\(restored) of them go back to their imported rules: lpm.json's overrides only marked them.")
+				? "1 of them goes back to its imported rule: lpm.json’s override only marked it."
+				: "\(restored) of them go back to their imported rules: lpm.json’s overrides only marked them.")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -340,7 +340,7 @@ private struct VaultSchemaPrefixField: View {
 				ForEach(change.exposed, id: \.key) { exposure in
 					HStack(alignment: .top, spacing: 6) {
 						Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
-						Text("\(exposure.source) marks \(exposure.key.escapingDirectionControls) Secret, and lpm.json's override doesn't, so its value becomes public.")
+						Text("\(exposure.source) marks \(exposure.key.escapingDirectionControls) Secret, and lpm.json’s override doesn’t, so its value becomes public.")
 							.font(.system(size: 11, weight: .medium))
 							.fixedSize(horizontal: false, vertical: true)
 					}

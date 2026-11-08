@@ -891,7 +891,7 @@ private struct VaultKeyEditor: View {
 		case .unreadable?:
 			VStack(alignment: .leading, spacing: 6) {
 				Text("RULES").vaultSectionLabel()
-				Text("lpm.json can't be read, so rules aren't checked. Schema shows where.")
+				Text("lpm.json can’t be read, so rules aren’t checked. Schema shows where.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)

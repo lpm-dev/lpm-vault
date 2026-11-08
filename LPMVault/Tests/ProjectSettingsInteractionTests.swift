@@ -115,7 +115,7 @@ extension SheetInteractionTests {
 
 		/// The context menu of the sidebar row showing `name`.
 		private func rowMenu<V: View>(_ name: String, in host: SheetTestHost<V>) async throws -> NSMenu {
-			try await host.contextMenu(of: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.contextMenu(of: name, region: host.sidebarRegion)
 		}
 
 		private func editingName<V: View>(in host: SheetTestHost<V>) -> Bool {
@@ -214,8 +214,8 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("policy can't be read"))
-			#expect(try await host.waitForText("can't be found"))
+			#expect(try await host.waitForText("policy can’t be read"))
+			#expect(try await host.waitForText("can’t be found"))
 		}
 
 		@Test("the CLI approval switch can't be changed while the policy can't be read, and can once it can")
@@ -311,7 +311,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntilRendered {
 				((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.shownPlaceholder == "Project name"
 			})
-			#expect(try await host.waitForText("This project isn't linked to a folder."))
+			#expect(try await host.waitForText("This project isn’t linked to a folder."))
 		}
 
 		@Test("the icon picker chooses an emoji by its search, and a monogram from its letters and color")

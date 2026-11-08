@@ -92,7 +92,7 @@ extension VaultStore {
 			case .saved:
 				projectSettingsDrafts[projectID]?.name = nil
 			case .changed:
-				projectSettingsErrors[projectID] = "This env project's name changed elsewhere since you edited it. Review it and save again."
+				projectSettingsErrors[projectID] = "This env project’s name changed elsewhere since you edited it. Review it and save again."
 				return
 			case .unavailable:
 				projectSettingsErrors[projectID] = "The env project changed before its name was saved."
@@ -106,7 +106,7 @@ extension VaultStore {
 		}
 		if let icon = draft.icon {
 			guard projectIcons.save(icon, for: projectID) else {
-				projectSettingsErrors[projectID] = "This icon can't be saved. Choose another one."
+				projectSettingsErrors[projectID] = "This icon can’t be saved. Choose another one."
 				return
 			}
 		}

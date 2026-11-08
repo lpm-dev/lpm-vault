@@ -32,26 +32,26 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		let name = platform.displayName
 		return switch self {
 		case .signedOut: "Sign in to LPM to connect \(name)."
-		case .forbidden: "This LPM sign-in can't connect platforms. Sign in again from Settings."
-		case .unavailable: "Connecting \(name) isn't available right now. Try again later."
+		case .forbidden: "This LPM sign-in can’t connect platforms. Sign in again from Settings."
+		case .unavailable: "Connecting \(name) isn’t available right now. Try again later."
 		case .rateLimited: "Too many connection attempts. Wait a minute, then try again."
 		case .tooManyOpen: "Finish or cancel the platform connections already open in your browser first."
-		case .listenerUnavailable: "LPM Vault couldn't listen for your browser. Try again."
+		case .listenerUnavailable: "LPM Vault couldn’t listen for your browser. Try again."
 		case .timedOut: "The connection expired before your browser came back. Connect again."
 		case .cancelled: "Connecting \(name) was cancelled."
 		case .platform(let failure): failure.message(for: platform)
-		case .proofRejected: "Your browser came back with a connection LPM Vault didn't start. Connect again."
+		case .proofRejected: "Your browser came back with a connection LPM Vault didn’t start. Connect again."
 		case .expired: "This connection expired. Connect again."
-		case .tokenRejected: "\(name) didn't accept the new connection. Connect again."
-		case .accountUnreadable: "\(name) didn't say which account was connected. Connect again."
+		case .tokenRejected: "\(name) didn’t accept the new connection. Connect again."
+		case .accountUnreadable: "\(name) didn’t say which account was connected. Connect again."
 		case .noAccounts: "\(name) gave LPM Vault no account to reach. Connect again, and choose the accounts whose Workers it publishes to."
 		case .platformRateLimited(let reset?) where reset.timeIntervalSince(now) > 90:
 			"\(name) is limiting requests until \(reset.formatted(date: .omitted, time: .shortened)). Connect again then."
 		// GitHub backs off for minutes from limits it doesn't time; Netlify's window is a minute.
 		case .platformRateLimited(nil) where platform == .github: "\(name) is limiting requests. Wait a few minutes, then connect again."
 		case .platformRateLimited: "\(name) is limiting requests. Wait a minute, then connect again."
-		case .transport: "The connection couldn't reach lpm.dev or \(name). Check your network and try again."
-		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
+		case .transport: "The connection couldn’t reach lpm.dev or \(name). Check your network and try again."
+		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn’t verify. Try again."
 		}
 	}
 }

@@ -44,7 +44,7 @@ extension SheetInteractionTests {
 		}
 
 		private func choose<V: View>(_ title: String, fromRow row: String, in host: SheetTestHost<V>) async throws -> NSWindow {
-			let menu = try await host.contextMenu(of: row, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			let menu = try await host.contextMenu(of: row, region: host.sidebarRegion)
 			try host.choose(title, in: menu)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "\(title) asks first")
 			return try #require(host.window.sheets.first)
@@ -142,7 +142,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
 			defer { host.window.close() }
-			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.click(".env", region: host.sidebarRegion)
 			try await host.click("Delete from this environment")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -199,7 +199,7 @@ extension SheetInteractionTests {
 				fixture.store.error = "The Keychain couldn't be read."
 				#expect(try await host.waitUntil { host.window.sheets.first != nil })
 				let sheet = try #require(host.window.sheets.first)
-				#expect(try await host.waitForText("LPM Vault couldn't finish that", exactly: true, in: sheet))
+				#expect(try await host.waitForText("LPM Vault couldn’t finish that", exactly: true, in: sheet))
 				#expect(try await host.waitForText("The Keychain couldn't be read.", in: sheet))
 				#expect(try press(key, code: code, in: sheet))
 				#expect(try await host.waitUntil { fixture.store.error == nil && host.window.sheets.isEmpty })

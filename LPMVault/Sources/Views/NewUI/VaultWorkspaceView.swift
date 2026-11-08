@@ -315,7 +315,11 @@ struct VaultWorkspaceView: View {
 				onPush: { showPushConfirmation = true },
 				isConnectSheetPresented: showConnectCLISheet,
 				onPublish: { publishSession = store.makePublishSession(for: $0) },
-				showsPublishMenu: shows(.publish)
+				showsPublishMenu: shows(.publish),
+				onShowAllKeys: {
+					mode = .matrix
+					filter = .all
+				}
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
@@ -647,7 +651,7 @@ struct VaultWorkspaceView: View {
 	private var workspaceWithSettings: some View {
 		ZStack {
 			workspaceLayout
-				.accessibilityHidden(store.isShowingAccountPage)
+				.modifier(VaultHiddenUnderOverlay(hidden: store.isShowingAccountPage))
 			if let category = store.shownSettingsCategory {
 				VaultSettingsOverlay(store: store, category: category)
 					.transition(.opacity)
@@ -796,7 +800,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "trash",
 				title: "Delete this environment?",
-				message: "The environment and its values leave this Mac's Keychain. The project's other environments stay as they are.",
+				message: "The environment and its values leave this Mac’s Keychain. The project’s other environments stay as they are.",
 				subject: environmentSubject(target),
 				actions: [.init(title: "Delete Environment") { store.deleteEnvironment(from: target.projectId, name: target.environment) }])
 		}
@@ -804,7 +808,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "eraser",
 				title: "Clear every key from this environment?",
-				message: "Its keys and values leave this Mac's Keychain, and the environment stays, empty. The project's other environments stay as they are.",
+				message: "Its keys and values leave this Mac’s Keychain, and the environment stays, empty. The project’s other environments stay as they are.",
 				subject: environmentSubject(target),
 				actions: [.init(title: "Clear All Secrets") { store.clearEnvironment(in: target.projectId, name: target.environment) }])
 		}
@@ -825,7 +829,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "exclamationmark.triangle",
 				tone: .warning,
-				title: "LPM Vault couldn't finish that",
+				title: "LPM Vault couldn’t finish that",
 				message: shown.message,
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
@@ -1328,7 +1332,7 @@ struct VaultWorkspaceView: View {
 			guard rawTextSaved?.id == saved.id else { return }
 			switch outcome {
 			case .saved: rawTextSaved?.undo = .undone
-			case .changed: rawTextSaved?.undo = .failed("\(name) changed after the save, so it can't be undone.")
+			case .changed: rawTextSaved?.undo = .failed("\(name) changed after the save, so it can’t be undone.")
 			case .unavailable: rawTextSaved = nil
 			case .failed(let message): rawTextSaved?.undo = .failed(message)
 			}
@@ -1641,5 +1645,21 @@ private struct VaultSyncCommands: ViewModifier {
 		content
 			.onReceive(NotificationCenter.default.publisher(for: .pullProject)) { _ in if isAvailable() { onPull() } }
 			.onReceive(NotificationCenter.default.publisher(for: .pushProject)) { _ in if isAvailable() { onPush() } }
+	}
+}
+
+/// Hides the workspace from VoiceOver while an overlay covers it. An explicit
+/// `accessibilityHidden(false)` would un-hide everything inside that hides
+/// itself, so the modifier applies only while it hides. Before macOS 15 the
+/// overlay's modal trait keeps VoiceOver in it instead.
+private struct VaultHiddenUnderOverlay: ViewModifier {
+	let hidden: Bool
+
+	func body(content: Content) -> some View {
+		if #available(macOS 15, *) {
+			content.accessibilityHidden(true, isEnabled: hidden)
+		} else {
+			content
+		}
 	}
 }

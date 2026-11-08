@@ -14,11 +14,14 @@ struct VaultTitleBarView: View {
 	var onPublish: (PublishDestination?) -> Void = { _ in }
 	/// Whether the menu of saved destinations shows under Publish….
 	var showsPublishMenu: Binding<Bool> = .constant(false)
+	/// Opens the project's All Keys, from its name in the breadcrumb.
+	var onShowAllKeys: () -> Void = {}
 
 	private var project: VaultProject? { store.selectedProject }
 
 	@State private var showsSyncMenu = false
 	@State private var syncHovering = false
+	@State private var projectHovering = false
 
 	private enum SyncChoice: Hashable { case pull, push, signIn }
 
@@ -76,7 +79,7 @@ struct VaultTitleBarView: View {
 				.help(sidebarVisible ? "Hide Sidebar (⌃⌘S)" : "Show Sidebar (⌃⌘S)")
 				.accessibilityLabel(sidebarVisible ? "Hide sidebar" : "Show sidebar")
 				.padding(.leading, 10)
-			breadcrumb.padding(.leading, 6)
+			breadcrumb
 
 			Spacer(minLength: 8)
 
@@ -141,45 +144,76 @@ struct VaultTitleBarView: View {
 		}
 	}
 
+	/// Where the window is: the app, then the project, which opens its All
+	/// Keys, then the page shown in it.
 	private var breadcrumb: some View {
-		// The app's mark, then where the window is: the project and its environment, or the app's name without one.
-		HStack(spacing: 7) {
-			// The project's own icon, as the sidebar shows it; the app's mark only without one.
-			if let project {
-				VaultProjectIconView(appearance: store.projectIcons.appearance(for: project.id), size: 18)
-			} else {
+		HStack(spacing: 4) {
+			HStack(spacing: 7) {
 				VaultAppMark(size: 18)
-			}
-			if let project {
-				Text(project.name)
-					.font(.system(size: 13, weight: .semibold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-
-				if case .environment(let environment) = mode {
-					// The same › as every other path in the app, such as lpm.json › envSchema.
-					Text("›")
-						.font(.system(size: 13))
-						.foregroundStyle(VaultPalette.textFaint)
-						.accessibilityHidden(true)
-					Text(VaultProject.displayName(for: environment))
-						.font(.system(size: 13))
-						.foregroundStyle(VaultPalette.textSecondary)
-						.lineLimit(1)
-				}
-			} else {
 				Text("LPM Vault")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize()
 			}
+			.padding(.leading, 6)
+			.padding(.trailing, project == nil ? 6 : 0)
+
+			if let project {
+				pathMark
+				Button(action: onShowAllKeys) {
+					// The project's own icon, or the folder the sidebar shows for one without.
+					HStack(spacing: 6) {
+						VaultProjectIconView(appearance: store.projectIcons.appearance(for: project.id), size: 16)
+						Text(project.name)
+							.font(.system(size: 13, weight: .medium))
+							.foregroundStyle(VaultPalette.textPrimary)
+							.lineLimit(1)
+					}
+					.padding(.horizontal, 6)
+					.frame(height: 26)
+					.background(RoundedRectangle(cornerRadius: 6).fill(projectHovering ? VaultPalette.controlHover : .clear))
+					.vaultHoverAnimation(projectHovering)
+					.contentShape(Rectangle())
+				}
+				.buttonStyle(VaultPressStyle(cornerRadius: 6))
+				.onHover { projectHovering = $0 }
+				.help("Show All Keys")
+				.accessibilityLabel(project.name)
+
+				if let page = Self.pageName(for: mode) {
+					pathMark
+					Text(page)
+						.font(.system(size: 13))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.lineLimit(1)
+						.padding(.leading, 3)
+				}
+			}
 		}
-		// Read as the window's title, the app's name first, as a window's title bar is.
-		.accessibilityElement(children: .ignore)
-		.accessibilityLabel(windowTitle)
-		.accessibilityAddTraits(.isHeader)
 		.fixedSize(horizontal: false, vertical: true)
 	}
+
+	/// The chevron Settings' header draws between the parts of its path.
+	private var pathMark: some View {
+		Image(systemName: "chevron.right")
+			.font(.system(size: 9, weight: .semibold))
+			.foregroundStyle(VaultPalette.textFaint)
+			.padding(.horizontal, 4)
+			.accessibilityHidden(true)
+	}
+
+	/// The page after the project in the breadcrumb, named as the sidebar and
+	/// its header name it; All Keys is the project's own page, so none.
+	static func pageName(for mode: VaultWorkspaceMode) -> String? {
+		switch mode {
+		case .matrix: nil
+		case .environment(let environment): VaultProject.displayName(for: environment)
+		case .schema: "Schema"
+		case .history: "History"
+		case .projectSettings: "Project Settings"
+		}
+	}
+
 
 	/// The vault's sync state, which opens what can be done about it. Pull and
 	/// Push keep their shortcuts in the Env Project menu.
@@ -277,14 +311,6 @@ struct VaultTitleBarView: View {
 			.help(hasSaved ? "Publish to a saved destination or a new one" : "Publish an environment to a platform")
 			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
 		}
-	}
-
-	private var windowTitle: String {
-		guard let project else { return "LPM Vault" }
-		if case .environment(let environment) = mode {
-			return "LPM Vault — \(project.name) › \(VaultProject.displayName(for: environment))"
-		}
-		return "LPM Vault — \(project.name)"
 	}
 
 	private var isOrganization: Bool {

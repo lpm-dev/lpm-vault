@@ -126,7 +126,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "EMPTY"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
 
-			#expect(try await host.waitForText("Empty values aren't allowed"))
+			#expect(try await host.waitForText("Empty values aren’t allowed"))
 			#expect(try await host.text().contains("Add anyway"))
 		}
 

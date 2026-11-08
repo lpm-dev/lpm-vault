@@ -772,7 +772,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			keychain.failProjectReads = true
 			await store.refreshLocalState()
-			#expect(try await host.waitForText("Couldn't reload changes from the LPM CLI"))
+			#expect(try await host.waitForText("Couldn’t reload changes from the LPM CLI"))
 			#expect(!store.canUseLocalSecrets)
 			let view = host.view
 			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -782,7 +782,7 @@ extension SheetInteractionTests {
 			try await host.click("Retry")
 			#expect(try await host.waitUntil { store.canUseLocalSecrets })
 			try await host.settle()
-			#expect(try await !host.text().contains("Couldn't reload changes"))
+			#expect(try await !host.text().contains("Couldn’t reload changes"))
 		}
 
 		@Test("revealed values stay revealed across a refresh")

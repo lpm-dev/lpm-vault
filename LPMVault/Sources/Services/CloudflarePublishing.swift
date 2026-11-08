@@ -265,7 +265,7 @@ enum CloudflarePublishing {
 		}
 		switch await client.worker(reviewed.worker.name, in: account) {
 		case .success(let worker) where worker.id == reviewed.worker.id: break
-		case .success: return .failure(.changed("Another Worker has taken this Worker's name on Cloudflare. Review again."))
+		case .success: return .failure(.changed("Another Worker has taken this Worker’s name on Cloudflare. Review again."))
 		case .failure(let error): return .failure(.api(error))
 		}
 		switch await client.newestVersion(ofWorker: reviewed.worker.id, in: account) {
@@ -299,7 +299,7 @@ enum CloudflarePublishing {
 		case .success(let worker) where worker.id != reviewed.worker.id:
 			for change in changes {
 				report.outcomes[change.key] = .failed(
-					"Cloudflare took it, but another Worker now has this Worker's name, so the secrets may have reached that one. Check both on Cloudflare.")
+					"Cloudflare took it, but another Worker now has this Worker’s name, so the secrets may have reached that one. Check both on Cloudflare.")
 			}
 			return report
 		case .success:
@@ -371,9 +371,9 @@ enum CloudflarePublishing {
 	static func listingMessage(_ error: CloudflareAPIError, account: String, login: String) -> String {
 		switch error {
 		case .forbidden:
-			"\(login) can't list the Workers in \(account). Its role there may not reach Workers."
+			"\(login) can’t list the Workers in \(account). Its role there may not reach Workers."
 		case .notFound:
-			"Cloudflare doesn't know \(account) any more."
+			"Cloudflare doesn’t know \(account) any more."
 		default:
 			message(error)
 		}
@@ -381,7 +381,7 @@ enum CloudflarePublishing {
 
 	/// Why `excess` more secrets are chosen than Cloudflare changes in one step.
 	static func changeLimitMessage(excess: Int) -> String {
-		"Cloudflare can change at most \(maximumChanges) secrets in one step. Choose \(excess) fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too."
+		"Cloudflare can change at most \(maximumChanges) secrets in one step. Choose \(excess) fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they’re published too."
 	}
 
 	/// Why the chosen new secrets don't fit the Worker's limit on text bindings.
@@ -392,8 +392,8 @@ enum CloudflarePublishing {
 	static func holdMessage(_ hold: PublishPlan.PlaceHold) -> String {
 		let state = switch hold {
 		case .earlierVersionLive: "An earlier version of the Worker is serving its traffic, as after a rollback."
-		case .versionsSplit: "The Worker's traffic is split between two versions."
-		case .newestVersionNotLive: "A newer version of the Worker was uploaded but isn't deployed."
+		case .versionsSplit: "The Worker’s traffic is split between two versions."
+		case .newestVersionNotLive: "A newer version of the Worker was uploaded but isn’t deployed."
 		}
 		return "\(state) Cloudflare changes secrets only when the newest version serves all traffic. Sort it out on Cloudflare, then review again."
 	}
@@ -402,25 +402,25 @@ enum CloudflarePublishing {
 		switch error {
 		case .unauthorized:
 			return "Cloudflare no longer accepts this connection, as when LPM Vault was removed under Connected Applications on Cloudflare. Connect Cloudflare again on the Platforms page."
-		case .forbidden: return "This Cloudflare connection can't change this Worker, as when your role on the account doesn't allow it."
-		case .notFound: return "The Worker isn't on Cloudflare any more."
+		case .forbidden: return "This Cloudflare connection can’t change this Worker, as when your role on the account doesn’t allow it."
+		case .notFound: return "The Worker isn’t on Cloudflare any more."
 		case .rateLimited(let until?) where until.timeIntervalSinceNow > 90:
 			return "Cloudflare is limiting requests until \(until.formatted(date: .omitted, time: .shortened)). Try again then."
 		case .rateLimited: return "Cloudflare is limiting requests. Wait a minute, then try again."
 		case .refused(_, let codes) where codes.contains(where: CloudflareAPIError.newestVersionNotDeployedCodes.contains):
-			return "Cloudflare changes secrets only when the Worker's newest version serves all its traffic. Sort it out on Cloudflare, then review again."
+			return "Cloudflare changes secrets only when the Worker’s newest version serves all its traffic. Sort it out on Cloudflare, then review again."
 		case .refused(_, let codes) where codes.contains(CloudflareAPIError.nameTakenCode):
 			return "The Worker uses one of these names for another variable or binding. Review again."
 		case .refused(_, let codes) where codes.contains(CloudflareAPIError.tooManyBindingsCode):
 			return "The Worker would have more secrets and variables than its plan allows. Choose fewer new ones, then publish again."
 		case .refused(let status, let codes):
 			return "Cloudflare refused the change (\(codes.first.map { "error \($0)" } ?? "HTTP \(status)"))."
-		case .unreachable: return "Cloudflare couldn't be reached, so nothing was sent. Check your network and try again."
+		case .unreachable: return "Cloudflare couldn’t be reached, so nothing was sent. Check your network and try again."
 		case .transport: return "The connection to Cloudflare failed. Check your network and try again."
 		case .cancelled: return "Cancelled."
-		case .invalidResponse: return "Cloudflare returned an answer LPM Vault couldn't read."
+		case .invalidResponse: return "Cloudflare returned an answer LPM Vault couldn’t read."
 		case .server(let status): return "Cloudflare had a problem (HTTP \(status)). Try again in a moment."
-		case .moved: return "Cloudflare redirected the request, which LPM Vault doesn't follow."
+		case .moved: return "Cloudflare redirected the request, which LPM Vault doesn’t follow."
 		case .credentials(let error): return error.message(for: .cloudflare)
 		case .renewed: return "The Cloudflare connection was renewed more than once while publishing. Review again."
 		}

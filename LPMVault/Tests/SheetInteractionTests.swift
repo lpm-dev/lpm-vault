@@ -311,6 +311,12 @@ final class SheetTestHost<V: View> {
 	/// Clicks the element saying `label` once it appears, within `region` of
 	/// the view when given, in normalized coordinates from the bottom-left.
 	/// A SwiftUI control that isn't an AppKit button is pressed as VoiceOver presses it.
+	/// A workspace's sidebar below its title bar, in normalized coordinates, so a
+	/// project's or an environment's row is found apart from the breadcrumb that names it too.
+	var sidebarRegion: CGRect {
+		CGRect(x: 0, y: 0, width: 0.26, height: 1 - VaultMetrics.titleBar / max(view.bounds.height, 1))
+	}
+
 	func click(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false) async throws {
 		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive)()
 	}
@@ -830,7 +836,7 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		#expect(host.view.bounds.size == size)
-		let note = try await host.drawnFrame(saying: "Saved values stay encrypted in this Mac's Keychain.")
+		let note = try await host.drawnFrame(saying: "Saved values stay encrypted in this Mac’s Keychain.")
 		let button = try await host.drawnFrame(saying: "Unlock")
 		#expect(abs(note.midX - host.view.bounds.width / 2) < 3, "The note is centered: \(note)")
 		#expect(note.maxY < button.minY && button.minY - note.maxY < 60, "The note sits just under Unlock: \(note) \(button)")
@@ -984,7 +990,7 @@ struct SheetInteractionTests {
 		try await host.settle()
 		try await host.click("Write File")
 		try await host.click("Choose Folder")
-		#expect(try await host.waitForText("so it can't hold a project"))
+		#expect(try await host.waitForText("so it can’t hold a project"))
 		#expect(try await !host.text().contains("Write lpm.json"))
 		#expect(ProjectCLILink.folder(vaultId: "sheet-regression", projectPath: "", defaults: defaults) != user.path)
 		#expect(try FileManager.default.contentsOfDirectory(atPath: user.path).isEmpty)

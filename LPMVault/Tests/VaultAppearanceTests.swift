@@ -95,6 +95,25 @@ struct VaultAppearanceTests {
 		#expect(abs(hover) < abs(selected), "Hover moves \(hover) from the content, selection \(selected)")
 	}
 
+	@Test("a selected chip, segment, toggle or row is neutral, and a step past a control's hover", arguments: [ColorScheme.light, .dark])
+	func neutralSelection(scheme: ColorScheme) {
+		var environment = EnvironmentValues()
+		environment.colorScheme = scheme
+		for color in [VaultPalette.selectedFill, VaultPalette.selectedBorder, VaultPalette.selectedText, VaultPalette.rowSelected] {
+			let resolved = color.resolve(in: environment)
+			let channels = [resolved.red, resolved.green, resolved.blue]
+			// The app's grays are faintly cool; the accent's tints are several times further from gray.
+			#expect(channels.max()! - channels.min()! < 0.04, "\(color) in \(scheme) has a hue: \(channels)")
+		}
+		func lightness(_ color: Color) -> Float {
+			let resolved = color.resolve(in: environment)
+			return 0.2126 * resolved.linearRed + 0.7152 * resolved.linearGreen + 0.0722 * resolved.linearBlue
+		}
+		let content = lightness(VaultPalette.content)
+		#expect(abs(lightness(VaultPalette.selectedFill) - content) > abs(lightness(VaultPalette.controlHover) - content),
+			"A selected chip stands further from the page than a hovered one in \(scheme)")
+	}
+
 	@Test("text, status labels and selected controls keep 4.5:1 contrast in both appearances", arguments: [ColorScheme.light, .dark])
 	func textContrast(scheme: ColorScheme) {
 		for (foreground, background) in [

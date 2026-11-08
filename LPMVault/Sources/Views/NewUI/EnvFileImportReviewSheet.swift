@@ -590,9 +590,9 @@ struct EnvFileImportReviewSheet: View {
 			switch outcome {
 			case .saved: completion?.undo = .undone
 			case .changed:
-				completion?.undo = .failed("\(VaultProject.displayName(for: receipt.environment)) changed after the import, so it can't be undone.")
-			case .unavailable: completion?.undo = .failed("The import can't be undone now.")
-			case .failed(let message): completion?.undo = .failed("The import couldn't be undone. \(message)")
+				completion?.undo = .failed("\(VaultProject.displayName(for: receipt.environment)) changed after the import, so it can’t be undone.")
+			case .unavailable: completion?.undo = .failed("The import can’t be undone now.")
+			case .failed(let message): completion?.undo = .failed("The import couldn’t be undone. \(message)")
 			}
 		}
 	}

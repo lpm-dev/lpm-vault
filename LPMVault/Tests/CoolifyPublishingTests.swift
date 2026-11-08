@@ -376,7 +376,7 @@ struct CoolifyPublishingTests {
 		let changes = [PublishPlan.Change(key: "TIMELESS", value: "next", operation: .replace(remoteID: id), publishesAsSecret: true, fingerprint: Data())]
 		api.edit("TIMELESS", keepsTime: true, value: "someone else's")
 		let report = await CoolifyPublishing.publish(changes, to: target(), reviewed: reviewed, using: api)
-		#expect(report.outcomes["TIMELESS"] == .failed("Coolify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once in Coolify, then review again."))
+		#expect(report.outcomes["TIMELESS"] == .failed("Coolify doesn’t say when this variable last changed, so LPM Vault can’t tell whether it changed since this review. Edit it once in Coolify, then review again."))
 		#expect(api.writes.isEmpty && api.value(of: "TIMELESS") == "someone else's")
 	}
 

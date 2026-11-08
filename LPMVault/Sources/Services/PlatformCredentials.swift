@@ -32,17 +32,17 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 		let name = platform.displayName
 		return switch self {
 		case .store(.retired), .retired: "The \(name) connection is being disconnected. Connect \(name) again on the Platforms page."
-		case .store(let error): "The connection's token can't be read. \(error)"
+		case .store(let error): "The connection’s token can’t be read. \(error)"
 		case .signedOut: "Sign in to LPM to keep publishing to \(name). Its connection renews through lpm.dev."
 		case .otherAccount: "\(name) was connected while signed in to another LPM account. Sign in with that account, or connect \(name) again on the Platforms page."
 		case .otherRegistry: "\(name) was connected through the other LPM environment, which alone renews its connection. Switch to it, or connect \(name) again here."
 		case .expired where platform == .cloudflare:
 			"The \(name) connection no longer works, as when LPM Vault was removed under Connected Applications on Cloudflare. Connect \(name) again on the Platforms page."
 		case .expired: "The \(name) connection expired. Connect \(name) again on the Platforms page."
-		case .unavailable: "The \(name) connection couldn't be renewed right now. Check your network and try again."
+		case .unavailable: "The \(name) connection couldn’t be renewed right now. Check your network and try again."
 		case .refused: "\(name) refused to renew the connection right now. Try again later."
 		case .rateLimited: "The \(name) connection was renewed too often. Wait a minute, then try again."
-		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
+		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn’t verify. Try again."
 		case .replaced: "The \(name) connection changed since this review. Review again."
 		}
 	}

@@ -179,7 +179,7 @@ struct SchemaClientPrefixTests {
 		let review = try #require(ProjectEnvSchemaReview(draft: draft, evaluation: evaluation,
 			savedRules: ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview, savedCheck: nil, project: project, environments: []))
 		let warnings = Dictionary(uniqueKeysWithValues: review.items.map { ($0.title, $0.warning) })
-		#expect(warnings["TOKEN"] == "base.json marks TOKEN Secret, and this override doesn't, so its value is no longer treated as secret.")
+		#expect(warnings["TOKEN"] == "base.json marks TOKEN Secret, and this override doesn’t, so its value is no longer treated as secret.")
 		#expect(warnings["REGION"] == .some(nil), "An override that keeps or adds Secret drops nothing")
 		#expect(review.warningSummary == "TOKEN loses the Secret an import gives it. Check its change below before saving.")
 	}

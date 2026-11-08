@@ -303,7 +303,7 @@ struct VaultSchemaGroupEditor: View {
 					Spacer(minLength: 4)
 					if case .inherited = mode {
 						Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(VaultPalette.textFaint)
-							.help("Declared elsewhere, so it can't be renamed here")
+							.help("Declared elsewhere, so it can’t be renamed here")
 					}
 				}
 			}
@@ -318,12 +318,12 @@ struct VaultSchemaGroupEditor: View {
 			if renamable {
 				switch status {
 				case .empty, .available:
-					Text("Letters, digits and underscores; can't start with a digit; unique among groups.")
+					Text("Letters, digits and underscores; can’t start with a digit; unique among groups.")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
 				case .invalid(let suggestion):
-					issueLine("Use letters, digits and underscores; a name can't start with a digit.",
+					issueLine("Use letters, digits and underscores; a name can’t start with a digit.",
 						actions: suggestion.map { fixed in [("Use \(fixed)", true, { field = fixed })] } ?? [])
 				case .tooLong:
 					issueLine("Names can be at most \(EnvValidation.maximumSchemaKeyNameBytes) characters long.", actions: [])
@@ -491,8 +491,8 @@ struct VaultSchemaGroupEditor: View {
 					}
 					.padding(10)
 					.frame(maxWidth: .infinity, alignment: .leading)
-					.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.accentTint : VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? VaultPalette.accent : VaultPalette.border, lineWidth: selected ? 1.5 : 1) }
+					.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.selectedFill : VaultPalette.content))
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? VaultPalette.selectedBorder : VaultPalette.border, lineWidth: 1) }
 					.contentShape(Rectangle())
 				}
 				.buttonStyle(.plain)
@@ -520,7 +520,7 @@ struct VaultSchemaGroupEditor: View {
 				TextField(vaultPrompt: "Filter \(group.members.count.formatted()) members", text: $memberFilter)
 					.textFieldStyle(.roundedBorder)
 					.font(VaultTypography.tabular(12))
-					.accessibilityLabel("Filter the group's members")
+					.accessibilityLabel("Filter the group’s members")
 				Group {
 					if matching.count > shown.count {
 						Text(needle.isEmpty ? "Showing the first \(shown.count). Filter to find the others."
@@ -633,7 +633,7 @@ struct VaultSchemaGroupEditor: View {
 		switch mode {
 		case .editing(isOverride: true):
 			noticeBox(symbol: "square.stack.3d.up",
-				text: "You're editing a copy of the group from \(importedSource). Saving writes an override to lpm.json that replaces the original.",
+				text: "You’re editing a copy of the group from \(importedSource). Saving writes an override to lpm.json that replaces the original.",
 				tint: VaultPalette.accentText, background: VaultPalette.accentTint)
 		case .removed:
 			let renamed = draft.newName(ofGroup: name)
@@ -675,7 +675,7 @@ struct VaultSchemaGroupEditor: View {
 			.padding(.bottom, 12)
 		case .reset(let source):
 			VStack(alignment: .leading, spacing: 8) {
-				noticeContent(symbol: "arrow.uturn.backward", text: "Your draft removes lpm.json's override, so the group from \(source) applies again.")
+				noticeContent(symbol: "arrow.uturn.backward", text: "Your draft removes lpm.json’s override, so the group from \(source) applies again.")
 				VaultBarButton(title: "Keep override", height: 24) { discardChanges(of: name) }
 					.disabled(!canEdit)
 			}
@@ -939,7 +939,7 @@ private struct VaultGroupMemberChips: View {
 				.padding(.horizontal, 7)
 				.frame(height: 24)
 				.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.border, lineWidth: 1) }
-				.help(isDeclared ? "" : "\(shown) isn't declared, which the LPM CLI rejects")
+				.help(isDeclared ? "" : "\(shown) isn’t declared, which the LPM CLI rejects")
 			}
 		}
 	}

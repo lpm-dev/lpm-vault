@@ -1002,10 +1002,10 @@ struct PlatformsPagePresentationTests {
 	@Test("the section on removing access names each platform in the page's order, with where to revoke it")
 	func revocationSteps() {
 		#expect(PlatformsView.revocationSteps.map(\.platform) == PlatformsView.pageOrder)
-		#expect(PlatformsView.revocationIntro == "To remove LPM Vault's access entirely, revoke it on the platform:")
+		#expect(PlatformsView.revocationIntro == "To remove LPM Vault’s access entirely, revoke it on the platform:")
 		let steps = Dictionary(uniqueKeysWithValues: PlatformsView.revocationSteps.map { ($0.platform, $0.step) })
 		#expect(steps[.vercel] == "Integrations settings, where uninstalling deletes the variables LPM Vault created")
-		#expect(steps[.github] == "Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings")
+		#expect(steps[.github] == "Authorized GitHub Apps and Installed GitHub Apps; an organization’s owner uninstalls it in the organization’s settings")
 		#expect(steps[.cloudflare] == "disconnecting here revokes it")
 		#expect(steps[.coolify] == "Keys & Tokens")
 	}
@@ -1560,12 +1560,12 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { !opened.urls.isEmpty })
 			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
 			try host.scrollToEnd()
-			try await host.click("How to Remove LPM Vault's Access")
+			try await host.click("How to Remove LPM Vault’s Access")
 			// The steps open below the end of the page, so it scrolls to them as they arrive.
 			#expect(try await host.waitUntil {
 				try host.scrollToEnd()
 				return AccessibilityTree.text(in: host.view, root: host.window)
-					.contains("an organization's owner uninstalls it in the organization's settings")
+					.contains("an organization’s owner uninstalls it in the organization’s settings")
 			})
 		}
 
@@ -1748,7 +1748,7 @@ extension SheetInteractionTests {
 			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
-			#expect(try await host.waitForText("LPM Vault's access to it on Cloudflare has ended"))
+			#expect(try await host.waitForText("LPM Vault’s access to it on Cloudflare has ended"))
 		}
 
 		@Test("a login that no longer works offers Reconnect, which asks before losing an account, and declining keeps it as it was")
@@ -1866,7 +1866,7 @@ extension SheetInteractionTests {
 			}
 			let (store, host) = page(environment: .production)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("couldn't confirm that the access of 2 Cloudflare logins was revoked"))
+			#expect(try await host.waitForText("couldn’t confirm that the access of 2 Cloudflare logins was revoked"))
 			try await host.click("Dismiss the note about unconfirmed revocations")
 			#expect(try await host.waitForTextToDisappear("Connected Applications on Cloudflare"))
 			#expect(try await waitUntil {

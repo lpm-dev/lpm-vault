@@ -118,7 +118,7 @@ struct VaultSchemaView: View {
 		guard !canEdit else { return nil }
 		if saving { return "Saving the rules to lpm.json…" }
 		return switch state {
-		case .noFolder?: "Connect the CLI to link the project's folder first"
+		case .noFolder?: "Connect the CLI to link the project’s folder first"
 		case .unreadable?: "Rules can be edited once lpm.json can be read"
 		case .loaded?, nil: "Reading lpm.json…"
 		}
@@ -285,8 +285,8 @@ struct VaultSchemaView: View {
 		case .noFolder?:
 			emptyState(
 				symbol: "terminal",
-				title: "Rules live in your project's lpm.json",
-				message: "This project isn't linked to a folder yet, so LPM Vault can't read or edit its schema. Connect the CLI to link the folder."
+				title: "Rules live in your project’s lpm.json",
+				message: "This project isn’t linked to a folder yet, so LPM Vault can’t read or edit its schema. Connect the CLI to link the folder."
 			) {
 				VaultBarButton(systemImage: "link", title: "Connect CLI", filled: true, height: 28, action: onConnectCLI)
 				VaultBarButton(title: "Learn about envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -305,7 +305,7 @@ struct VaultSchemaView: View {
 						let tooMany = declarableCount > ProjectEnvSchemaRule.maximumKeys
 						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", disabled: tooMany, height: 28,
 							action: onDeclareAll)
-							.help(tooMany ? "lpm.json can declare at most \(ProjectEnvSchemaRule.maximumKeys) keys, so these can't all be declared at once." : "")
+							.help(tooMany ? "lpm.json can declare at most \(ProjectEnvSchemaRule.maximumKeys) keys, so these can’t all be declared at once." : "")
 					}
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -385,7 +385,7 @@ struct VaultSchemaView: View {
 				.foregroundStyle(VaultPalette.red)
 				.padding(.top, 1)
 			VStack(alignment: .leading, spacing: 4) {
-				Text("Schema can't be read")
+				Text("Schema can’t be read")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				(Text(problem.location).font(VaultTypography.tabular(11.5)).foregroundColor(VaultPalette.accentForeground)
@@ -682,7 +682,7 @@ struct VaultSchemaView: View {
 	private var undeclaredHeader: some View {
 		HStack(spacing: 8) {
 			Text("STORED, NOT DECLARED · \(undeclared.count)").vaultSectionLabel()
-			Text("in the Keychain but not in lpm.json — the LPM CLI doesn't check them")
+			Text("in the Keychain but not in lpm.json — the LPM CLI doesn’t check them")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textFaint)
 				.lineLimit(1)
@@ -721,7 +721,7 @@ struct VaultSchemaView: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.lineLimit(1)
-						.help("Windows reads both as one name, so the LPM CLI can't tell them apart there. Rename the stored key to match.")
+						.help("Windows reads both as one name, so the LPM CLI can’t tell them apart there. Rename the stored key to match.")
 				}
 				Spacer(minLength: 8)
 				if let conflict = stored.conflict, !stored.isIgnored {
@@ -744,7 +744,7 @@ struct VaultSchemaView: View {
 	private static let bandActionInset: CGFloat = 20 - 9
 	/// Every section band's height: its 26-point action and 7 points above and below.
 	private static let bandHeight: CGFloat = 40
-	private static let groupsExplanation = "Keys the LPM CLI checks together: all, one or none of a group's keys"
+	private static let groupsExplanation = "Keys the LPM CLI checks together: all, one or none of a group’s keys"
 
 	/// The groups' band, which says "none yet" while there are none, rather than a row of its own; what a group is, its tooltip says.
 	private func groupsHeader(count: Int) -> some View {
@@ -846,7 +846,7 @@ struct VaultSchemaView: View {
 			VaultConfirmation(
 				symbol: "exclamationmark.triangle",
 				title: "Discard your unsaved changes?",
-				message: "lpm.json can't be read, so discarding can't be undone.",
+				message: "lpm.json can’t be read, so discarding can’t be undone.",
 				cancelTitle: "Keep Editing",
 				actions: [.init(title: "Discard", perform: onDiscardAll)])
 		}
@@ -868,7 +868,7 @@ struct VaultSchemaView: View {
 				case .unreadable?:
 					Text(storedKeyCount.counted("stored key"))
 					Text("·")
-					Text("checks paused — lpm.json can't be read")
+					Text("checks paused — lpm.json can’t be read")
 						.foregroundStyle(VaultPalette.orangeTintText)
 					draftStatus
 				case .noFolder?:
@@ -948,7 +948,7 @@ struct VaultSchemaView: View {
 		if let changes = draft?.changeCount, changes > 0, !panelOpen {
 			let unreadable = if case .unreadable? = state { true } else { false }
 			if let blocker, blocker.blocksReview {
-				Text("Can't save")
+				Text("Can’t save")
 					.fontWeight(.semibold)
 					.foregroundStyle(VaultPalette.redText)
 					.fixedSize()
@@ -967,7 +967,7 @@ struct VaultSchemaView: View {
 			VaultBarButton(title: changes > 1 ? "Discard All" : "Discard", disabled: saving, height: 22) {
 				if unreadable { confirmsDiscard = true } else { onDiscardAll() }
 			}
-			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can't be read, this can't be undone."
+			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can’t be read, this can’t be undone."
 				: "Discard your unsaved changes to the schema. ⌘Z brings them back.")
 			VaultBarButton(title: saving ? "Saving…" : "Review & Save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
 				height: 22, action: onReview)

@@ -44,7 +44,7 @@ struct VaultSchemaEditorFooter: View {
 		guard let draft = store.schemaDraft(for: projectID) else { return nil }
 		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
 			if let item, conflict.item == item { return Blocker(message: "Choose a version of this \(noun(of: item)) above to save.") }
-			return Blocker(message: "Can't save until you choose a version of \(name(of: conflict.item)), which changed on disk.", show: selection(of: conflict.item))
+			return Blocker(message: "Can’t save until you choose a version of \(name(of: conflict.item)), which changed on disk.", show: selection(of: conflict.item))
 		}
 		guard let current = store.currentSchemaDraftEvaluation(for: projectID) else { return Blocker(message: "Checking the rules…", checking: true) }
 		guard let rejection = current.rejection else {
@@ -52,11 +52,11 @@ struct VaultSchemaEditorFooter: View {
 			let shown: String? = if case .key(let key)? = item, clash.keys.contains(key) { nil } else {
 				clash.keys.first { draft.base(of: .key($0)) == .absent && draft.hasChange(to: .key($0)) }
 			}
-			return Blocker(message: "Can't save: \(clash.message)", show: shown.map(VaultSchemaSelection.key))
+			return Blocker(message: "Can’t save: \(clash.message)", show: shown.map(VaultSchemaSelection.key))
 		}
 		if let item, rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
-		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
-		return Blocker(message: "Can't save: \(name(of: other)) has a problem. \(rejection.reason)", show: selection(of: other))
+		guard let other = rejection.item else { return Blocker(message: "Can’t save: \(rejection.reason)") }
+		return Blocker(message: "Can’t save: \(name(of: other)) has a problem. \(rejection.reason)", show: selection(of: other))
 	}
 
 	/// A failed save the panel shows, as one the review can't: not a change on
@@ -212,7 +212,7 @@ struct VaultSchemaSaveFailureNotice: View {
 			HStack(alignment: .top, spacing: 8) {
 				Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
 				VStack(alignment: .leading, spacing: 3) {
-					Text("Couldn't save lpm.json").font(.system(size: 12, weight: .semibold))
+					Text("Couldn’t save lpm.json").font(.system(size: 12, weight: .semibold))
 					Text(failure.message + " Your draft is kept.")
 						.font(.system(size: 11.5))
 						.fixedSize(horizontal: false, vertical: true)

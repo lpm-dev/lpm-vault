@@ -271,10 +271,9 @@ struct VaultContentView: View {
 		.fixedSize()
 	}
 
-	/// Raw text's hint goes first, then Reveal and Copy All lose their names,
-	/// so a row never mixes named buttons with bare icons that do as much.
-	/// Import and Export, done now and then, stay in the More menu at every
-	/// width, so the row keeps one shape with the inspector open or closed.
+	/// Raw text's hint goes first, then Import and Export move into the More
+	/// menu, then Reveal and Copy All lose their names, so a row never mixes
+	/// named buttons with bare icons that do as much.
 	private func valueRow(_ derived: VaultContentDerivation) -> some View {
 		ViewThatFits(in: .horizontal) {
 			if showsRawText {
@@ -282,8 +281,13 @@ struct VaultContentView: View {
 					viewControls
 					hint("One KEY=value per line · select and ⌘C copies real values")
 					Spacer(minLength: 8)
-					valueActions(compact: false, derived: derived)
+					valueActions(compact: false, namesTransfers: true, derived: derived)
 				}
+			}
+			HStack(spacing: 6) {
+				viewControls
+				Spacer(minLength: 8)
+				valueActions(compact: false, namesTransfers: true, derived: derived)
 			}
 			HStack(spacing: 6) {
 				viewControls
@@ -409,11 +413,11 @@ struct VaultContentView: View {
 
 	/// Reveal acts on the keys in view; copying, importing, and exporting act on
 	/// the selected environment, which their help names.
-	private func valueActions(compact: Bool, derived: VaultContentDerivation) -> some View {
+	private func valueActions(compact: Bool, namesTransfers: Bool = false, derived: VaultContentDerivation) -> some View {
 		let environmentName = VaultProject.displayName(for: selectedEnvironment)
 		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy All")
 		let copyHelp = isCopyingAll
-			? "Copying all \(environmentName) values once they're reloaded"
+			? "Copying all \(environmentName) values once they’re reloaded"
 			: (isCopiedAll ? "All \(environmentName) values copied" : "Copy all \(environmentName) values")
 		let copyLabel = isCopyingAll
 			? "Copying all \(environmentName) values"
@@ -452,7 +456,11 @@ struct VaultContentView: View {
 					action: { onEditRaw(rawEditOrder) }
 				)
 			}
-			transferMenu(environmentName: environmentName)
+			if namesTransfers {
+				transferButtons(environmentName: environmentName)
+			} else {
+				transferMenu(environmentName: environmentName)
+			}
 		}
 		.fixedSize()
 		// The last borderless control's label ends where the filled New Key above does; its hover fill reaches past.
@@ -460,6 +468,29 @@ struct VaultContentView: View {
 	}
 
 	private enum Transfer: Hashable { case importing, exporting }
+
+	/// Import and Export by name, where the row has room for them; the menu's rows say the same.
+	@ViewBuilder
+	private func transferButtons(environmentName: String) -> some View {
+		VaultOutlineButton(
+			systemImage: "tray.and.arrow.down",
+			title: "Import…",
+			help: "Import keys into \(environmentName)",
+			label: "Import into \(environmentName)…",
+			disabled: !canEditValues,
+			borderless: true,
+			action: onImport
+		)
+		VaultOutlineButton(
+			systemImage: "tray.and.arrow.up",
+			title: "Export…",
+			help: "Export \(environmentName) to a file",
+			label: "Export \(environmentName)…",
+			disabled: !canUseSecrets,
+			borderless: true,
+			action: onExport
+		)
+	}
 
 	/// Import and Export behind one button, where the row has no room to name them.
 	private func transferMenu(environmentName: String) -> some View {
@@ -756,7 +787,7 @@ struct VaultContentView: View {
 		let state = problems.isEmpty
 			? (draft.changes.count == 0 ? "No changes yet" : "Ready to save: \(draft.changes.summary)")
 			: "\(problems.count.counted("problem")) · Save is available once every line is valid"
-		let note = "Comments, blank lines and line order aren't kept."
+		let note = "Comments, blank lines and line order aren’t kept."
 		return VStack(spacing: 0) {
 			HStack(spacing: 8) {
 				if problems.isEmpty {
@@ -945,7 +976,7 @@ struct VaultContentView: View {
 	@ViewBuilder
 	private func environmentNotes(width: CGFloat) -> some View {
 		if valueChecks.readsDefaultEnvironment(selectedEnvironment) {
-			Text("The LPM CLI reads values from .env and checks this environment's rules.")
+			Text("The LPM CLI reads values from .env and checks this environment’s rules.")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.padding(.horizontal, 20)
@@ -960,7 +991,7 @@ struct VaultContentView: View {
 	private var emptyEnvironmentMessage: String {
 		if !searchText.isEmpty { return "No keys match your search" }
 		return valueChecks.readsDefaultEnvironment(selectedEnvironment)
-			? "No values here. The LPM CLI uses \(VaultProject.displayName(for: "default"))'s values for this environment."
+			? "No values here. The LPM CLI uses \(VaultProject.displayName(for: "default"))’s values for this environment."
 			: "No secrets in this environment"
 	}
 

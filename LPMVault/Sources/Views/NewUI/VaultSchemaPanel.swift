@@ -377,7 +377,7 @@ private struct VaultSchemaKeyEditor: View {
 							.accessibilityElement(children: .contain)
 							.accessibilityLabel("Rules that leave lpm.json")
 					case .missing:
-						Text("\(key) isn't declared in lpm.json or the schemas it imports.")
+						Text("\(key) isn’t declared in lpm.json or the schemas it imports.")
 							.font(.system(size: 12))
 							.foregroundStyle(VaultPalette.textTertiary)
 							.padding(16)
@@ -501,7 +501,7 @@ private struct VaultSchemaKeyEditor: View {
 			}
 			if case .editing(true) = mode {
 				notice(symbol: "square.stack.3d.up", text: overrideOnlyMarks ? markingNote
-					: "You're editing a copy of the rule from \(importedSource). Saving writes an override to lpm.json that replaces the original; it doesn't merge.")
+					: "You’re editing a copy of the rule from \(importedSource). Saving writes an override to lpm.json that replaces the original; it doesn’t merge.")
 			} else if mode == .editing(isOverride: false), changeOnlyMarks {
 				notice(symbol: "globe", text: markNote)
 			}
@@ -587,7 +587,7 @@ private struct VaultSchemaKeyEditor: View {
 					Spacer(minLength: 4)
 					if case .inherited = mode {
 						Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(VaultPalette.textFaint)
-							.help("Declared elsewhere, so it can't be renamed here")
+							.help("Declared elsewhere, so it can’t be renamed here")
 					}
 				}
 				if shownPrefix != nil, mode != .removed { VaultPublicBadge() }
@@ -635,7 +635,7 @@ private struct VaultSchemaKeyEditor: View {
 
 	private var renameSummary: String {
 		if pendingDraft != nil { return "Save or discard your rule changes before renaming." }
-		guard project.hasLoadedEnvironments else { return "Renaming waits until the project's values are loaded." }
+		guard project.hasLoadedEnvironments else { return "Renaming waits until the project’s values are loaded." }
 		let stored = environments.filter { project.value(for: key, in: $0) != nil }.count
 		return stored == 0 ? "Renames its rule in lpm.json." : "Renames its rule in lpm.json and its values in \(stored == 1 ? "1 environment" : "\(stored) environments")."
 	}
@@ -652,12 +652,12 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private func nameIssue(_ name: String, rule: Rule) -> String? {
-		guard EnvValidation.isValidVariableName(name) else { return "Use letters, digits and underscores; a name can't start with a digit." }
+		guard EnvValidation.isValidVariableName(name) else { return "Use letters, digits and underscores; a name can’t start with a digit." }
 		if let existing = overview?.keys(named: name, otherThan: key).first {
-			return existing == name ? "\(name) is already declared." : "Conflicts with \(existing): names can't differ only in capitalisation."
+			return existing == name ? "\(name) is already declared." : "Conflicts with \(existing): names can’t differ only in capitalisation."
 		}
 		if rule.secret, let prefix = Rule.publicPrefix(of: name, clientPrefixes: clientPrefixes) {
-			return "Secret keys can't start with \(prefix), which makes a key public."
+			return "Secret keys can’t start with \(prefix), which makes a key public."
 		}
 		return nil
 	}
@@ -763,12 +763,12 @@ private struct VaultSchemaKeyEditor: View {
 			case .empty:
 				EmptyView()
 			case .invalid(let suggestion):
-				nameIssueLine("Use letters, digits and underscores; a name can't start with a digit.",
+				nameIssueLine("Use letters, digits and underscores; a name can’t start with a digit.",
 					actions: suggestion.map { fixed in [NameAction(title: "Use \(fixed)", edits: true) { name = fixed }] } ?? [])
 			case .tooLong:
 				nameIssueLine("Names can be at most \(EnvValidation.maximumSchemaKeyNameBytes) characters long.", actions: [])
 			case .credential:
-				nameIssueLine("This looks like a token or a key, not a name. lpm.json is shared with the team, so it isn't added.", actions: [
+				nameIssueLine("This looks like a token or a key, not a name. lpm.json is shared with the team, so it isn’t added.", actions: [
 					NameAction(title: "Use it as a name", edits: true) {
 						acceptedCredentialName = name
 						adopt(name)
@@ -790,7 +790,7 @@ private struct VaultSchemaKeyEditor: View {
 					pickAnotherName,
 				])
 			case .casing(let existing):
-				nameIssueLine("Conflicts with \(existing): names can't differ only in letter case, which Windows reads as one name.",
+				nameIssueLine("Conflicts with \(existing): names can’t differ only in letter case, which Windows reads as one name.",
 					actions: [NameAction(title: "Open \(existing)", edits: false) { onSelect(.key(existing)) }])
 			case .available:
 				let stored = environments.filter { project.value(for: name, in: $0) != nil }.count
@@ -998,8 +998,8 @@ private struct VaultSchemaKeyEditor: View {
 					}
 					.padding(10)
 					.frame(maxWidth: .infinity, alignment: .leading)
-					.background(RoundedRectangle(cornerRadius: 8).fill(applied ? VaultPalette.accentTint : VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(applied ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
+					.background(RoundedRectangle(cornerRadius: 8).fill(applied ? VaultPalette.selectedFill : VaultPalette.content))
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(applied ? VaultPalette.selectedBorder : VaultPalette.border, lineWidth: 1) }
 				}
 				Text("Defaults are never suggested — lpm.json is shared, and a value may be a secret.")
 					.font(.system(size: 10.5))
@@ -1556,7 +1556,7 @@ private struct VaultSchemaKeyEditor: View {
 	@ViewBuilder
 	private func readOnlySections(_ rule: Rule, mode: Mode) -> some View {
 		if case .reset(let source) = mode, store.currentSchemaDraftEvaluation(for: project.id)?.overview == nil {
-			Text(rejection == nil ? "Reading the rule from \(source)…" : "The rule from \(source) can't be shown until the rules are valid.")
+			Text(rejection == nil ? "Reading the rule from \(source)…" : "The rule from \(source) can’t be shown until the rules are valid.")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.padding(16)
@@ -1633,7 +1633,7 @@ private struct VaultSchemaKeyEditor: View {
 					Text("Declared in ").font(.system(size: 11.5)) + Text(source).font(VaultTypography.tabular(11))
 				}
 				.foregroundStyle(VaultPalette.textSecondary)
-				Text("Overriding saves a copy in lpm.json that replaces this rule. The key can't be renamed or removed here.")
+				Text("Overriding saves a copy in lpm.json that replaces this rule. The key can’t be renamed or removed here.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -1938,8 +1938,8 @@ struct VaultSchemaStoredValues: View {
 	/// Why the values can't be checked now: they're loading, or the vault
 	/// can't use them, as when it can't reveal them.
 	private var unavailable: String? {
-		if !project.hasLoadedEnvironments || store.isLoadingSelectedProject { return "Loading the project's values…" }
-		return store.canUseLocalSecrets ? nil : "Stored values can't be checked right now."
+		if !project.hasLoadedEnvironments || store.isLoadingSelectedProject { return "Loading the project’s values…" }
+		return store.canUseLocalSecrets ? nil : "Stored values can’t be checked right now."
 	}
 
 	private struct Presentations {

@@ -277,7 +277,7 @@ extension SheetInteractionTests {
 			})
 			#expect(try await host.waitForText("this key will be public"))
 			try host.enterText("NEXT_PUBLIC_DB_PASSWORD", placeholder: "KEY_NAME")
-			#expect(try await host.waitForText("says it's secret"))
+			#expect(try await host.waitForText("says it’s secret"))
 
 			try host.enterText("PORT", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Already declared"))
@@ -400,13 +400,13 @@ extension SheetInteractionTests {
 			])
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Declare SESSION_TOKEN")
-			#expect(try await host.waitForText("says it's secret"))
+			#expect(try await host.waitForText("says it’s secret"))
 			store.editSchemaDraft(in: "schema-add") { draft in
 				draft.set(draft.declaration(of: .key("PORT")).replacingJSON {
 					$0.set(.object([.init(key: "variable", value: .string("SESSION_TOKEN")), .init(key: "equals", value: .string("on"))]), forKey: "requiredWhen")
 				}, for: .key("PORT"))
 			}
-			#expect(try await host.waitForTextToDisappear("says it's secret"))
+			#expect(try await host.waitForTextToDisappear("says it’s secret"))
 		}
 
 		@Test("stored keys lpm.json doesn't declare follow the table's order")

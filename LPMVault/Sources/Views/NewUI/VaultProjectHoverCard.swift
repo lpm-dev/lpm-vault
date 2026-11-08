@@ -84,7 +84,7 @@ struct VaultProjectHoverCard: View {
 		switch store.projectCliAccess[project.id] {
 		case .requireApproval?: .init(symbol: "lock.fill", text: "CLI approval on", tint: VaultPalette.accentForeground)
 		case .automatic?: .init(symbol: "lock.open", text: "CLI approval off")
-		case nil: .init(symbol: "questionmark.circle", text: "CLI approval can't be read")
+		case nil: .init(symbol: "questionmark.circle", text: "CLI approval can’t be read")
 		}
 	}
 
@@ -100,7 +100,7 @@ struct VaultProjectHoverCard: View {
 		switch state {
 		case nil: return .init(symbol: symbol, text: "lpm.json not read yet")
 		case .noFolder?: return noFolder
-		case .unreadable?: return .init(symbol: symbol, text: "lpm.json can't be read", tint: VaultPalette.warningMark)
+		case .unreadable?: return .init(symbol: symbol, text: "lpm.json can’t be read", tint: VaultPalette.warningMark)
 		case .loaded(let overview, _)?:
 			guard !overview.rules.isEmpty else { return .init(symbol: symbol, text: "No rules in lpm.json") }
 			let failing = Set(check?.environments.values.flatMap(\.problems.keys) ?? []).count

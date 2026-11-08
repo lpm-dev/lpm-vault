@@ -91,7 +91,7 @@ struct SchemaDraftHistoryTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"vars":{"API_TOKEN":{"secret":true,"required":true}}}}"#, environments: ["default": ["API_TOKEN": "t"]])
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.projects = [VaultProject(metadata: .init(id: "project", name: "Project", path: folder, environmentSummaries: []))]
-		await #expect(throws: VaultKeyEditError.refused("Project's values are still loading. Rename the key once they've loaded.")) {
+		await #expect(throws: VaultKeyEditError.refused("Project’s values are still loading. Rename the key once they’ve loaded.")) {
 			try await store.renameDeclaredKey("API_TOKEN", to: "ADMIN_TOKEN", in: "project")
 		}
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""API_TOKEN""#))
@@ -255,10 +255,10 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","default":"3000","description":"HTTP port the server listens on.","secret":true}"#.utf8))), for: .key("PORT"))
 			}
-			#expect(try await host.waitForText("Secret keys can't have a default."))
+			#expect(try await host.waitForText("Secret keys can’t have a default."))
 			try await host.click("Turn off Secret")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil }, "Turning Secret off restores the saved rule")
-			#expect(try await host.waitForTextToDisappear("Secret keys can't have a default."))
+			#expect(try await host.waitForTextToDisappear("Secret keys can’t have a default."))
 		}
 
 		@Test("⌘Z undoes the last rule change while the panel is open")
@@ -314,7 +314,7 @@ extension SheetInteractionTests {
 			try await host.click("PORT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("abc", placeholder: "value")
-			#expect(try await host.waitForText("The default doesn't match the format."))
+			#expect(try await host.waitForText("The default doesn’t match the format."))
 			#expect(try await !host.text().contains("env.invalid_format"))
 			#expect(try await host.waitForText("Fix the problem above to save."))
 		}
@@ -328,7 +328,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#.utf8))), for: .key("PORT"))
 			}
-			#expect(try await host.waitForText("An empty scoped default can't be used"))
+			#expect(try await host.waitForText("An empty scoped default can’t be used"))
 		}
 
 		@Test("adding the CI storage row writes nothing until a storage is chosen")
@@ -365,7 +365,7 @@ extension SheetInteractionTests {
 			try await host.click("API_TOKEN")
 			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "API_TOKEN" })
 			try host.enterText("NEXT_PUBLIC_TOKEN", placeholder: "KEY_NAME")
-			#expect(try await host.waitForText("Secret keys can't start with NEXT_PUBLIC_"))
+			#expect(try await host.waitForText("Secret keys can’t start with NEXT_PUBLIC_"))
 		}
 
 		@Test("a rename from the panel follows the key to its new name")
@@ -393,7 +393,7 @@ extension SheetInteractionTests {
 			try await host.click("Reset to original")
 			#expect(try await host.waitForText("Keep override"))
 			#expect(try await host.waitForText("postgres only"))
-			#expect(try await !host.text().contains("isn't declared"))
+			#expect(try await !host.text().contains("isn’t declared"))
 			try await host.click("Keep override")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil })
 			#expect(try await host.waitForText("Reset to original"))
@@ -421,7 +421,7 @@ extension SheetInteractionTests {
 			try await host.click("MODE")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") { $0.set(.declared(.object([.init(key: "secret", value: .bool(true))])), for: .key("MODE")) }
-			#expect(try await host.waitForText("X compares this key's value"))
+			#expect(try await host.waitForText("X compares this key’s value"))
 			#expect(try await host.waitForText("X has a problem"))
 		}
 

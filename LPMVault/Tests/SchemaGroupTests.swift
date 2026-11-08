@@ -641,7 +641,7 @@ extension SheetInteractionTests {
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("can't be removed here", in: sheet))
+			#expect(try await host.waitForText("can’t be removed here", in: sheet))
 			try await host.click("Cancel", in: sheet)
 			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
 			try await host.click("Override group")

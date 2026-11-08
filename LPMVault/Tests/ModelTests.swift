@@ -29,7 +29,7 @@ extension SheetInteractionTests {
 			}
 			#expect(!labels.contains("Open Settings"))
 			// The content, beside the menu, whose rows would otherwise join its lines.
-			let contentStart = (VaultSettingsOverlay.inset(for: 900) + VaultSettingsOverlay.menuWidth + 2) / 900
+			let contentStart = (VaultSettingsOverlay.panelFrame(in: CGSize(width: 900, height: 1000)).minX + VaultSettingsOverlay.menuWidth + 2) / 900
 			let lines = AccessibilityTree.lines(in: host.view, region: CGRect(x: contentStart, y: 0, width: 1 - contentStart, height: 1))
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 			let signIn = try #require(lines.first { $0.text.contains("Sign In with Browser") })

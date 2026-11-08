@@ -560,7 +560,7 @@ final class VaultLocalHistory {
 		case .changed:
 			settleUndo(of: applied.entry, .failed("The values changed since, so nothing was undone."))
 		case .unavailable:
-			settleUndo(of: applied.entry, .failed("The project isn't available, so nothing was undone."))
+			settleUndo(of: applied.entry, .failed("The project isn’t available, so nothing was undone."))
 		case .failed(let message):
 			settleUndo(of: applied.entry, .failed(message))
 		}

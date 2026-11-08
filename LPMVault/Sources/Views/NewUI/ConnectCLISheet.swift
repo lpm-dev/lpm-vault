@@ -210,7 +210,7 @@ struct ConnectCLISheet: View {
 			.clipShape(RoundedRectangle(cornerRadius: 8))
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			if setupMode == .copyJSON {
-				Text("Create lpm.json if it's missing, and keep any fields it has.")
+				Text("Create lpm.json if it’s missing, and keep any fields it has.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -244,7 +244,7 @@ struct ConnectCLISheet: View {
 					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
 				if showsTaskExample {
 					VStack(alignment: .leading, spacing: 10) {
-						Text("Example using this vault's environments. Merge the env fields into your existing tasks and keep their other settings.")
+						Text("Example using this vault’s environments. Merge the env fields into your existing tasks and keep their other settings.")
 							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
 						VStack(alignment: .leading, spacing: 8) {
 							HStack {
@@ -262,7 +262,7 @@ struct ConnectCLISheet: View {
 						if let warning = example.warning {
 							VaultInlineWarning(text: warning)
 						}
-						Text("Write file only updates the vault ID. An explicit --env overrides a task's environment.")
+						Text("Write file only updates the vault ID. An explicit --env overrides a task’s environment.")
 							.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 					}.padding(.top, 8)
 				}
@@ -372,7 +372,7 @@ struct ConnectCLISheet: View {
 			// The flag in code type, as in the commands above it.
 			(Text("These use \(VaultProject.displayName(for: guidance.environment)). An explicit ")
 				+ Text("--env").font(VaultTypography.code(11)).foregroundStyle(VaultPalette.codeText)
-				+ Text(" overrides a script's own environment."))
+				+ Text(" overrides a script’s own environment."))
 				.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
 			let more = guidance.commands.count - 1
@@ -408,7 +408,7 @@ struct ConnectCLISheet: View {
 				}
 				// Both go to lpm.dev's pages, so they're the same kind of link.
 				if status == .notLinked || status == .noFolder {
-					footerLink("Install LPM CLI", help: "Linking doesn't install the LPM CLI. This opens how to install it.", url: Self.installURL)
+					footerLink("Install LPM CLI", help: "Linking doesn’t install the LPM CLI. This opens how to install it.", url: Self.installURL)
 					Text("·").foregroundStyle(VaultPalette.textTertiary).accessibilityHidden(true)
 				}
 				footerLink("Docs", help: "How the LPM CLI reads lpm.json", url: Self.docsURL)
@@ -563,7 +563,7 @@ struct ConnectCLISheet: View {
 		panel.canChooseDirectories = true
 		panel.allowsMultipleSelection = false
 		panel.prompt = "Choose Folder"
-		panel.message = "Choose the folder that contains your project's package.json"
+		panel.message = "Choose the folder that contains your project’s package.json"
 		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
 		return panel.url
 	}

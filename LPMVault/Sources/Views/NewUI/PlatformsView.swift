@@ -96,7 +96,7 @@ struct PlatformsView: View {
 		}
 	}
 
-	private static let tokensNote = "Tokens stay in this Mac's Keychain"
+	private static let tokensNote = "Tokens stay in this Mac’s Keychain"
 	/// How every platform connects, said once above them rather than on each card.
 	static let connectingNote = "Each platform connects in your browser, except Coolify, which takes an API token you create."
 
@@ -508,7 +508,7 @@ struct PlatformsView: View {
 		case (.cloudflare, true):
 			"Finish in your browser: choose the Cloudflare accounts LPM Vault can reach, approve it, then come back here."
 		case (.cloudflare, false):
-			"Publishes Workers' runtime secrets for the accounts you approve."
+			"Publishes Workers’ runtime secrets for the accounts you approve."
 		}
 	}
 
@@ -518,12 +518,12 @@ struct PlatformsView: View {
 	static let revocationSteps: [(platform: PublishPlatform, step: String)] = [
 		(.vercel, "Integrations settings, where uninstalling deletes the variables LPM Vault created"),
 		(.netlify, "Authorized applications"),
-		(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings"),
+		(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization’s owner uninstalls it in the organization’s settings"),
 		(.cloudflare, "disconnecting here revokes it"),
 		(.coolify, "Keys & Tokens"),
 	]
 
-	static let revocationIntro = "To remove LPM Vault's access entirely, revoke it on the platform:"
+	static let revocationIntro = "To remove LPM Vault’s access entirely, revoke it on the platform:"
 
 	/// Where to revoke LPM Vault's access, one platform to a line.
 	private var revocationSection: some View {
@@ -535,7 +535,7 @@ struct PlatformsView: View {
 					Image(systemName: "chevron.right")
 						.font(.system(size: 9, weight: .semibold))
 						.rotationEffect(.degrees(showsRevocationSteps ? 90 : 0))
-					Text("How to Remove LPM Vault's Access")
+					Text("How to Remove LPM Vault’s Access")
 						.font(.system(size: 12, weight: .medium))
 				}
 				.foregroundStyle(VaultPalette.textSecondary)
@@ -585,9 +585,9 @@ struct PlatformsView: View {
 		case (true, false):
 			"Sign in to LPM to finish revoking Cloudflare access LPM Vault no longer uses."
 		case (true, true):
-			"LPM Vault can't finish revoking Cloudflare access it no longer uses through the LPM environment it's signed in to. Sign in through the one that access was connected in."
+			"LPM Vault can’t finish revoking Cloudflare access it no longer uses through the LPM environment it’s signed in to. Sign in through the one that access was connected in."
 		case (false, _) where count == 1:
-			"LPM Vault is still revoking a Cloudflare login's access it no longer uses. It finishes once lpm.dev confirms it."
+			"LPM Vault is still revoking a Cloudflare login’s access it no longer uses. It finishes once lpm.dev confirms it."
 		case (false, _):
 			"LPM Vault is still revoking the access of \(count) Cloudflare logins it no longer uses. It finishes once lpm.dev confirms it."
 		}
@@ -612,7 +612,7 @@ struct PlatformsView: View {
 	static func cloudflarePromptMessage(_ prompt: PlatformConnections.CloudflarePrompt) -> String {
 		switch prompt {
 		case .otherLogin(let reconnecting):
-			"Add the login you approved beside \(reconnecting), or put it in \(reconnecting)'s place, which revokes \(reconnecting)'s access. Destinations stay with their Cloudflare accounts either way."
+			"Add the login you approved beside \(reconnecting), or put it in \(reconnecting)’s place, which revokes \(reconnecting)’s access. Destinations stay with their Cloudflare accounts either way."
 		case .losesAccounts(let label, let accounts):
 			"LPM Vault would no longer reach \(ListFormatter.localizedString(byJoining: accounts)) through \(label), so destinations there stop publishing until a login that reaches them is connected."
 		}

@@ -30,7 +30,7 @@ enum PersonalProjectCrypto {
       case .invalidContext:
         "The personal env key does not match this registry, account, or project."
       case .missingRoot:
-        "This Mac does not have this account's personal env root key. Recover it from a trusted device before syncing."
+        "This Mac does not have this account’s personal env root key. Recover it from a trusted device before syncing."
       case .invalidRoot: "The stored personal env root key is invalid."
       case .invalidCheckpoint: "The personal env key checkpoint is invalid."
       case .downgrade: "The cloud personal env key is older than the trusted local checkpoint."

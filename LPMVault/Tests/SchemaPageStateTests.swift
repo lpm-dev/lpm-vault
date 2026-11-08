@@ -118,7 +118,7 @@ struct SchemaPageStateTests {
 		let rejected = try #require(VaultSchemaEditorFooter.blocker(store: store, projectID: "schema-page-state", item: nil))
 		#expect(rejected.blocksReview)
 		#expect(rejected.show == .key("API_TOKEN"))
-		#expect(rejected.message.hasPrefix("Can't save: API_TOKEN has a problem."))
+		#expect(rejected.message.hasPrefix("Can’t save: API_TOKEN has a problem."))
 		let panel = try #require(VaultSchemaEditorFooter.blocker(store: store, projectID: "schema-page-state", item: .key("API_TOKEN")))
 		#expect(panel.message == "Fix the problem above to save.", "The panel showing the key points at it instead")
 	}
@@ -283,7 +283,7 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("3000")),
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") })
 			try host.shortcut("s", code: 1)
 			try await host.settle()
 			#expect(host.window.sheets.isEmpty, "Saving is blocked")
@@ -320,7 +320,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			store.editSchemaDraft(in: "schema-keys") { $0.set(.declared(.object([.init(key: "format", value: .string("port"))])), for: .key("PORT")) }
 			try #"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			#expect(try await host.waitForText("Schema can't be read"))
+			#expect(try await host.waitForText("Schema can’t be read"))
 			#expect(try await host.waitForText("1 unsaved change", footer: 30))
 			try await host.click("Discard")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Discarding that can't be undone asks first")
@@ -352,7 +352,7 @@ extension SheetInteractionTests {
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys")?.rejection != nil })
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") && $0.contains("Show") && $0.contains("1 unsaved change") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") && $0.contains("Show") && $0.contains("1 unsaved change") })
 			#expect(try await statusBarText(in: host).contains("1 key fails"), "A rejected draft still shows the failures lpm.json's rules find")
 		}
 
@@ -364,10 +364,10 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("3000")),
 					.init(key: "secret", value: .bool(true))])), for: .key("PORT"))
 			}
-			#expect(try await waitForStatusBar(in: host) { $0.contains("Can't save") })
+			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") })
 			try #"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			#expect(try await host.waitForText("Schema can't be read"))
-			#expect(try await waitForStatusBar(in: host) { !$0.contains("Can't save") && !$0.contains("Show") && $0.contains("Discard") })
+			#expect(try await host.waitForText("Schema can’t be read"))
+			#expect(try await waitForStatusBar(in: host) { !$0.contains("Can’t save") && !$0.contains("Show") && $0.contains("Discard") })
 		}
 
 		@Test("the arrows leave a key being added in its panel, with what's typed")

@@ -408,7 +408,7 @@ struct CloudflarePublishingTests {
 			Issue.record("\(String(describing: report.outcomes["A"]))")
 			return
 		}
-		#expect(message.contains("another Worker now has this Worker's name"))
+		#expect(message.contains("another Worker now has this Worker’s name"))
 		#expect(report.published.isEmpty && report.advances.isEmpty)
 	}
 
@@ -436,7 +436,7 @@ struct CloudflarePublishingTests {
 			(.refused(status: 400, codes: [10_100]), "error 10100"),
 			(.unauthorized, "Connect Cloudflare again"),
 			(.credentials(.retired), "is being disconnected"),
-			(.forbidden, "can't change this Worker"),
+			(.forbidden, "can’t change this Worker"),
 			(.unreachable, "nothing was sent"),
 		]
 		for (error, text) in expectations {

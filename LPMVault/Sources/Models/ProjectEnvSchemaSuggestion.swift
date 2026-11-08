@@ -116,7 +116,7 @@ struct ProjectEnvSchemaSuggestion: Equatable, Identifiable, Sendable {
 	/// warned about: browser SDKs take public ones by design.
 	static func exposureWarning(for key: String, publicPrefix: String?) -> String? {
 		guard let publicPrefix, key.uppercased().split(separator: "_").contains(where: { exposedSecretWords.contains(String($0)) }) else { return nil }
-		return "Its name says it's secret, but \(publicPrefix) makes it public: the LPM CLI exposes its value to the browser."
+		return "Its name says it’s secret, but \(publicPrefix) makes it public: the LPM CLI exposes its value to the browser."
 	}
 
 	/// A name that looks like a pasted credential, such as a GitHub or AWS
@@ -231,10 +231,10 @@ struct ProjectEnvSchemaSuggestion: Equatable, Identifiable, Sendable {
 	/// and at most once.
 	private static func secretEvidence(parts: [String], values: [String], count: Int, format: FormatCheck) -> String? {
 		if parts.contains(where: secretWords.contains) {
-			return "the name says it's secret"
+			return "the name says it’s secret"
 		}
 		if parts.count >= 2, parts.last == "KEY", values.allSatisfy({ $0.utf8.count >= 16 && !$0.contains(where: \.isWhitespace) }) {
-			return "the name says it's secret"
+			return "the name says it’s secret"
 		}
 		var detected: ProjectEnvSchemaRule.Format??
 		func formatIs(_ expected: ProjectEnvSchemaRule.Format?, and valuesAgree: () -> Bool) -> Bool {

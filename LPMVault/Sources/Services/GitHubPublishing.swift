@@ -327,7 +327,7 @@ enum GitHubPublishing {
 		let answer: Result<Void, GitHubAPIError>
 		if write.isSecret {
 			guard let publicKey, let ciphertext = seal(change.value, publicKey.key) else {
-				return .done(.refused("The value couldn't be sealed for GitHub."))
+				return .done(.refused("The value couldn’t be sealed for GitHub."))
 			}
 			answer = await client.setSecret(change.key, to: GitHubSealedSecret(ciphertext: ciphertext, keyID: publicKey.id), in: scope)
 		} else if write.creates {
@@ -422,7 +422,7 @@ enum GitHubPublishing {
 		let repository: GitHubRepository
 		switch await client.repository(id: target.repositoryID) {
 		case .success(let value): repository = value
-		case .failure(.notFound): return .failure(.replaced("\(target.repositoryName) isn't reachable on GitHub any more. Review again."))
+		case .failure(.notFound): return .failure(.replaced("\(target.repositoryName) isn’t reachable on GitHub any more. Review again."))
 		case .failure(let error): return .failure(.api(error))
 		}
 		guard repository.fullName == target.repositoryName else {
@@ -560,7 +560,7 @@ enum GitHubPublishing {
 	/// secrets, and readable variables, in a repository and in an environment.
 	static func overflowMessage(_ overflow: PublishPlan.Overflow, scope: GitHubPublishTarget.Scope) -> String {
 		let kind = overflow.isSecrets ? "secrets" : "variables"
-		let place = scope == .repository ? "a repository's own" : "an environment's"
+		let place = scope == .repository ? "a repository’s own" : "an environment’s"
 		let one = String(kind.dropLast())
 		guard overflow.existing < overflow.limit else {
 			let new = overflow.adding == 1 ? "the new \(one)" : "the \(overflow.adding) new \(kind)"
@@ -573,10 +573,10 @@ enum GitHubPublishing {
 	/// repository's role and archived state say; nil when nothing says they can't.
 	static func accessRefusal(_ repository: GitHubRepository, for scope: GitHubPublishTarget.Scope) -> String? {
 		guard !repository.canChange(scope) else { return nil }
-		if repository.isArchived { return "\(repository.fullName) is archived on GitHub, so its secrets and variables can't change." }
+		if repository.isArchived { return "\(repository.fullName) is archived on GitHub, so its secrets and variables can’t change." }
 		switch scope {
-		case .repository: return "Your role on \(repository.fullName) can't change its secrets and variables. That needs write access."
-		case .environment: return "Changing an environment's secrets and variables needs admin access to \(repository.fullName)."
+		case .repository: return "Your role on \(repository.fullName) can’t change its secrets and variables. That needs write access."
+		case .environment: return "Changing an environment’s secrets and variables needs admin access to \(repository.fullName)."
 		}
 	}
 
@@ -584,31 +584,31 @@ enum GitHubPublishing {
 		switch error {
 		case .unauthorized: "GitHub no longer accepts this connection. Connect GitHub again on the Platforms page."
 		case .forbidden:
-			"GitHub refused access. Changing a repository's secrets and variables needs write access to it, and an environment's needs admin access, with LPM Vault's GitHub App installed on the repository."
+			"GitHub refused access. Changing a repository’s secrets and variables needs write access to it, and an environment’s needs admin access, with LPM Vault’s GitHub App installed on the repository."
 		case .notFound:
-			"GitHub couldn't find the repository, the environment, or the secret or variable. LPM Vault's GitHub App may not be installed on the repository."
+			"GitHub couldn’t find the repository, the environment, or the secret or variable. LPM Vault’s GitHub App may not be installed on the repository."
 		case .rateLimited(let reset?) where reset.timeIntervalSince(now) > 90:
 			"GitHub is limiting requests until \(reset.formatted(date: .omitted, time: .shortened)). Try again then."
 		case .rateLimited(nil): "GitHub is limiting requests. Try again in a few minutes."
 		case .rateLimited: "GitHub is limiting requests. Try again in a minute."
 		case .rejected(let status): "GitHub refused it (HTTP \(status))."
-		case .transport: "GitHub couldn't be reached."
+		case .transport: "GitHub couldn’t be reached."
 		case .cancelled: "Cancelled."
-		case .invalidResponse: "GitHub's answer couldn't be read."
+		case .invalidResponse: "GitHub’s answer couldn’t be read."
 		case .server(let status): "GitHub answered with HTTP \(status)."
 		case .credentials(let error): error.message(for: .github)
 		case .moved: "The repository was renamed or transferred on GitHub. Review again."
 		case .renewed:
 			"The GitHub connection was renewed again and again while this was sent. Try again, and if it keeps happening, connect GitHub again on the Platforms page."
 		case .ssoRequired:
-			"An organization's single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
+			"An organization’s single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
 		case .tooLarge(.repositories):
-			"GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to."
+			"GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault’s GitHub App only on the repositories it publishes to."
 		case .tooLarge(.environments): "GitHub listed more environments for the repository than LPM Vault reads at once."
 		case .tooLarge(.secrets): "GitHub listed more secrets than LPM Vault reads at once."
 		case .tooLarge(.variables): "GitHub listed more variables than LPM Vault reads at once."
 		case .timedOut(.repositories):
-			"GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault's GitHub App only on the repositories it publishes to."
+			"GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault’s GitHub App only on the repositories it publishes to."
 		case .timedOut(let listing): "GitHub took too long to list \(listed(listing)). Try again."
 		}
 	}
@@ -616,7 +616,7 @@ enum GitHubPublishing {
 	private static func listed(_ listing: GitHubAPIError.Listing) -> String {
 		switch listing {
 		case .repositories: "the repositories"
-		case .environments: "the repository's environments"
+		case .environments: "the repository’s environments"
 		case .secrets: "the secrets"
 		case .variables: "the variables"
 		}

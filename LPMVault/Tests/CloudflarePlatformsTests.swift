@@ -135,7 +135,7 @@ struct CloudflarePlatformsTests {
 			#expect(model.notice?.message == "Connected \(label ?? "") on Cloudflare, beside Work, which still needs reconnecting.")
 		case .replace:
 			#expect(stored == [new.connectionID] && revoker.calls.map(\.token) == ["cf_refresh_1"])
-			#expect(model.notice?.message == "Connected \(label ?? "") on Cloudflare in Work's place.")
+			#expect(model.notice?.message == "Connected \(label ?? "") on Cloudflare in Work’s place.")
 		default:
 			#expect(stored == [connection.id] && revoker.calls.map(\.token) == ["cf_new_refresh"])
 		}
@@ -235,7 +235,7 @@ struct CloudflarePlatformsTests {
 			#expect(revoker.calls.map(\.token) == ["cf_new_refresh"], "\(problem)")
 			#expect(model.notice?.isError == true, "\(problem)")
 			// A read that fails here fails the page's listing after it too, which says so in its stead.
-			let expected = problem == "newer" ? "A newer LPM Vault saved this Cloudflare login's connection" : "couldn't be read"
+			let expected = problem == "newer" ? "A newer LPM Vault saved this Cloudflare login’s connection" : "couldn’t be read"
 			#expect(model.notice?.message.contains(expected) == true, "\(problem): \(model.notice?.message ?? "")")
 		}
 		keychain.failAppItemReads = []
@@ -244,9 +244,9 @@ struct CloudflarePlatformsTests {
 	@Test("Cloudflare's failures to connect say what happened and what to do")
 	func connectFailures() {
 		#expect(PlatformConnectFailure(code: "insufficient_scope").message(for: .cloudflare)
-			== "Cloudflare didn't grant all the access LPM Vault needs. Connect again, and approve every permission it asks for.")
+			== "Cloudflare didn’t grant all the access LPM Vault needs. Connect again, and approve every permission it asks for.")
 		#expect(PlatformConnectFailure(code: "exchange_uncertain").message(for: .cloudflare)
-			== "Cloudflare's answer didn't come back, so the connection couldn't be finished. Connect again.")
+			== "Cloudflare’s answer didn’t come back, so the connection couldn’t be finished. Connect again.")
 		#expect(PlatformsView.retiringMessage(count: 2)
 			== "LPM Vault is still revoking the access of 2 Cloudflare logins it no longer uses. It finishes once lpm.dev confirms it.")
 	}
@@ -316,7 +316,7 @@ struct CloudflarePlatformsTests {
 		let (model, _) = model(revoker: ScriptedRevoker { _, _ in .success(.unconfirmed) }) { .success(new) }
 		model.connectCloudflare()
 		try await idle(model)
-		#expect(model.notice?.message.hasPrefix("Cloudflare connected, but the connection couldn't be saved.") == true)
+		#expect(model.notice?.message.hasPrefix("Cloudflare connected, but the connection couldn’t be saved.") == true)
 		#expect(model.notice?.message != PlatformConnections.unrevokedMessage(count: 1) && model.markers.count == 1)
 	}
 
@@ -331,7 +331,7 @@ struct CloudflarePlatformsTests {
 		#expect(try await waitUntil { model.disconnecting.isEmpty })
 		#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
 		#expect(keychain.platformConnectionStorage.isEmpty && model.connections.isEmpty)
-		#expect(model.notice == .init(message: "Disconnected Work. LPM Vault's access to it on Cloudflare has ended.", isError: false))
+		#expect(model.notice == .init(message: "Disconnected Work. LPM Vault’s access to it on Cloudflare has ended.", isError: false))
 	}
 
 	@Test("disconnecting a login whose tokens Cloudflare already ended revokes nothing, and says so")
@@ -346,7 +346,7 @@ struct CloudflarePlatformsTests {
 		model.disconnect(connection)
 		#expect(try await waitUntil { model.disconnecting.isEmpty })
 		#expect(revoker.calls.isEmpty && keychain.platformConnectionStorage.isEmpty && model.connections.isEmpty)
-		#expect(model.notice == .init(message: "Disconnected Work. Cloudflare had already ended LPM Vault's access to it.", isError: false))
+		#expect(model.notice == .init(message: "Disconnected Work. Cloudflare had already ended LPM Vault’s access to it.", isError: false))
 	}
 
 	@Test("a disconnect while signed out says a sign-in finishes revoking it, rather than that it goes on")
@@ -428,7 +428,7 @@ struct CloudflarePlatformsTests {
 		model.disconnect(connection)
 		#expect(try await waitUntil { model.disconnecting.isEmpty && !model.isLoading })
 		#expect(model.notice == .init(
-			message: "Disconnected Work, but lpm.dev couldn't confirm that LPM Vault's access to it on Cloudflare ended.", isError: true))
+			message: "Disconnected Work, but lpm.dev couldn’t confirm that LPM Vault’s access to it on Cloudflare ended.", isError: true))
 		#expect(model.markers.count == 1)
 	}
 

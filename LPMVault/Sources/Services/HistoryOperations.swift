@@ -198,7 +198,7 @@ enum HistoryOperations {
 	static func remove(_ storage: some HistoryStorage, vaultId: String, review: HistoryEngine.Review, selection: [Int]) throws {
 		guard let stored = try stored(storage, vaultId: vaultId) else { throw noHistory }
 		guard let approval = try storage.historyApproval(vaultId: vaultId) else {
-			throw HistoryEngine.Failure(code: "history.unavailable", message: "The values' approval couldn't be confirmed.")
+			throw HistoryEngine.Failure(code: "history.unavailable", message: "The values’ approval couldn’t be confirmed.")
 		}
 		let writes = try HistoryEngine.startRemoval(
 			stored, values: try required(values(storage, vaultId: vaultId)),
@@ -285,15 +285,15 @@ enum HistoryOperations {
 
 	private static func required(_ values: SecretBytes?) throws -> SecretBytes {
 		guard let values else {
-			throw HistoryEngine.Failure(code: "history.no_project", message: "This project's values can't be found.")
+			throw HistoryEngine.Failure(code: "history.no_project", message: "This project’s values can’t be found.")
 		}
 		return values
 	}
 
 	private static let noHistory = HistoryEngine.Failure(code: "history.off", message: "This project has no local history.")
 	private static let newerVersion = HistoryEngine.Failure(
-		code: "history.unsupported", message: "A newer LPM CLI or LPM Vault keeps this project's history. Update LPM Vault to use it.")
-	private static let damaged = HistoryEngine.Failure(code: "history.damaged", message: "This project's history is damaged.")
+		code: "history.unsupported", message: "A newer LPM CLI or LPM Vault keeps this project’s history. Update LPM Vault to use it.")
+	private static let damaged = HistoryEngine.Failure(code: "history.damaged", message: "This project’s history is damaged.")
 
 	private static func secret(_ data: Data) -> SecretBytes {
 		data.withUnsafeBytes { SecretBytes(copying: $0) }

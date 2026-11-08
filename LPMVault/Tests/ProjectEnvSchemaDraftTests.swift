@@ -535,7 +535,7 @@ struct ProjectEnvSchemaDraftTests {
 		#expect(evaluation.check == nil)
 		let rejection = try #require(evaluation.rejection)
 		#expect(rejection.item == .key("TOKEN"))
-		#expect(rejection.reason == "Secret keys can't have a default or allowed values.")
+		#expect(rejection.reason == "Secret keys can’t have a default or allowed values.")
 		#expect(rejection.fields == ["default", "enum"], "The panel shows it on the first of these rows it shows")
 	}
 
@@ -906,7 +906,7 @@ struct SchemaDraftStoreTests {
 		try "{not json".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
 		try #require(try await waitUntil { if case .unreadable? = store.keyDescriptions["project"]?.schema { true } else { false } })
-		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.unavailable("lpm.json can't be read. Fix it, then save.")) { try await store.saveSchemaDraft(in: "project") }
+		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.unavailable("lpm.json can’t be read. Fix it, then save.")) { try await store.saveSchemaDraft(in: "project") }
 		store.discardSchemaDraft(in: "project")
 		#expect(store.schemaDraft(for: "project") == nil)
 	}

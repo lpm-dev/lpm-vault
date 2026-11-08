@@ -458,7 +458,7 @@ extension SheetInteractionTests {
 			#expect(try await second.waitForText("Undo import"))
 			otherKeychain.envStorage["project"]?.environments["default"]?["FROM_CLI"] = "1"
 			try await second.click("Undo import")
-			#expect(try await second.waitForText(".env changed after the import, so it can't be undone."))
+			#expect(try await second.waitForText(".env changed after the import, so it can’t be undone."))
 			#expect(otherKeychain.envStorage["project"]?.environments["default"]?["NEW"] == "added")
 		}
 

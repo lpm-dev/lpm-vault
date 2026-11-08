@@ -51,7 +51,7 @@ struct VaultSchemaReviewSheet: View {
 						message("Choose a version for each change that conflicts with lpm.json first. The banner on the Schema page lists them.")
 					} else if let review {
 						if let clash {
-							problem("Can't save: \(clash.message)")
+							problem("Can’t save: \(clash.message)")
 						}
 						if let summary = review.warningSummary {
 							problem(summary)
@@ -230,7 +230,7 @@ struct VaultSchemaReviewSheet: View {
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			case .unchecked:
-				Text("Stored values weren't checked: the project's values aren't loaded, or the rules are too large to check here.")
+				Text("Stored values weren’t checked: the project’s values aren’t loaded, or the rules are too large to check here.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)

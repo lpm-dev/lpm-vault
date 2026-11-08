@@ -31,7 +31,7 @@ struct SchemaKeyReferenceTests {
 		#expect(references.map(\.location) == ["envSchema.groups.auth", "base.json", "base.json", "envSchema.vars.OAUTH_TOKEN.requiredWhen"])
 		#expect(references.map(\.fixes) == [[.removeGroup, .dropFromGroup], [.dropFromGroup], [.removeCondition], [.removeCondition]],
 			"Removing a group of two comes first, since dropping one member leaves the other required")
-		#expect(references[0].note(for: .dropFromGroup) == "Leaves OAUTH_TOKEN as the group's only member, which makes it required.")
+		#expect(references[0].note(for: .dropFromGroup) == "Leaves OAUTH_TOKEN as the group’s only member, which makes it required.")
 		#expect(Set(references.map(\.id)).count == references.count)
 		#expect(Reference.references(to: "MODE", in: draft, rules: loaded.schema.overview).isEmpty)
 	}
@@ -54,7 +54,7 @@ struct SchemaKeyReferenceTests {
 		let legacy = try #require(byTitle[.key("LEGACY")])
 		#expect(legacy.title(of: .removeCondition) == "Override without the rule", "A fix that writes an override says so")
 		#expect(legacy.done(by: .removeCondition) == "Overridden in lpm.json")
-		#expect(legacy.note(for: .removeCondition) == "Writes envSchema.overrides.LEGACY to lpm.json, which replaces base.json's version in full: later changes there won't apply.")
+		#expect(legacy.note(for: .removeCondition) == "Writes envSchema.overrides.LEGACY to lpm.json, which replaces base.json’s version in full: later changes there won’t apply.")
 
 		for reference in references {
 			draft.set(reference.fixed(by: reference.fixes[0]), for: reference.item)
@@ -125,7 +125,7 @@ struct SchemaKeyReferenceTests {
 		let restored = ProjectEnvSchemaDraftEvaluator.restoredGroups(["login"], of: draft, inFolder: folder)
 		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview).map { $0.restored(by: restored) }
 		#expect(references.map(\.fixes) == [[]])
-		#expect(references.first?.unfixable == "lpm.json's override lists only it, and the group base.json declares names it too. Remove it there.")
+		#expect(references.first?.unfixable == "lpm.json’s override lists only it, and the group base.json declares names it too. Remove it there.")
 	}
 
 	@Test("an override that settles a conflict between imports can't go, while another override checked with it still can")
@@ -141,7 +141,7 @@ struct SchemaKeyReferenceTests {
 		#expect(restored == ["access": .group(members: ["OTP"], source: "base.json"), "login": .unavailable])
 		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview).map { $0.restored(by: restored) }
 		#expect(references.map(\.fixes) == [[.removeGroupOverride], []])
-		#expect(references.last?.unfixable == "lpm.json's override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first.")
+		#expect(references.last?.unfixable == "lpm.json’s override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first.")
 	}
 
 	@Test("keeping a key gives its Required when back to a new key renamed since, and returns it to its place before that key in a group")
@@ -181,11 +181,11 @@ struct SchemaKeyReferenceTests {
 
 	@Test("a key only an import can remove names the file that declares it, and offers only what can be done here", arguments: [
 		(VaultSchemaElsewhere(source: "base.json", path: "base.json", isOverridden: true), true,
-			"It's declared in base.json, which lpm.json imports, and lpm.json overrides its rules. To remove it, delete it in base.json and reset the override here: lpm.json can't override a key its imports don't declare."),
+			"It’s declared in base.json, which lpm.json imports, and lpm.json overrides its rules. To remove it, delete it in base.json and reset the override here: lpm.json can’t override a key its imports don’t declare."),
 		(VaultSchemaElsewhere(source: "preset:node", path: nil, isOverridden: true), false,
-			"It's declared in preset:node, which can't be edited here, and lpm.json overrides its rules. Reset the override to bring back the original rules."),
+			"It’s declared in preset:node, which can’t be edited here, and lpm.json overrides its rules. Reset the override to bring back the original rules."),
 		(VaultSchemaElsewhere(source: "b.json", path: "b.json", isOverridden: false, overriddenBy: "a.json"), true,
-			"It's declared in b.json, and a.json overrides its rules. Remove it from both, or override its rules in lpm.json."),
+			"It’s declared in b.json, and a.json overrides its rules. Remove it from both, or override its rules in lpm.json."),
 	])
 	func elsewhere(elsewhere: VaultSchemaElsewhere, editable: Bool, explanation: String) {
 		#expect(VaultSchemaElsewhereSheet.explanation(for: elsewhere, editable: editable) == explanation)
@@ -487,7 +487,7 @@ extension SheetInteractionTests {
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("can't be removed here", in: sheet))
+			#expect(try await host.waitForText("can’t be removed here", in: sheet))
 			#expect(try await host.waitForText("Open file", in: sheet))
 			try await host.click("Override rules", in: sheet)
 			#expect(try await host.waitUntil { if case .overridden? = store.schemaDraft(for: "schema-remove")?.declaration(of: .key("DATABASE_URL")) { true } else { false } })

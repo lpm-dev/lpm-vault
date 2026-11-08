@@ -20,6 +20,16 @@ struct SettingsPageStoreTests {
 		#expect(store.accountPage == .settings && store.isShowingAccountPage)
 	}
 
+	@Test("the Settings panel sits clear of the title bar with even margins above and below, centered, and no wider than it reads well")
+	func overlayGeometry() {
+		let regular = VaultSettingsOverlay.panelFrame(in: CGSize(width: 1280, height: 800))
+		#expect(regular.minY == VaultMetrics.titleBar + 40 && regular.maxY == 800 - 40, "40 points below the title bar and above the bottom")
+		#expect(regular.width == 1100 && regular.minX == 90 && abs(regular.midX - 640) < 0.5, "Centered, at its widest")
+		let small = VaultSettingsOverlay.panelFrame(in: CGSize(width: 1040, height: 640))
+		#expect(small.minX == 40 && small.maxX == 1000, "At least 40 points on each side")
+		#expect(small.minY == VaultMetrics.titleBar + 40 && small.maxY == 600)
+	}
+
 	@Test("Settings opens where it was left; Platforms is its own page, and closing leaves the workspace's project as it was")
 	func categories() {
 		let store = makeStore()

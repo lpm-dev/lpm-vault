@@ -213,7 +213,7 @@ enum VaultKeychainTransactionLock {
 			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
 		}
 		guard homeDescriptor >= 0 else {
-			throw KeychainStoreError.status(operation: "open the LPM home's folder", code: OSStatus(errno))
+			throw KeychainStoreError.status(operation: "open the LPM home’s folder", code: OSStatus(errno))
 		}
 		defer { _ = Darwin.close(homeDescriptor) }
 
@@ -3078,7 +3078,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 			case .companion(.engine(let reason)): reason
 			default: error.errorDescription ?? "the Keychain refused it"
 			}
-			keychainLogger.error("Couldn't finish an env project's interrupted change: \(reason, privacy: .public)")
+			keychainLogger.error("Couldn’t finish an env project’s interrupted change: \(reason, privacy: .public)")
 			throw KeychainStoreError.companion(.unfinished(reason))
 		}
 	}
@@ -3853,7 +3853,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				do {
 					return .repaired(try store.displayAssessment(vaultId: vaultId))
 				} catch {
-					keychainLogger.error("Couldn't read an env project's newer data after repairing it: \(error.localizedDescription, privacy: .public)")
+					keychainLogger.error("Couldn’t read an env project’s newer data after repairing it: \(error.localizedDescription, privacy: .public)")
 					return .repairedStateUnknown
 				}
 			})

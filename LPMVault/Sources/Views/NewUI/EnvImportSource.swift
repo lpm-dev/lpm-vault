@@ -143,8 +143,8 @@ extension ImportedEnvFile {
 	var skippedLinesDescription: String? {
 		guard skippedLineCount > 0, let first = firstSkippedLine else { return nil }
 		return skippedLineCount == 1
-			? "Line \(first) isn't KEY=value, so it's left out."
-			: "\(skippedLineCount) lines aren't KEY=value, so they're left out, starting at line \(first)."
+			? "Line \(first) isn’t KEY=value, so it’s left out."
+			: "\(skippedLineCount) lines aren’t KEY=value, so they’re left out, starting at line \(first)."
 	}
 }
 
@@ -373,10 +373,11 @@ private struct EnvImportModeControl: View {
 			Button(action: action) {
 				Text(title)
 					.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? Color.white : VaultPalette.textSecondary)
+					.foregroundStyle(selected ? VaultPalette.selectedText : VaultPalette.textSecondary)
 					.frame(maxWidth: .infinity)
 					.frame(height: 26)
-					.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.strongFill : (hovering ? VaultPalette.sidebarHover : .clear)))
+					.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.selectedFill : (hovering ? VaultPalette.sidebarHover : .clear)))
+					.overlay { if selected { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.selectedBorder, lineWidth: 1) } }
 					.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)

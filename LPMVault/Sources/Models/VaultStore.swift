@@ -782,7 +782,7 @@ enum OrganizationMemberAuthorizationPolicy {
       member.publicKeyFingerprint == VaultCrypto.publicKeyFingerprint(localPublicKey)
     else {
       throw VaultSyncError(
-        "This device's sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
+        "This device’s sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
       )
     }
     return SyncService.PublicKeyRecord(
@@ -2486,7 +2486,7 @@ final class VaultStore {
   }
 
   private static let localStateRefreshFailure =
-    "Couldn't reload changes from the LPM CLI. Copying, revealing, and exporting are paused until a refresh succeeds."
+    "Couldn’t reload changes from the LPM CLI. Copying, revealing, and exporting are paused until a refresh succeeds."
 
   /// Makes an in-flight refresh read again instead of publishing a snapshot
   /// that a newer local change or selection has superseded.
@@ -3384,7 +3384,7 @@ final class VaultStore {
     case .success(let persisted):
       snapshot = persisted
       if case .failure(let failure) = await publishing.deleteOrphanedRecords(among: [project.id]) {
-        error = "The local copy was deleted, but its publish destinations couldn't be removed: \(failure)"
+        error = "The local copy was deleted, but its publish destinations couldn’t be removed: \(failure)"
       }
     case .failure(let persistenceError):
 	  if case .transactionOutcomeIndeterminate = persistenceError {
@@ -3836,7 +3836,7 @@ final class VaultStore {
   /// Why the selected environment can't be edited as Raw text now, or nil when it can.
   var rawTextEditBlocker: String? {
     guard canUseLocalSecrets, let project = selectedProject, project.environments[selectedEnvironment] != nil else {
-      return "Values can't be edited right now"
+      return "Values can’t be edited right now"
     }
     // A key's edit can rename it or change it in every environment, which
     // the text, written from the saved values, would put back.
@@ -4847,10 +4847,10 @@ final class VaultStore {
 
   private func schemaUnavailableReason(for projectID: String) -> String {
     switch keyDescriptions[projectID]?.schema {
-    case .unreadable?: "lpm.json can't be read. Fix it, then save."
-    case .noFolder?: "The project's folder isn't available."
-    case nil: "lpm.json hasn't been read yet."
-    case .loaded?: "The project's folder changed. Review the rules, then save again."
+    case .unreadable?: "lpm.json can’t be read. Fix it, then save."
+    case .noFolder?: "The project’s folder isn’t available."
+    case nil: "lpm.json hasn’t been read yet."
+    case .loaded?: "The project’s folder changed. Review the rules, then save again."
     }
   }
 
@@ -4864,7 +4864,7 @@ final class VaultStore {
     guard let project = projects.first(where: { $0.id == projectID }), selectedProjectId == projectID,
       let folder = editableSchemaFolder(for: projectID)
     else { throw .targetUnavailable }
-    guard project.hasLoadedEnvironments else { throw .refused("\(project.name)'s values are still loading. Rename the key once they've loaded.") }
+    guard project.hasLoadedEnvironments else { throw .refused("\(project.name)’s values are still loading. Rename the key once they’ve loaded.") }
     let id = VaultKeyDraft.ID(projectID: projectID, key: key)
     if let draft = keyDrafts.draft(id) {
       guard !draft.isDirty else { throw .refused("\(key) has unsaved edits on the Environments page. Save or discard them first.") }
@@ -6682,7 +6682,7 @@ final class VaultStore {
             )
             if serverVersion < authenticatedFloor {
               error =
-                "The cloud env project revision is older than this checkout's authenticated checkpoint."
+                "The cloud env project revision is older than this checkout’s authenticated checkpoint."
               lastSyncStatus = "failed"
               finishSyncIfOwned(authority)
               return
@@ -8906,7 +8906,7 @@ final class VaultStore {
   }
 
   private static func publishingFollowMessage(_ failure: PublishingStoreError) -> String {
-    "The change was saved, but its publish destinations couldn't be updated: \(failure)"
+    "The change was saved, but its publish destinations couldn’t be updated: \(failure)"
   }
 
   /// Returns true once nothing is being written to the Keychain, a project's

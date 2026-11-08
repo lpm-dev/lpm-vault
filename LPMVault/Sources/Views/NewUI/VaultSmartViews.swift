@@ -58,7 +58,7 @@ enum VaultSmartView: CaseIterable {
 	fileprivate var help: String {
 		switch self {
 		case .drift: "Show the keys whose values differ between environments"
-		case .missing: "Show the keys an environment doesn't set"
+		case .missing: "Show the keys an environment doesn’t set"
 		case .invalid: "Show the keys whose values fail their lpm.json rules"
 		}
 	}

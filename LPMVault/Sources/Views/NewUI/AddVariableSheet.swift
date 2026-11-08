@@ -653,7 +653,7 @@ private struct SuggestionButton<Content: View>: View {
 				.padding(.horizontal, 10)
 				.padding(.vertical, 6)
 				.frame(maxWidth: .infinity, alignment: .leading)
-				.background(RoundedRectangle(cornerRadius: 6).fill(isHighlighted ? VaultPalette.accentTint : hovering ? VaultPalette.neutralTint : .clear))
+				.background(RoundedRectangle(cornerRadius: 6).fill(isHighlighted ? VaultPalette.menuHighlight : hovering ? VaultPalette.neutralTint : .clear))
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)

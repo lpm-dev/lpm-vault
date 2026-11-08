@@ -255,8 +255,8 @@ extension SheetInteractionTests {
 			case "search":
 				#expect(try await host.waitForText("No keys match your search"))
 			case "fallback":
-				#expect(try await host.waitForText("The LPM CLI reads values from .env and checks this environment's rules."))
-				#expect(try await host.waitForText("No values here. The LPM CLI uses .env's values for this environment."))
+				#expect(try await host.waitForText("The LPM CLI reads values from .env and checks this environment’s rules."))
+				#expect(try await host.waitForText("No values here. The LPM CLI uses .env’s values for this environment."))
 			default:
 				#expect(try await host.waitForText("Group credentials fails"))
 				#expect(try await host.waitForText("SAVED"), "The keys still show under the note")

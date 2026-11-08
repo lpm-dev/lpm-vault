@@ -56,8 +56,8 @@ enum ProjectEnvSchemaClientPrefixes {
 			switch self {
 			case .ready: nil
 			case .checking: "Checking your draft…"
-			case .rejected: "Fix your draft's problems to change prefixes."
-			case .unreadable: "lpm.json's rules can't be read."
+			case .rejected: "Fix your draft’s problems to change prefixes."
+			case .unreadable: "lpm.json’s rules can’t be read."
 			}
 		}
 	}
@@ -79,15 +79,15 @@ enum ProjectEnvSchemaClientPrefixes {
 
 		var message: String {
 			switch self {
-			case .invalid: "Use letters, digits and underscores; a prefix can't start with a digit."
+			case .invalid: "Use letters, digits and underscores; a prefix can’t start with a digit."
 			case .tooLong: "A prefix can be at most \(EnvValidation.maximumSchemaKeyNameBytes) bytes."
 			case .missingUnderscore: "A prefix ends with an underscore, such as ACME_PUBLIC_."
-			case .framework: "Keys with a framework's prefix are always public."
+			case .framework: "Keys with a framework’s prefix are always public."
 			case .duplicate: "This prefix is already listed."
 			case .redundant(let prefix): "Keys that start with it are already public through \(prefix.escapingDirectionControls)."
 			case .tooMany: "The LPM CLI accepts at most \(maximum) prefixes."
 			case .secret(let key):
-				"\(key.escapingDirectionControls) is Secret, and a public key can't be. Turn off its Secret first, or choose a prefix it doesn't start with."
+				"\(key.escapingDirectionControls) is Secret, and a public key can’t be. Turn off its Secret first, or choose a prefix it doesn’t start with."
 			}
 		}
 	}

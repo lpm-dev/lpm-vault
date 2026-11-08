@@ -138,7 +138,7 @@ struct ProjectEnvSchemaRule: Equatable, Sendable {
 				var seen = Set<String>()
 				for name in names {
 					if !EnvValidation.isValidEnvironmentName(name) {
-						return "“\(name.escapingDirectionControls)” isn't a valid name. Use letters, digits, “.”, “_” and “-”, up to 64 characters."
+						return "“\(name.escapingDirectionControls)” isn’t a valid name. Use letters, digits, “.”, “_” and “-”, up to 64 characters."
 					}
 					if !seen.insert(name).inserted { return "“\(name.escapingDirectionControls)” is listed twice in one scope." }
 				}
@@ -548,18 +548,18 @@ extension ProjectEnvSchemaRule {
 			if conflicts[field] == nil { conflicts[field] = .init(kind: .blocking, message: message, fixes: fixes) }
 		}
 		if secret {
-			if has(.defaultValue) { block(.defaultValue, "Secret keys can't have a default.", [.turnOffSecret, .remove(.defaultValue)]) }
-			if has(.defaultsIn) { block(.defaultsIn, "Secret keys can't have scoped defaults.", [.turnOffSecret, .remove(.defaultsIn)]) }
-			if has(.allowedValues) { block(.allowedValues, "Secret keys can't have allowed values.", [.turnOffSecret, .remove(.allowedValues)]) }
+			if has(.defaultValue) { block(.defaultValue, "Secret keys can’t have a default.", [.turnOffSecret, .remove(.defaultValue)]) }
+			if has(.defaultsIn) { block(.defaultsIn, "Secret keys can’t have scoped defaults.", [.turnOffSecret, .remove(.defaultsIn)]) }
+			if has(.allowedValues) { block(.allowedValues, "Secret keys can’t have allowed values.", [.turnOffSecret, .remove(.allowedValues)]) }
 			if context.publicPrefix != nil || client {
-				block(.secret, "Public keys can't be secret.", [.turnOffSecret])
+				block(.secret, "Public keys can’t be secret.", [.turnOffSecret])
 			} else if let source = context.comparedBy.first {
-				block(.secret, "\(source) compares this key's value in Required when, so it can't be secret.", [.turnOffSecret])
+				block(.secret, "\(source) compares this key’s value in Required when, so it can’t be secret.", [.turnOffSecret])
 			}
-			if ci == .variable { block(.ci, "Secret keys can't use readable CI variables.", [.setCIStorage(.secret)]) }
+			if ci == .variable { block(.ci, "Secret keys can’t use readable CI variables.", [.setCIStorage(.secret)]) }
 		}
 		if client, context.publicPrefix == nil {
-			block(.client, "Public keys need a public prefix, such as NEXT_PUBLIC_ or one of the project's client prefixes.", [.remove(.client)])
+			block(.client, "Public keys need a public prefix, such as NEXT_PUBLIC_ or one of the project’s client prefixes.", [.remove(.client)])
 		} else if let prefix = context.publicPrefix, !client, !secret {
 			block(.client, "Keys starting with \(prefix) are public.", [.turnOnPublic])
 		}
@@ -570,7 +570,7 @@ extension ProjectEnvSchemaRule {
 			} else if let issue = low.issue ?? high.issue {
 				block(.bounds, issue)
 			} else if let low = low.value, let high = high.value, low > high {
-				block(.bounds, "Min can't be more than max.")
+				block(.bounds, "Min can’t be more than max.")
 			} else if format == .port, low.value.map({ $0 > 65535 }) == true || high.value.map({ $0 < 1 }) == true {
 				block(.bounds, "These bounds leave no valid port, which runs from 1 to 65535.")
 			}
@@ -580,7 +580,7 @@ extension ProjectEnvSchemaRule {
 			if let issue = low.issue ?? high.issue {
 				block(.length, issue)
 			} else if let low = low.value, let high = high.value, low > high {
-				block(.length, "The shortest length can't be more than the longest.")
+				block(.length, "The shortest length can’t be more than the longest.")
 			}
 		}
 		if has(.protocols), let protocols {
@@ -591,7 +591,7 @@ extension ProjectEnvSchemaRule {
 			} else if protocols.count > 32 {
 				block(.protocols, "List at most 32 URL schemes.")
 			} else if let scheme = protocols.first(where: { !Self.isURLScheme($0) }) {
-				block(.protocols, "“\(scheme.escapingDirectionControls)” isn't a URL scheme. Use lowercase letters, digits, “+”, “.” and “-”, starting with a letter, without a colon.")
+				block(.protocols, "“\(scheme.escapingDirectionControls)” isn’t a URL scheme. Use lowercase letters, digits, “+”, “.” and “-”, starting with a letter, without a colon.")
 			} else if Set(protocols).count != protocols.count {
 				block(.protocols, "A URL scheme is listed twice.")
 			}
@@ -600,11 +600,11 @@ extension ProjectEnvSchemaRule {
 			block(.allowedValues, "Add at least one allowed value.", [.remove(.allowedValues)])
 		}
 		if empty == .reject {
-			if defaultValue == "" { block(.defaultValue, "An empty default can't be used while empty values are rejected.", [.remove(.defaultValue)]) }
-			if defaultsIn.contains(where: { $0.value.isEmpty }) { block(.defaultsIn, "An empty scoped default can't be used while empty values are rejected.") }
+			if defaultValue == "" { block(.defaultValue, "An empty default can’t be used while empty values are rejected.", [.remove(.defaultValue)]) }
+			if defaultsIn.contains(where: { $0.value.isEmpty }) { block(.defaultsIn, "An empty scoped default can’t be used while empty values are rejected.") }
 		} else if required {
-			if defaultValue == "" { block(.defaultValue, "An empty default can't satisfy Required.", [.remove(.defaultValue)]) }
-			if defaultsIn.contains(where: { $0.value.isEmpty }) { block(.defaultsIn, "An empty scoped default can't satisfy Required.") }
+			if defaultValue == "" { block(.defaultValue, "An empty default can’t satisfy Required.", [.remove(.defaultValue)]) }
+			if defaultsIn.contains(where: { $0.value.isEmpty }) { block(.defaultsIn, "An empty scoped default can’t satisfy Required.") }
 		}
 		if let condition = requiredWhen {
 			if condition.variable == context.key {
@@ -616,9 +616,9 @@ extension ProjectEnvSchemaRule {
 					conflicts[.requiredWhen] = .init(kind: .noEffect, message: "No effect: it depends on the key itself.", fixes: [.remove(.requiredWhen)])
 				}
 			} else if let declared = context.declaredKeys, !declared.contains(condition.variable) {
-				block(.requiredWhen, "\(condition.variable) isn't declared.", [.remove(.requiredWhen)])
+				block(.requiredWhen, "\(condition.variable) isn’t declared.", [.remove(.requiredWhen)])
 			} else if case .equals = condition.condition, context.secretKeys.contains(condition.variable) {
-				block(.requiredWhen, "\(condition.variable) is secret, so its value can't be compared.", [.usePresence, .remove(.requiredWhen)])
+				block(.requiredWhen, "\(condition.variable) is secret, so its value can’t be compared.", [.usePresence, .remove(.requiredWhen)])
 			}
 		}
 		for (field, scopes) in [(Field.requiredIn, requiredIn), (.defaultsIn, defaultsIn.map(\.scope))] where !scopes.isEmpty {

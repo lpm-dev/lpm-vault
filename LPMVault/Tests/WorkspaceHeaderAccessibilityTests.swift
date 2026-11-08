@@ -21,7 +21,7 @@ extension SheetInteractionTests {
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
 				("Show inspector", .button), ("Project Settings", .button), ("New Key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
-				("More actions", .button),
+				("Import into .env…", .button), ("Export .env…", .button),
 			]
 			let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
 			for (name, role) in expected {
@@ -38,7 +38,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
 			defer { host.window.close() }
-			let name = try await host.drawnFrame(saying: "LPM Vault — billing-app")
+			let name = try await host.drawnFrame(saying: "billing-app")
 			let refresh = try await host.drawnFrame(saying: "Refresh")
 			let sync = try await host.drawnFrame(saying: "Sync status: Local")
 			let connect = try await host.drawnFrame(saying: "Connect CLI")
@@ -47,6 +47,49 @@ extension SheetInteractionTests {
 			#expect(refresh.minX > host.view.bounds.width / 2 && name.maxX < refresh.minX, "Refresh isn't read as part of the title: \(name) \(refresh)")
 			#expect(refresh.maxX < sync.minX && sync.minX - refresh.maxX < 32, "Refresh sits beside the sync status: \(refresh) \(sync)")
 			#expect(sync.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
+		}
+
+		@Test("the breadcrumb names the app, the project and the page shown, and the project's name is a button that opens All Keys")
+		func breadcrumbOpensAllKeys() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			let titleBar = CGRect(x: 0, y: 1 - VaultMetrics.titleBar / 800, width: 1, height: VaultMetrics.titleBar / 800)
+			let breadcrumb = { host.lines(in: titleBar).map(\.text).joined(separator: " ") }
+			#expect(try await host.waitForText("All Keys"))
+			#expect(breadcrumb().contains("Hide sidebar LPM Vault billing-app Refresh"), "The app, then the project: \(breadcrumb())")
+			#expect(!breadcrumb().contains("All Keys"), "All Keys is the project's own page: \(breadcrumb())")
+
+			try await host.click("History")
+			#expect(try await host.waitUntil { breadcrumb().contains("LPM Vault billing-app History Refresh") }, "\(breadcrumb())")
+			let project = try await host.waitForElement(saying: "billing-app")
+			#expect(project.role == .button && project.help == "Show All Keys")
+
+			try await host.click("billing-app")
+			#expect(try await host.waitUntil { breadcrumb().contains("LPM Vault billing-app Refresh") }, "\(breadcrumb())")
+			#expect(try await host.waitForText("All Keys"))
+		}
+
+		@Test("what the workspace hides from VoiceOver stays hidden while Settings is closed, and all of it is hidden while Settings is open")
+		func hiddenStaysHiddenBesideSettings() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			let titleBar = CGRect(x: 0, y: 1 - VaultMetrics.titleBar / 800, width: 1, height: VaultMetrics.titleBar / 800)
+			let titleBarText = { host.lines(in: titleBar).map(\.text).joined(separator: " ") }
+			// The breadcrumb's chevron is drawn only; VoiceOver would call it "Forward".
+			#expect(titleBarText().contains("LPM Vault billing-app Refresh"), "\(titleBarText())")
+
+			fixture.store.showSettings(.general)
+			#expect(try await host.waitForText("Quit shortcut"))
+			#expect(try await host.waitUntil { !AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says("New Key") } },
+				"The workspace under Settings says nothing")
+
+			try host.key("\u{1b}", code: 53, in: host.window)
+			#expect(try await host.waitForText("New Key"))
+			#expect(titleBarText().contains("LPM Vault billing-app Refresh"), "\(titleBarText())")
 		}
 
 		@Test("the header leaves CLI approval to the project's card and settings, and names it only when it needs fixing, opening Project Settings")
@@ -126,22 +169,25 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Delete Locally"))
 		}
 
-		@Test("Import and Export sit in the More menu at every width, so the row keeps one shape whether the inspector is open or not")
+		@Test("Import and Export show their names where there's room, and go into a More menu where there isn't, rather than becoming bare icons")
 		func importExportLabels() async throws {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
-			for width in [CGFloat(1400), 1040] {
-				let host = try await workspace(fixture.store, width: width)
-				defer { host.window.close() }
-				let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
-				#expect(!elements.contains { $0.says("Import variables into .env") || $0.says("Export .env") }, "At \(width), Import and Export are in the menu")
-				#expect(elements.contains { $0.role == .button && $0.label == "More actions" }, "At \(width)")
+			let wide = try await workspace(fixture.store, width: 1400)
+			for name in ["Import into .env…", "Export .env…"] {
+				let drawn = try await wide.drawnFrame(saying: name)
+				#expect(drawn.width > 50, "\(name) shows its name: \(drawn)")
 			}
+			let wideElements = AccessibilityTree.visibleElements(in: wide.window, of: wide.view)
+			#expect(!wideElements.contains { $0.label == "More actions" }, "No menu holds what the row has room to name")
+			wide.window.close()
 
 			let narrow = try await workspace(fixture.store, width: 1040)
 			defer { narrow.window.close() }
 			try await narrow.click("Show inspector")
 			#expect(try await narrow.waitForText("Hide inspector", exactly: true))
+			let elements = AccessibilityTree.visibleElements(in: narrow.window, of: narrow.view)
+			#expect(!elements.contains { $0.role == .button && $0.says("Import into .env…") }, "Import isn't a bare icon")
 			try await narrow.click("More actions")
 			let menu = try await narrow.popoverWindow()
 			#expect(try await narrow.waitForText("Import into .env…", in: menu))

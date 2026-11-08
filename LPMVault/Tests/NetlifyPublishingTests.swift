@@ -535,7 +535,7 @@ struct NetlifyPublishingTests {
 		let change = PublishPlan.Change(
 			key: "API_TOKEN", value: "new", operation: plan.row("API_TOKEN")!.operation, publishesAsSecret: true, fingerprint: Data())
 		let report = await NetlifyPublishing.publish([change], to: netlifyTarget(), reviewed: reviewed, using: api)
-		#expect(report.outcomes["API_TOKEN"].map { if case .failed(let text) = $0 { text.contains("doesn't say when") } else { false } } == true)
+		#expect(report.outcomes["API_TOKEN"].map { if case .failed(let text) = $0 { text.contains("doesn’t say when") } else { false } } == true)
 		#expect(api.writes.isEmpty)
 	}
 

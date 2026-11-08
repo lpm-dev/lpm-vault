@@ -193,6 +193,19 @@ struct VaultSyncExplanationTests {
 	}
 }
 
+@Suite("The title bar's breadcrumb")
+@MainActor
+struct VaultBreadcrumbTests {
+	@Test("after the project it names the page shown, as the sidebar and the page's header do, and none on All Keys",
+		arguments: [
+			(VaultWorkspaceMode.matrix, nil), (.environment("default"), ".env"), (.environment("local"), ".env.local"),
+			(.schema, "Schema"), (.history, "History"), (.projectSettings, "Project Settings"),
+		] as [(VaultWorkspaceMode, String?)])
+	func pageNames(mode: VaultWorkspaceMode, page: String?) {
+		#expect(VaultTitleBarView.pageName(for: mode) == page)
+	}
+}
+
 extension SheetInteractionTests {
 	@Suite("The app's popover window", .serialized)
 	@MainActor

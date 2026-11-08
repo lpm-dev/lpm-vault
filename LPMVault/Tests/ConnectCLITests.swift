@@ -463,7 +463,7 @@ extension SheetInteractionTests {
 
 			for expected in [
 				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add the vault field to lpm.json",
-				"Create lpm.json if it's missing, and keep any fields it has.",
+				"Create lpm.json if it’s missing, and keep any fields it has.",
 				"Optional Task Environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Close",
 			] {
 				#expect(text.contains(expected), "missing \(expected)")
@@ -483,7 +483,7 @@ extension SheetInteractionTests {
 			)
 			#expect(text.contains("--env=staging"))
 			#expect(text.contains("Runs once the folder is linked"), "Without a folder, the commands say they wait on step 1")
-			#expect(text.contains("These use .env.staging. An explicit --env overrides a script's own environment."),
+			#expect(text.contains("These use .env.staging. An explicit --env overrides a script’s own environment."),
 				"The commands' caption names the environment they use")
 			#expect(!text.contains("Choose the project folder first"), "And say it once")
 		}
@@ -669,7 +669,7 @@ extension SheetInteractionTests {
 		#expect(try await host.waitForText("Not linked to a project folder yet"))
 		let text = try await host.text()
 		#expect(text.contains("env=staging"))
-		#expect(!text.contains("hasn't been verified"))
+		#expect(!text.contains("hasn’t been verified"))
 	}
 }
 

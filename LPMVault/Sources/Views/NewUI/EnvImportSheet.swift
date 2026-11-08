@@ -204,7 +204,7 @@ struct EnvImportSheet: View {
 
 	private var reviewOption: some View {
 		let caption = switch (target == .newEnvironment, reviewsFirst) {
-		case (true, true): "See its keys first, and leave out any you don't want"
+		case (true, true): "See its keys first, and leave out any you don’t want"
 		case (true, false): "Creates it with every key"
 		case (false, true): "See new, changed and unchanged keys first"
 		case (false, false): "Adds new keys and keeps every existing value"

@@ -208,7 +208,7 @@ extension SheetInteractionTests {
 			try await host.click("Done", in: sheet)
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
 
-			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.click(".env", region: host.sidebarRegion)
 			let row = try await contextMenu(ofRowSaying: "TOKEN, value hidden", in: host)
 			#expect(row.items.map(\.title).contains("Find Where This Value Is Used"))
 		}
@@ -313,7 +313,7 @@ extension SheetInteractionTests {
 			let host = try await fixture.host()
 			defer { host.window.close() }
 
-			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try await host.click(".env", region: host.sidebarRegion)
 			try await host.click("Raw Text")
 			NotificationCenter.default.post(name: .findValue, object: nil)
 			let sheet = try await fixture.sheet(of: host)

@@ -237,7 +237,7 @@ enum CoolifyPublishing {
 			guard let now else { return "Removed in Coolify since this review. Review again." }
 			guard now.id == id else { return "Changed in Coolify since this review. Review again." }
 			guard let current = now.updatedAt, let seen = reviewed?.updatedAt else {
-				return "Coolify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once in Coolify, then review again."
+				return "Coolify doesn’t say when this variable last changed, so LPM Vault can’t tell whether it changed since this review. Edit it once in Coolify, then review again."
 			}
 			return current == seen ? nil : "Changed in Coolify since this review. Review again."
 		}
@@ -308,22 +308,22 @@ enum CoolifyPublishing {
 
 	static func message(_ error: CoolifyAPIError) -> String {
 		switch error {
-		case .unauthorized: "Coolify no longer accepts this connection's token. Connect Coolify again on the Platforms page."
-		case .apiDisabled: "Coolify's API is turned off. Turn on API access in Coolify's Settings → Advanced."
-		case .addressNotAllowed: "Coolify doesn't accept API requests from this Mac's address. Add it to Allowed API IPs in Coolify's Settings → Advanced."
-		case .missingPermission: "The connection's token can't change variables. Create a token with the Write permission, then connect Coolify again."
-		case .roleTooLow: "Only the team's admins and owners can change variables through the API."
-		case .forbidden: "Coolify refused to change this resource's variables."
-		case .notFound: "Coolify couldn't find the resource or the variable."
+		case .unauthorized: "Coolify no longer accepts this connection’s token. Connect Coolify again on the Platforms page."
+		case .apiDisabled: "Coolify’s API is turned off. Turn on API access in Coolify’s Settings → Advanced."
+		case .addressNotAllowed: "Coolify doesn’t accept API requests from this Mac’s address. Add it to Allowed API IPs in Coolify’s Settings → Advanced."
+		case .missingPermission: "The connection’s token can’t change variables. Create a token with the Write permission, then connect Coolify again."
+		case .roleTooLow: "Only the team’s admins and owners can change variables through the API."
+		case .forbidden: "Coolify refused to change this resource’s variables."
+		case .notFound: "Coolify couldn’t find the resource or the variable."
 		case .conflict: "Coolify already has this variable. Review again."
 		case .rateLimited: "Coolify is limiting requests. Try again in a minute."
 		case .rejected(let message) where !message.isEmpty: "Coolify refused it: \(message)"
 		case .rejected: "Coolify refused it."
-		case .redirected: "Coolify's address redirected the request, so it wasn't sent."
-		case .untrustedCertificate: "This Mac doesn't trust Coolify's certificate, so nothing was sent."
-		case .transport: "Coolify couldn't be reached."
+		case .redirected: "Coolify’s address redirected the request, so it wasn’t sent."
+		case .untrustedCertificate: "This Mac doesn’t trust Coolify’s certificate, so nothing was sent."
+		case .transport: "Coolify couldn’t be reached."
 		case .cancelled: "Cancelled."
-		case .invalidResponse: "Coolify's answer couldn't be read."
+		case .invalidResponse: "Coolify’s answer couldn’t be read."
 		case .server(let status): "Coolify answered with HTTP \(status)."
 		}
 	}

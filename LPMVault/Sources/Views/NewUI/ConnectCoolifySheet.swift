@@ -72,7 +72,7 @@ struct ConnectCoolifySheet: View {
 			.disabled(isConnecting)
 			.padding(24)
 			VaultSheetFooter {
-				Label("The token stays in this Mac's Keychain", systemImage: "lock")
+				Label("The token stays in this Mac’s Keychain", systemImage: "lock")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} actions: {
@@ -114,8 +114,8 @@ struct ConnectCoolifySheet: View {
 
 	private var guidance: some View {
 		VStack(alignment: .leading, spacing: 6) {
-			step(1, "Turn on API access in Coolify's Settings → Advanced.")
-			step(2, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn't need Root, Deploy or Read Sensitive.")
+			step(1, "Turn on API access in Coolify’s Settings → Advanced.")
+			step(2, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn’t need Root, Deploy or Read Sensitive.")
 			step(3, "The token reaches the team you had selected when you created it.")
 		}
 		.padding(12)

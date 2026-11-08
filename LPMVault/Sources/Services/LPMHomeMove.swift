@@ -53,15 +53,15 @@ enum LPMHomeMoveError: LocalizedError, Equatable, Sendable {
 	var errorDescription: String? {
 		switch self {
 		case .sameHome:
-			"That's the LPM home the app uses already."
+			"That’s the LPM home the app uses already."
 		case .targetNotEmpty(let home):
 			"\(home) already holds login or env data, so nothing was moved there."
 		case .targetExposed(let explanation):
 			"\(explanation) LPM Vault kept the LPM home it uses."
 		case .unreadable(let what):
-			"Couldn't read \(what), so nothing was moved."
+			"Couldn’t read \(what), so nothing was moved."
 		case .copyFailed(let what):
-			"Couldn't copy \(what), so nothing was moved."
+			"Couldn’t copy \(what), so nothing was moved."
 		case .homeChanged(let home):
 			"\(home) was moved or replaced during the move, so nothing was moved."
 		case .copiesLeft(let reason, let home, let includesNewerData):

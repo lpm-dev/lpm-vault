@@ -222,7 +222,7 @@ struct PublishSummaryPills: View {
 		[
 			(summary.adding, "add", Pill.Tone.add),
 			(summary.replacing, "replace", .replace),
-			(summary.blocked, "can't publish", .blocked),
+			(summary.blocked, "can’t publish", .blocked),
 			(summary.upToDate, "up to date", .quiet),
 			(summary.skipped, "skipped", .quiet),
 		]

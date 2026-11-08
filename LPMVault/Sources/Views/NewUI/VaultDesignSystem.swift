@@ -71,7 +71,8 @@ enum VaultPalette {
 	static let publicTint = adaptive(light: 0xE3F2FA, dark: 0x16303D)
 	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
-	static let rowSelected = adaptive(light: 0xF1F0FD, dark: 0x27263B)
+	/// A selected row: the sidebar's neutral selection, with the accent only in its bar.
+	static let rowSelected = sidebarSelection
 	static let rowHover = adaptive(light: 0xF2F2F6, dark: 0x232328)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
@@ -81,13 +82,12 @@ enum VaultPalette {
 	static let menuHighlight = adaptive(light: 0xE9E9EE, dark: 0x37373D)
 	static let sidebarHover = adaptive(light: 0xEDEDF1, dark: 0x202023)
 	static let sidebarSelection = adaptive(light: 0xE7E7EA, dark: 0x2A2A2D)
-	static let schemaRowSelected = adaptive(light: 0xF5F4FE, dark: 0x252439)
 
-	/// A selected chip, segment or toggle: the same tinted look in both appearances.
-	static let selectedFill = accentTint
-	static let selectedText = accentText
-	static let selectedBorder = adaptive(light: 0x5E5CE6, dark: 0x8C8AFF, lightOpacity: 0.35, darkOpacity: 0.45)
-	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
+	/// A selected chip, segment, toggle or choice: neutral, a step past a
+	/// control's hover in both appearances, so the accent stays for what acts.
+	static let selectedFill = adaptive(light: 0xE7E7EA, dark: 0x37373D)
+	static let selectedText = textPrimary
+	static let selectedBorder = adaptive(light: 0xC9C9D0, dark: 0x4E4E56)
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
 	/// A switch's track while it's off: visible on every surface, with its own edge.
 	static let switchOff = adaptive(light: 0xD9D8DF, dark: 0x3A3A3F)

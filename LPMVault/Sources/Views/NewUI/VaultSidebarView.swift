@@ -276,7 +276,7 @@ struct VaultSidebarView: View {
 		let cliAccess = store.projectCliAccess[project.id]
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
-		} ?? "CLI approval policy can't be read"
+		} ?? "CLI approval policy can’t be read"
 		let selected = store.selectedProjectId == project.id
 			&& (mode == .matrix || mode == .projectSettings)
 		let expanded = store.selectedProjectId == project.id
@@ -424,7 +424,7 @@ struct VaultSidebarView: View {
 					Image(systemName: "exclamationmark.triangle.fill")
 						.font(.system(size: 9.5))
 						.foregroundStyle(VaultPalette.orange)
-						.help("lpm.json can't be read")
+						.help("lpm.json can’t be read")
 				} else if let count, count > 0 {
 					Text("\(count)")
 						.font(VaultTypography.tabular(11))
@@ -435,7 +435,7 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain) }
 		.accessibilityLabel("Schema")
-		.accessibilityValue([unreadable ? "lpm.json can't be read" : count.map { $0.counted("declared key") }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
+		.accessibilityValue([unreadable ? "lpm.json can’t be read" : count.map { $0.counted("declared key") }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
@@ -673,7 +673,7 @@ private struct VaultSidebarApprovalIndicator: View {
 				.font(.system(size: 10, weight: .medium))
 				.foregroundStyle(VaultPalette.textFaint)
 				.frame(width: VaultSidebarLayout.approvalWidth)
-				.help("CLI approval policy can't be read")
+				.help("CLI approval policy can’t be read")
 				.accessibilityHidden(true)
 		}
 	}

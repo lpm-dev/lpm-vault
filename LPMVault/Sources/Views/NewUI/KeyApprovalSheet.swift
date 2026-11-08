@@ -53,7 +53,7 @@ struct KeyApprovalSheet: View {
 							.font(.subheadline.bold())
 							.foregroundStyle(.red)
 
-						Text("These members' public keys have changed. This could indicate key rotation or a security compromise.")
+						Text("These members’ public keys have changed. This could indicate key rotation or a security compromise.")
 							.font(.caption)
 							.foregroundStyle(.secondary)
 

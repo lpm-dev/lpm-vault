@@ -10,27 +10,23 @@ struct VaultSettingsOverlay: View {
 
 	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-	/// How far the panel sits in from the window's edges, as the design sets it,
-	/// and the most it grows to in a large window.
-	static let horizontalInset: CGFloat = 120
-	static let topInset: CGFloat = 60
-	static let bottomInset: CGFloat = 40
-	static let maximumSize = CGSize(width: 1040, height: 760)
+	/// How far the panel stays from the title bar, the window's bottom and its sides.
+	static let margin: CGFloat = 40
+	/// The widest the panel grows in a large window.
+	static let maximumWidth: CGFloat = 1100
 	static let menuWidth: CGFloat = 200
 	static let headerHeight: CGFloat = 58
 
 	var body: some View {
 		GeometryReader { geometry in
+			let frame = Self.panelFrame(in: geometry.size)
 			ZStack {
 				VaultPalette.scrim
 					.overlay { VaultClickCatcher { store.closeAccountPage() } }
 					.accessibilityHidden(true)
 				panel
-					.frame(
-						maxWidth: min(Self.maximumSize.width, max(0, geometry.size.width - 2 * Self.inset(for: geometry.size.width))),
-						maxHeight: min(Self.maximumSize.height, max(0, geometry.size.height - Self.topInset - Self.bottomInset))
-					)
-					.padding(.top, Self.topInset - Self.bottomInset)
+					.frame(width: frame.width, height: frame.height)
+					.position(x: frame.midX, y: frame.midY)
 			}
 			.frame(width: geometry.size.width, height: geometry.size.height)
 		}
@@ -42,9 +38,13 @@ struct VaultSettingsOverlay: View {
 		})
 	}
 
-	/// The side inset: the design's, short of what leaves the panel room for its menu and a readable column.
-	static func inset(for width: CGFloat) -> CGFloat {
-		min(horizontalInset, max(24, (width - 760) / 2))
+	/// Where the panel sits in a window `size` big, from its top-left: clear
+	/// of the title bar by the margin, as far from the bottom, centered, and no
+	/// wider than `maximumWidth`.
+	static func panelFrame(in size: CGSize) -> CGRect {
+		let top = VaultMetrics.titleBar + margin
+		let width = max(0, min(maximumWidth, size.width - 2 * margin))
+		return CGRect(x: (size.width - width) / 2, y: top, width: width, height: max(0, size.height - top - margin))
 	}
 
 	private var panel: some View {

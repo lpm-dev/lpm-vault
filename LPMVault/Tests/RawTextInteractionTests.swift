@@ -192,7 +192,7 @@ extension SheetInteractionTests {
 			try await host.click("Edit")
 			let editor = try await editorView(in: host)
 			#expect(editor.string == "API_TOKEN=\"tok en\"\nDATABASE_URL=postgres://app:pw@db:5432/demo\nLOG_LEVEL=info\n")
-			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren't kept.", "4 lines"] {
+			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren’t kept.", "4 lines"] {
 				#expect(try await host.waitForText(text), "The editor says \(text)")
 			}
 			#expect(element("Review before saving", in: host)?.isOn == true, "Save reviews unless that's turned off")

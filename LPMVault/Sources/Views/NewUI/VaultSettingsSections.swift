@@ -110,7 +110,7 @@ struct VaultLPMHomeSettingsSection: View {
 			}
 			if let leftovers {
 				HStack(alignment: .firstTextBaseline, spacing: 8) {
-					Text("The last move couldn't remove \(leftovers.items.count.counted("item")) from \(leftovers.home). They are copies of what moved.")
+					Text("The last move couldn’t remove \(leftovers.items.count.counted("item")) from \(leftovers.home). They are copies of what moved.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.orange)
 						.fixedSize(horizontal: false, vertical: true)
@@ -130,7 +130,7 @@ struct VaultLPMHomeSettingsSection: View {
 		guard let url = folderPicker() else { return }
 		begin {
 			guard let target = await store.lpmHome(at: url) else {
-				problem = "LPM Vault can't use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
+				problem = "LPM Vault can’t use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
 				return
 			}
 			await consider(target)
@@ -156,7 +156,7 @@ struct VaultLPMHomeSettingsSection: View {
 		let found = await store.lpmHomeContents(target)
 		let held = await store.lpmHomeContents(store.lpmHome)
 		guard let found, let held else {
-			problem = "LPM Vault couldn't read what the LPM homes hold, so it changed nothing."
+			problem = "LPM Vault couldn’t read what the LPM homes hold, so it changed nothing."
 			return
 		}
 		change = Change(target: target, current: held, found: found)
@@ -215,7 +215,7 @@ struct VaultLPMHomeSettingsSection: View {
 		panel.canCreateDirectories = true
 		panel.allowsMultipleSelection = false
 		panel.prompt = "Use as LPM Home"
-		panel.message = "Choose the folder your shell's LPM_HOME names"
+		panel.message = "Choose the folder your shell’s LPM_HOME names"
 		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
 		return panel.url
 	}

@@ -393,7 +393,7 @@ struct VercelPublishingTests {
 		let reviewed = try VercelPublishing.snapshot(api.variableList, for: .production, customEnvironments: []).get().variables
 		let report = await VercelPublishing.publish([replacement("API")], to: Self.production, reviewed: reviewed, using: api)
 		guard case .failed(let reason)? = report.outcomes["API"] else { Issue.record("Not refused"); return }
-		#expect(reason.contains("doesn't say when") && reason.contains("Edit it once on Vercel"))
+		#expect(reason.contains("doesn’t say when") && reason.contains("Edit it once on Vercel"))
 		#expect(api.replacedValues.isEmpty)
 	}
 

@@ -181,10 +181,10 @@ struct SecretGeneratorPanel: View {
 	private func segmentLabel(_ text: String, selected: Bool) -> some View {
 		Text(text)
 			.font(VaultTypography.tabular(11, selected ? .bold : .regular))
-			.foregroundStyle(selected ? .white : VaultPalette.masked)
+			.foregroundStyle(selected ? VaultPalette.selectedText : VaultPalette.masked)
 			.padding(.horizontal, 8)
 			.frame(height: 20)
-			.background(selected ? VaultPalette.strongFill : .clear)
+			.background(selected ? VaultPalette.selectedFill : .clear)
 			.contentShape(Rectangle())
 	}
 
@@ -208,12 +208,12 @@ private struct GeneratorKindRow: View {
 			HStack(spacing: 10) {
 				Text(tag)
 					.font(VaultTypography.tabular(10, .bold))
-					.foregroundStyle(selected ? VaultPalette.accentDeep : VaultPalette.masked)
+					.foregroundStyle(selected ? VaultPalette.textSecondary : VaultPalette.masked)
 					.frame(width: 30)
 				VStack(alignment: .leading, spacing: 1) {
 					Text(title)
 						.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-						.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textPrimary)
+						.foregroundStyle(VaultPalette.textPrimary)
 					Text(subtitle)
 						.font(.system(size: 10.5))
 						.foregroundStyle(VaultPalette.textFaint)
@@ -223,7 +223,7 @@ private struct GeneratorKindRow: View {
 				if selected {
 					Image(systemName: "checkmark")
 						.font(.system(size: 10, weight: .bold))
-						.foregroundStyle(VaultPalette.accentForeground)
+						.foregroundStyle(VaultPalette.textPrimary)
 				}
 			}
 			.padding(.horizontal, 8)
@@ -231,7 +231,7 @@ private struct GeneratorKindRow: View {
 			.contentShape(Rectangle())
 			.background(
 				RoundedRectangle(cornerRadius: 7)
-					.fill(selected ? VaultPalette.accentTint : (hovering ? VaultPalette.neutralTint : .clear))
+					.fill(selected ? VaultPalette.selectedFill : (hovering ? VaultPalette.neutralTint : .clear))
 			)
 		}
 		.buttonStyle(.plain)

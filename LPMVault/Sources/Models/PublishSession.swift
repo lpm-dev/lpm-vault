@@ -470,7 +470,7 @@ final class PublishSession: Identifiable {
 				connectionID = list[0].id
 			}
 		case .failure(let error):
-			connections = .failed("Platform connections couldn't be read. \(error)")
+			connections = .failed("Platform connections couldn’t be read. \(error)")
 		}
 	}
 
@@ -563,7 +563,7 @@ final class PublishSession: Identifiable {
 			}
 			return true
 		case .failure(let error):
-			reviewError = "Saved destinations can't be read. \(error)"
+			reviewError = "Saved destinations can’t be read. \(error)"
 			return false
 		}
 	}
@@ -665,7 +665,7 @@ final class PublishSession: Identifiable {
 		case .failure(.notFound), .failure(.retired):
 			return .failure("This Cloudflare login was disconnected. Connect it again on the Platforms page, or choose another destination.")
 		case .failure(let error):
-			return .failure("The Cloudflare login's connection can't be read. \(error)")
+			return .failure("The Cloudflare login’s connection can’t be read. \(error)")
 		}
 	}
 
@@ -921,7 +921,7 @@ final class PublishSession: Identifiable {
 			return .failure("No Cloudflare login connected on this Mac reaches \(target.accountName) any more. Connect one that does on the Platforms page.")
 		}
 		if connection == nil, let saved, let savedID = saved.target.connectionID, connectionID == savedID, connections.value != nil {
-			return .failure("This destination publishes through \(saved.target.connectionName) on \(saved.target.platform.displayName), which isn't connected on this Mac. Connect it on the Platforms page.")
+			return .failure("This destination publishes through \(saved.target.connectionName) on \(saved.target.platform.displayName), which isn’t connected on this Mac. Connect it on the Platforms page.")
 		}
 		switch (connection?.account, form) {
 		case (.vercel(let account)?, .vercel(let form)?):
@@ -972,7 +972,7 @@ final class PublishSession: Identifiable {
 		case (.cloudflare(let login)?, .cloudflare(let form)?):
 			guard let accountID = form.accountID, let workerID = form.workerID else { return .failure("Choose a destination first.") }
 			guard let account = login.accounts.first(where: { $0.id == accountID }) else {
-				return .failure("\(login.label) doesn't reach this Cloudflare account. Choose another login or account.")
+				return .failure("\(login.label) doesn’t reach this Cloudflare account. Choose another login or account.")
 			}
 			var savedTarget: CloudflarePublishTarget?
 			if case .cloudflare(let target)? = saved?.target, target.accountID == accountID, target.workerID == workerID { savedTarget = target }
@@ -1099,7 +1099,7 @@ final class PublishSession: Identifiable {
 				platform: CloudflarePublishing.platform(otherTextBindings: snapshot.otherTextBindings),
 				target: current == target ? nil : .cloudflare(current), placeHold: snapshot.hold, cloudflare: snapshot))
 		case .failure(.api(.notFound)):
-			return .failure("The Worker \(target.workerName) isn't in \(target.accountName) on Cloudflare any more. Choose another destination.")
+			return .failure("The Worker \(target.workerName) isn’t in \(target.accountName) on Cloudflare any more. Choose another destination.")
 		case .failure(let error):
 			return .failure(PublishSessionError(error.message))
 		}
@@ -1122,14 +1122,14 @@ final class PublishSession: Identifiable {
 			current.repositoryName = repository.fullName
 			if let refusal = GitHubPublishing.accessRefusal(repository, for: target.scope) { return .failure(PublishSessionError(refusal)) }
 		case .failure(.notFound):
-			return .failure("\(target.repositoryName) isn't reachable on GitHub any more. Install LPM Vault's GitHub App on it, or choose another destination.")
+			return .failure("\(target.repositoryName) isn’t reachable on GitHub any more. Install LPM Vault’s GitHub App on it, or choose another destination.")
 		case .failure(let error): return failure(error)
 		}
 		if case .environment(let id, let name) = target.scope {
 			switch await client.environments(of: current.repositoryName) {
 			case .success(let environments):
 				guard let environment = environments.first(where: { $0.id == id }) else {
-					return .failure("The environment \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) isn't in \(current.repositoryName) any more. Choose another destination.")
+					return .failure("The environment \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) isn’t in \(current.repositoryName) any more. Choose another destination.")
 				}
 				current.scope = .environment(id: id, name: environment.name)
 			case .failure(let error): return failure(error)
@@ -1171,7 +1171,7 @@ final class PublishSession: Identifiable {
 		let read = await dependencies.snapshot(source, .checked)
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		guard let snapshot = read else {
-			return .failure("\(VaultProject.displayName(for: source)) can't be read right now.")
+			return .failure("\(VaultProject.displayName(for: source)) can’t be read right now.")
 		}
 		let (values, rules, check) = (snapshot.values, snapshot.rules, snapshot.check)
 		let publishing = dependencies.publishing
@@ -1186,7 +1186,7 @@ final class PublishSession: Identifiable {
 			case .failure(let error): return .failure(error)
 			}
 		case .failure(let error):
-			return .failure("Saved destinations can't be read. \(error)")
+			return .failure("Saved destinations can’t be read. \(error)")
 		}
 		let history: PublishHistory?
 		if let stored, stored.target.location == destination.target.location {
@@ -1194,7 +1194,7 @@ final class PublishSession: Identifiable {
 			guard !Task.isCancelled else { return .failure(.cancelled) }
 			switch read {
 			case .success(let value): history = value
-			case .failure(let error): return .failure("This destination's history can't be read. \(error)")
+			case .failure(let error): return .failure("This destination’s history can’t be read. \(error)")
 			}
 		} else {
 			history = nil
@@ -1204,7 +1204,7 @@ final class PublishSession: Identifiable {
 		let fingerprintKey: SymmetricKey
 		switch key {
 		case .success(let value): fingerprintKey = value
-		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
+		case .failure(let error): return .failure("LPM Vault’s publish key can’t be read. \(error)")
 		}
 		// A Cloudflare review reads through the chosen login, whose token its client reads for each request.
 		var login: ReviewLogin?
@@ -1340,12 +1340,12 @@ final class PublishSession: Identifiable {
 		let dependencies = dependencies
 		let source = review.destination.sourceEnvironment
 		guard let snapshot = await dependencies.snapshot(source, .unchecked), !Task.isCancelled else {
-			if !Task.isCancelled { reviewError = "\(VaultProject.displayName(for: source)) can't be read right now." }
+			if !Task.isCancelled { reviewError = "\(VaultProject.displayName(for: source)) can’t be read right now." }
 			return
 		}
 		// The rules decide which keys publish readable, so ones changed since the review would send what wasn't reviewed.
 		guard snapshot.rules == review.rules else {
-			reviewError = "lpm.json's rules changed since this review. Review again to publish by the current rules."
+			reviewError = "lpm.json’s rules changed since this review. Review again to publish by the current rules."
 			return
 		}
 		let changes: [PublishPlan.Change]
@@ -1447,13 +1447,13 @@ final class PublishSession: Identifiable {
 			// Saved only over the destination the review read, so a change made meanwhile isn't lost.
 			switch await publishing.save(destination, to: vaultID, replacing: review.stored) {
 			case .success(let saved):
-				guard let stored = saved.first(where: { $0.id == destination.id }) else { return "The destination couldn't be saved." }
+				guard let stored = saved.first(where: { $0.id == destination.id }) else { return "The destination couldn’t be saved." }
 				destination = stored
 				choices = choices.made(at: stored.updatedAt)
 			case .failure(.destinationChanged), .failure(.destinationRemoved):
-				return "\(wasPublished), but the destination changed on this Mac meanwhile, so this publish wasn't recorded. Review again."
+				return "\(wasPublished), but the destination changed on this Mac meanwhile, so this publish wasn’t recorded. Review again."
 			case .failure(let error):
-				return "\(wasPublished), but the destination couldn't be saved. \(error)"
+				return "\(wasPublished), but the destination couldn’t be saved. \(error)"
 			}
 		}
 		switch await publishing.recordPublish(
@@ -1464,7 +1464,7 @@ final class PublishSession: Identifiable {
 			saved = recorded
 			return nil
 		case .failure(let error):
-			return "\(wasPublished), but this Mac couldn't record it. \(error)"
+			return "\(wasPublished), but this Mac couldn’t record it. \(error)"
 		}
 	}
 }

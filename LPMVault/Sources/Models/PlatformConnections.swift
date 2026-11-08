@@ -172,7 +172,7 @@ final class PlatformConnections {
 				self.retiringAwaitsSignIn = listing.retiring.contains(where: awaitingSignIn.contains)
 				let saved = Set(listing.markers.map(\.generation))
 				self.markers = listing.markers + unsaved.filter { !saved.contains($0.generation) }
-			case .failure(let error): self.notice = Notice(message: "Platform connections couldn't be read. \(error)", isError: true)
+			case .failure(let error): self.notice = Notice(message: "Platform connections couldn’t be read. \(error)", isError: true)
 			}
 		}
 	}
@@ -396,7 +396,7 @@ final class PlatformConnections {
 			guard case .success(let salt) = await store.loginLabelSalt(),
 				case .success(let taken) = await store.cloudflareLabels(except: new.connectionID)
 			else {
-				self.notice = Notice(message: "Cloudflare connected, but the connection couldn't be saved.", isError: true)
+				self.notice = Notice(message: "Cloudflare connected, but the connection couldn’t be saved.", isError: true)
 				return await discardCloudflare(new, credentials: credentials)
 			}
 			label = CloudflareLogin.defaultLabel(for: new.login, accounts: new.accounts, salt: salt, taken: taken)
@@ -412,7 +412,7 @@ final class PlatformConnections {
 			case .failure(let error):
 				// Saving over a generation nothing will revoke would strand it: nothing changes, and the new grant goes.
 				notice = Notice(
-					message: "Cloudflare connected, but \(old.name)'s earlier connection couldn't be set aside to revoke, so nothing changed. \(error.message(for: .cloudflare))",
+					message: "Cloudflare connected, but \(old.name)’s earlier connection couldn’t be set aside to revoke, so nothing changed. \(error.message(for: .cloudflare))",
 					isError: true)
 				return await discardCloudflare(new, credentials: credentials)
 			}
@@ -429,7 +429,7 @@ final class PlatformConnections {
 			let again = replacing.contains { $0.id == new.connectionID }
 			notice = switch other {
 			case nil: Notice(message: "Connected \(name) on Cloudflare.", isError: false)
-			case (let target, true)?: Notice(message: "Connected \(name) on Cloudflare in \(target)'s place.", isError: false)
+			case (let target, true)?: Notice(message: "Connected \(name) on Cloudflare in \(target)’s place.", isError: false)
 			case (let target, false)? where again:
 				Notice(message: "Connected \(name) on Cloudflare again. You approved \(name), not \(target), which still needs reconnecting.", isError: false)
 			case (let target, false)?:
@@ -438,7 +438,7 @@ final class PlatformConnections {
 		case .failure(.cancelled):
 			await discardCloudflare(new, credentials: credentials)
 		case .failure(let error):
-			notice = Notice(message: "Cloudflare connected, but the connection couldn't be saved. \(error)", isError: true)
+			notice = Notice(message: "Cloudflare connected, but the connection couldn’t be saved. \(error)", isError: true)
 			await discardCloudflare(new, credentials: credentials)
 		}
 	}
@@ -457,8 +457,8 @@ final class PlatformConnections {
 		case .success(let record): .connection(record.connection)
 		case .failure(.notFound), .failure(.retired): .absent
 		case .failure(.unreadable): .unreadable
-		case .failure(.newerVersion): .failed("A newer LPM Vault saved this Cloudflare login's connection, so this one leaves it alone.")
-		case .failure(let error): .failed("Cloudflare connected, but the connections on this Mac couldn't be read. \(error)")
+		case .failure(.newerVersion): .failed("A newer LPM Vault saved this Cloudflare login’s connection, so this one leaves it alone.")
+		case .failure(let error): .failed("Cloudflare connected, but the connections on this Mac couldn’t be read. \(error)")
 		}
 	}
 
@@ -473,9 +473,9 @@ final class PlatformConnections {
 	/// What to do about `count` Cloudflare logins whose access LPM Vault couldn't confirm it revoked.
 	static func unrevokedMessage(count: Int) -> String {
 		let which = count == 1
-			? "a Cloudflare login's access was revoked, so it may still be authorized"
+			? "a Cloudflare login’s access was revoked, so it may still be authorized"
 			: "the access of \(count) Cloudflare logins was revoked, so they may still be authorized"
-		return "LPM Vault couldn't confirm that \(which). To end it, remove LPM Vault under My Profile → Access Management → Connected Applications on Cloudflare. That also ends its access from other Macs, and any connection made since."
+		return "LPM Vault couldn’t confirm that \(which). To end it, remove LPM Vault under My Profile → Access Management → Connected Applications on Cloudflare. That also ends its access from other Macs, and any connection made since."
 	}
 
 	/// Gives a Cloudflare login a name the person chose, unique among connected logins.
@@ -494,7 +494,7 @@ final class PlatformConnections {
 		case .failure(.labelTaken):
 			return "Another connected Cloudflare login is called \(label). Choose another name."
 		case .failure(let error):
-			return "The name couldn't be saved. \(error)"
+			return "The name couldn’t be saved. \(error)"
 		}
 	}
 
@@ -587,7 +587,7 @@ final class PlatformConnections {
 					self.notice = nil
 				case .failure(let error):
 					guard generation == self.generation else { return }
-					self.notice = Notice(message: "\(platform.displayName) connected, but the connection couldn't be saved. \(error)", isError: true)
+					self.notice = Notice(message: "\(platform.displayName) connected, but the connection couldn’t be saved. \(error)", isError: true)
 				}
 			case .failure(.cancelled):
 				self.notice = nil
@@ -640,7 +640,7 @@ final class PlatformConnections {
 				return .dropped
 			case .failure(let error):
 				guard generation == self.generation else { return .dropped }
-				return .failed("Coolify accepted the token, but the connection couldn't be saved. \(error)")
+				return .failed("Coolify accepted the token, but the connection couldn’t be saved. \(error)")
 			}
 		case .failure(.cancelled):
 			return .dropped
@@ -695,13 +695,13 @@ final class PlatformConnections {
 				case .success(.ended):
 					self.connections.removeAll { $0.id == connection.id }
 					self.expired.remove(connection.id)
-					self.notice = Notice(message: "Disconnected \(connection.name). Cloudflare had already ended LPM Vault's access to it.", isError: false)
+					self.notice = Notice(message: "Disconnected \(connection.name). Cloudflare had already ended LPM Vault’s access to it.", isError: false)
 				case .success(.entry):
 					self.connections.removeAll { $0.id == connection.id }
 					self.expired.remove(connection.id)
 					self.notice = switch revocation {
 					case .revoked:
-						Notice(message: "Disconnected \(connection.name). LPM Vault's access to it on Cloudflare has ended.", isError: false)
+						Notice(message: "Disconnected \(connection.name). LPM Vault’s access to it on Cloudflare has ended.", isError: false)
 					case .pending:
 						Notice(
 							message: "Disconnected \(connection.name). LPM Vault goes on revoking its access on Cloudflare until lpm.dev confirms it.",
@@ -710,11 +710,11 @@ final class PlatformConnections {
 						Notice(message: "Disconnected \(connection.name). Sign in to LPM to finish revoking its access on Cloudflare.", isError: false)
 					case .unconfirmed:
 						Notice(
-							message: "Disconnected \(connection.name), but lpm.dev couldn't confirm that LPM Vault's access to it on Cloudflare ended.",
+							message: "Disconnected \(connection.name), but lpm.dev couldn’t confirm that LPM Vault’s access to it on Cloudflare ended.",
 							isError: true)
 					}
 				case .failure(let error):
-					self.notice = Notice(message: "\(connection.name) couldn't be disconnected. \(error.message(for: .cloudflare))", isError: true)
+					self.notice = Notice(message: "\(connection.name) couldn’t be disconnected. \(error.message(for: .cloudflare))", isError: true)
 				}
 				self.load()
 			}
@@ -732,7 +732,7 @@ final class PlatformConnections {
 				self.expired.remove(connection.id)
 				self.notice = Notice(message: "Disconnected \(connection.name). Its token was removed from this Mac.", isError: false)
 			case .failure(let error):
-				self.notice = Notice(message: "\(connection.name) couldn't be disconnected. \(error)", isError: true)
+				self.notice = Notice(message: "\(connection.name) couldn’t be disconnected. \(error)", isError: true)
 			}
 		}
 	}

@@ -681,7 +681,7 @@ struct PublishingRecordFindingTests {
 		vault.renameEnvironment(in: "project", from: "staging", to: "qa")
 		await vault.refreshLocalState()
 		#expect(keychain.envStorage["project"]?.environments["qa"] != nil)
-		#expect(vault.error?.contains("publish destinations couldn't be updated") == true)
+		#expect(vault.error?.contains("publish destinations couldn’t be updated") == true)
 	}
 
 	@Test("deleting an environment removes the destinations it published from, with their history")

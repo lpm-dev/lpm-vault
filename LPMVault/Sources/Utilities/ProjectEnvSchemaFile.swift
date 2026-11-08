@@ -95,9 +95,9 @@ enum ProjectEnvSchemaFile {
 			case .renameCollision(let key, let source): "The target key \(key.escapingDirectionControls) is declared in \(source.escapingDirectionControls). Choose a different key name."
 			case .fragmentReference(let source): "This key is referenced in \(source.escapingDirectionControls). Update that declaration before a rename."
 			case .multipleSourceEdit: "This rename and description change multiple schema files. Save the rename and description separately."
-			case .invalidVaultLink: "lpm.json has a vault field that isn't a project ID. Fix it, then save again."
-			case .unsafeStateDirectory: "The project's .lpm is a symbolic link or not a folder, so the CLI won't use it. Remove it, then save again."
-			case .projectIsLPMHome: "The project folder's .lpm is where LPM keeps your login and env secrets. Connect the folder that contains the project's package.json."
+			case .invalidVaultLink: "lpm.json has a vault field that isn’t a project ID. Fix it, then save again."
+			case .unsafeStateDirectory: "The project’s .lpm is a symbolic link or not a folder, so the CLI won’t use it. Remove it, then save again."
+			case .projectIsLPMHome: "The project folder’s .lpm is where LPM keeps your login and env secrets. Connect the folder that contains the project’s package.json."
 			}
 		}
 	}

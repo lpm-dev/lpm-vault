@@ -1554,7 +1554,7 @@ extension VaultStoreTests {
 				hasPublicKey: true
 			)]
 			callerUserID = "account-a"
-			expectedError = "This device's sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
+			expectedError = "This device’s sharing-key binding differs from the organization member record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
 		case "invalid key version":
 			members = [SyncService.MemberPublicKey(
 				userId: "account-a",
@@ -4253,7 +4253,7 @@ extension VaultStoreTests {
 		#expect(encryptionCalls.value == 0)
 		#expect(store.syncMetadata[projectID]?.lastVersion == 5)
 		#expect(store.lastSyncStatus == "failed")
-		#expect(store.error == "The cloud env project revision is older than this checkout's authenticated checkpoint.")
+		#expect(store.error == "The cloud env project revision is older than this checkout’s authenticated checkpoint.")
 	}
 
 	@Test("personal force push re-encrypts after a preflight-to-write race")

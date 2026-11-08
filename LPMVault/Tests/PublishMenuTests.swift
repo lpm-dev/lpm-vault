@@ -119,7 +119,7 @@ struct PublishReviewPartsTests {
 	@Test("the pills count what each planned action does, leaving out actions no key takes, with can't publish in red")
 	func pills() {
 		let pills = PublishSummaryPills.pills(for: PublishPlan.Summary(adding: 2, replacing: 1, blocked: 1, secrets: 3))
-		#expect(pills.map(\.text) == ["2 add", "1 replace", "1 can't publish"])
+		#expect(pills.map(\.text) == ["2 add", "1 replace", "1 can’t publish"])
 		#expect(pills.map(\.tone) == [.add, .replace, .blocked])
 		#expect(PublishSummaryPills.pills(for: PublishPlan.Summary(upToDate: 3, skipped: 1)).map(\.text) == ["3 up to date", "1 skipped"])
 		#expect(PublishSummaryPills.pills(for: PublishPlan.Summary()).isEmpty)

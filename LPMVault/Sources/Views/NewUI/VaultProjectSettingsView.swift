@@ -226,7 +226,7 @@ struct VaultProjectSettingsView: View {
 			return [.init(text: "Monogram · \(letters) · \(color.title)")]
 		case .projectFile(let path):
 			let caption: [CaptionPart] = [.init(text: "Image · "), .init(text: path, isPath: true)]
-			return fileFailed ? caption + [.init(text: " · can't be read, so the automatic icon shows")] : caption
+			return fileFailed ? caption + [.init(text: " · can’t be read, so the automatic icon shows")] : caption
 		case .storedImage(_, let name):
 			let caption: [CaptionPart] = [.init(text: "Image · \(name)")]
 			return fileFailed ? caption + [.init(text: " · missing, so the automatic icon shows")] : caption
@@ -239,7 +239,7 @@ struct VaultProjectSettingsView: View {
 				Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
 					.help(project.path)
 			} else {
-				Text(project.path.isEmpty ? "This project isn't linked to a folder." : "\(displayPath) can't be found.")
+				Text(project.path.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
 					.foregroundStyle(VaultPalette.redText)
 			}
 		} controls: {
@@ -256,9 +256,9 @@ struct VaultProjectSettingsView: View {
 		let access = store.selectedProjectCliAccess
 		return row("CLI approval") {
 			if access == nil {
-				Text("The CLI approval policy can't be read.").foregroundStyle(VaultPalette.orangeTintText)
+				Text("The CLI approval policy can’t be read.").foregroundStyle(VaultPalette.orangeTintText)
 			} else {
-				Text("When on, the LPM CLI asks for Touch ID or your Mac password before it reads this project's values. Changing it asks for Touch ID.")
+				Text("When on, the LPM CLI asks for Touch ID or your Mac password before it reads this project’s values. Changing it asks for Touch ID.")
 			}
 		} controls: {
 			Toggle("CLI approval", isOn: Binding(
@@ -420,9 +420,9 @@ struct VaultProjectSettingsView: View {
 
 	static func message(for failure: ProjectIconStore.ImportFailure) -> String {
 		switch failure {
-		case .unreadable: "That file can't be read."
-		case .notAnImage: "That file isn't an image LPM Vault can show."
-		case .couldNotSave: "The image couldn't be copied into LPM Vault."
+		case .unreadable: "That file can’t be read."
+		case .notAnImage: "That file isn’t an image LPM Vault can show."
+		case .couldNotSave: "The image couldn’t be copied into LPM Vault."
 		}
 	}
 }

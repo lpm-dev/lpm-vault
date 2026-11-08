@@ -251,7 +251,7 @@ struct VaultHistoryRollbackSheet: View {
 			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
 			.disabled(!empties)
-			.help(empties ? "Delete \(name) once its keys are gone" : "Keys you keep stay in \(name), so it isn't deleted")
+			.help(empties ? "Delete \(name) once its keys are gone" : "Keys you keep stay in \(name), so it isn’t deleted")
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 10)

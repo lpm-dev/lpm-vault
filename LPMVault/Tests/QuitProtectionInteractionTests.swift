@@ -198,7 +198,7 @@ extension SheetInteractionTests {
 			try await host.click("Save and quit", in: sheet)
 			#expect(try await host.waitUntil { coordinator.phase == .failed })
 			let reason = VaultKeyEditError.persistence(KeychainError.unexpectedStatus(-25293).description).localizedDescription
-			#expect(try await host.waitForText("TOKEN couldn't be saved: \(reason)", in: sheet), "The row says the Keychain's reason")
+			#expect(try await host.waitForText("TOKEN couldn’t be saved: \(reason)", in: sheet), "The row says the Keychain's reason")
 			#expect(try await host.waitForText("One save failed", in: sheet))
 			#expect(try await host.waitForText("Edits that need a review are discarded too.", in: sheet))
 			#expect(!(try await host.text(in: sheet).contains("Your other edits are saved")))

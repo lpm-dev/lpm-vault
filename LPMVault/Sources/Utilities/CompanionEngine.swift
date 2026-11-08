@@ -347,7 +347,7 @@ enum CompanionEngine {
 			throw Failure(code: "env.abi_mismatch", message: "The bundled LPM engine is not the version this app expects.")
 		}
 		let input: Data
-		do { input = try JSONEncoder().encode(request) } catch { throw Failure(code: "companion.invalid_input", message: "The request couldn't be encoded.") }
+		do { input = try JSONEncoder().encode(request) } catch { throw Failure(code: "companion.invalid_input", message: "The request couldn’t be encoded.") }
 		let result = input.withUnsafeBytes { bytes in
 			function(bytes.bindMemory(to: UInt8.self).baseAddress, input.count)
 		}

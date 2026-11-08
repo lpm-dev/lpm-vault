@@ -70,7 +70,7 @@ struct ContentView: View {
 					VaultLoadErrorView(failure: failure)
 				}
 				VaultHairline().padding(.top, 6)
-				Text("Saved values stay encrypted in this Mac's Keychain.")
+				Text("Saved values stay encrypted in this Mac’s Keychain.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.multilineTextAlignment(.center)

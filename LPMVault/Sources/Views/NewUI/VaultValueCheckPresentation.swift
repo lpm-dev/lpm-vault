@@ -116,14 +116,14 @@ struct VaultValueCheckPresentation {
 		switch problem.kind {
 		case .required:
 			rules?.rule(for: problem.key)?.badges.first { $0.text.hasPrefix("Required") }?.text ?? "Required"
-		case .empty: "Empty values aren't allowed"
-		case .unusableValue: "Contains a character a process can't receive"
+		case .empty: "Empty values aren’t allowed"
+		case .unusableValue: "Contains a character a process can’t receive"
 		case .format(let format): Self.formatMessage(format)
 		case .constraint(let constraint): Self.constraintMessage(constraint)
-		case .pattern: "Doesn't match the pattern"
+		case .pattern: "Doesn’t match the pattern"
 		case .notAllowed: "Not one of the allowed values"
 		case .group(let name, _): groupMessage(name, in: environment)
-		case .other: "Doesn't meet its rule"
+		case .other: "Doesn’t meet its rule"
 		}
 	}
 
@@ -163,8 +163,8 @@ struct VaultValueCheckPresentation {
 		case "max": "Above the maximum"
 		case "minLength": "Too short"
 		case "maxLength": "Too long"
-		case "protocols": "Uses a protocol the rule doesn't allow"
-		default: "Outside the rule's bounds"
+		case "protocols": "Uses a protocol the rule doesn’t allow"
+		default: "Outside the rule’s bounds"
 		}
 	}
 }

@@ -275,7 +275,7 @@ final class VaultQuitCoordinator {
 				let loaded = await store.openProjectForSaving(item.projectID, timeout: timing.projectLoadLimit)
 				guard self.run == run, phase == .saving else { return }
 				guard loaded else {
-					items[index].state = .failed("\(item.projectName) couldn't be loaded to save it.")
+					items[index].state = .failed("\(item.projectName) couldn’t be loaded to save it.")
 					index += 1
 					continue
 				}
@@ -378,9 +378,9 @@ final class VaultQuitCoordinator {
 	static func reason(for failures: [(edit: VaultUnsavedWork.KeyEdit, reason: String)]) -> String {
 		let keys = failures.map(\.edit.key)
 		if Set(failures.map(\.reason)).count == 1, let reason = failures.first?.reason {
-			return "\(ListFormatter.localizedString(byJoining: keys)) couldn't be saved: \(reason)"
+			return "\(ListFormatter.localizedString(byJoining: keys)) couldn’t be saved: \(reason)"
 		}
-		return failures.map { "\($0.edit.key) couldn't be saved: \($0.reason)" }.joined(separator: "\n")
+		return failures.map { "\($0.edit.key) couldn’t be saved: \($0.reason)" }.joined(separator: "\n")
 	}
 
 	private func saveSchema(_ item: Item, in store: VaultStore) async -> ItemState {
@@ -390,7 +390,7 @@ final class VaultQuitCoordinator {
 		} catch .conflicts {
 			return .needsReview("Its rules changed elsewhere; review the draft on the Schema page. Quitting discards it.")
 		} catch {
-			return .failed("The rules couldn't be written to lpm.json: \(error.message)")
+			return .failed("The rules couldn’t be written to lpm.json: \(error.message)")
 		}
 	}
 
@@ -398,7 +398,7 @@ final class VaultQuitCoordinator {
 		switch await store.saveRawTextDraft(VaultEnvironmentTarget(projectId: item.projectID, environment: environment)) {
 		case .saved: .saved
 		case .changed: .needsReview("It changed elsewhere since the edit; compare it in Raw text. Quitting discards it.")
-		case .unavailable: .failed("\(VaultProject.displayName(for: environment)) couldn't be saved.")
+		case .unavailable: .failed("\(VaultProject.displayName(for: environment)) couldn’t be saved.")
 		case .failed(let message): .failed(message)
 		}
 	}
@@ -406,7 +406,7 @@ final class VaultQuitCoordinator {
 	private func saveSettings(_ item: Item, in store: VaultStore) async -> ItemState {
 		await store.saveProjectSettings(of: item.projectID)
 		guard store.projectSettingsDrafts[item.projectID] != nil else { return .saved }
-		return .failed(store.projectSettingsErrors[item.projectID] ?? "\(item.projectName)'s settings couldn't be saved.")
+		return .failed(store.projectSettingsErrors[item.projectID] ?? "\(item.projectName)’s settings couldn’t be saved.")
 	}
 
 	private func finish(quitting: Bool) {

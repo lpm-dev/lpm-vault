@@ -445,9 +445,9 @@ struct GitHubPlanTests {
 		#expect(plan.overflows(of: selection) == [PublishPlan.Overflow(isSecrets: true, limit: 100, existing: 99, adding: 5)])
 		#expect(plan.overflows(of: selection).first?.excess == 4, "97 secrets, the replaced one and the one beside a variable, with 5 new")
 		#expect(GitHubPublishing.overflowMessage(try #require(plan.overflows(of: selection).first), scope: .repository)
-			== "GitHub keeps at most 100 of a repository's own secrets, and this would make 104. Leave out 4 new secrets.")
+			== "GitHub keeps at most 100 of a repository’s own secrets, and this would make 104. Leave out 4 new secrets.")
 		#expect(GitHubPublishing.overflowMessage(.init(isSecrets: true, limit: 100, existing: 120, adding: 1), scope: .environment(id: "1", name: "p"))
-			== "GitHub keeps at most 100 of an environment's secrets, and has 120 already. Leave out the new secret, or remove some on GitHub.")
+			== "GitHub keeps at most 100 of an environment’s secrets, and has 120 already. Leave out the new secret, or remove some on GitHub.")
 		let summary = plan.summary(of: selection)
 		#expect(summary.publishing == 7 && summary.secrets == 6 && summary.variables == 1)
 		for key in ["NEW_0", "NEW_1", "NEW_2"] { selection.set(key, selected: false, in: plan) }
@@ -843,7 +843,7 @@ struct GitHubPublishTests {
 		let reviewedGone = try await reviewed(gone)
 		gone.removeRepository("1296269")
 		let unreachable = await publish([change("A", "1", .replace(remoteID: "secret"))], with: gone, reviewed: reviewedGone)
-		#expect(unreachable.outcomes == ["A": .failed("northwind/storefront isn't reachable on GitHub any more. Review again.")])
+		#expect(unreachable.outcomes == ["A": .failed("northwind/storefront isn’t reachable on GitHub any more. Review again.")])
 		#expect(environments.writeCount == 0 && renamed.writeCount == 0 && gone.writeCount == 0)
 	}
 
@@ -885,7 +885,7 @@ struct GitHubPublishTests {
 		let reviewedGone = try await reviewed(gone)
 		gone.removeRepository("1296269")
 		let unreachable = await publish([change("A", "1"), change("B", "2")], with: gone, reviewed: reviewedGone)
-		let reason = PublishOutcome.failed("northwind/storefront isn't reachable on GitHub any more. Review again.")
+		let reason = PublishOutcome.failed("northwind/storefront isn’t reachable on GitHub any more. Review again.")
 		#expect(unreachable.outcomes == ["A": reason, "B": reason])
 		#expect(!gone.requests.contains { $0.1 == "B" }, "Nothing is asked for B once the scope is gone")
 
@@ -1295,7 +1295,7 @@ struct GitHubPublishTests {
 	@Test("a refusal for something missing names a secret or a variable, not just a secret")
 	func notFoundMessage() {
 		#expect(GitHubPublishing.message(.notFound)
-			== "GitHub couldn't find the repository, the environment, or the secret or variable. LPM Vault's GitHub App may not be installed on the repository.")
+			== "GitHub couldn’t find the repository, the environment, or the secret or variable. LPM Vault’s GitHub App may not be installed on the repository.")
 	}
 
 	@Test("a rate limit's message says when it lifts, when that's more than a moment away")
@@ -1324,7 +1324,7 @@ struct GitHubPublishTests {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api)
 		let report = await GitHubPublishing.publish([change("A", "1")], to: target, reviewed: reviewed, using: api, seal: { _, _ in nil })
-		#expect(report.outcomes == ["A": .failed("The value couldn't be sealed for GitHub.")] && api.writeCount == 0)
+		#expect(report.outcomes == ["A": .failed("The value couldn’t be sealed for GitHub.")] && api.writeCount == 0)
 	}
 }
 
@@ -1854,10 +1854,10 @@ struct GitHubClientListTests {
 		#expect(GitHubPublishing.message(.tooLarge(.secrets)) == "GitHub listed more secrets than LPM Vault reads at once.")
 		#expect(GitHubPublishing.message(.tooLarge(.environments)) == "GitHub listed more environments for the repository than LPM Vault reads at once.")
 		#expect(GitHubPublishing.message(.tooLarge(.repositories))
-			== "GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to.")
-		#expect(GitHubPublishing.message(.timedOut(.environments)) == "GitHub took too long to list the repository's environments. Try again.")
+			== "GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault’s GitHub App only on the repositories it publishes to.")
+		#expect(GitHubPublishing.message(.timedOut(.environments)) == "GitHub took too long to list the repository’s environments. Try again.")
 		#expect(GitHubPublishing.message(.timedOut(.repositories))
-			== "GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault's GitHub App only on the repositories it publishes to.")
+			== "GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault’s GitHub App only on the repositories it publishes to.")
 	}
 
 	@Test("a listing that runs out of time after reading pages says GitHub took too long, though the late page is another installation's first")
