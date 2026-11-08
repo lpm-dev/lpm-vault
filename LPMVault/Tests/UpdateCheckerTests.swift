@@ -14,6 +14,38 @@ struct UpdateCheckerTests {
 		#expect(VaultReleaseChannel.nightly.sparkleChannels == ["nightly"])
 	}
 
+	@Test("automatic checks start on and background installs off, each changed through Sparkle")
+	func automaticUpdates() throws {
+		let defaults = try isolatedDefaults()
+		let driver = TestUpdateDriver()
+		let checker = UpdateChecker(driver: driver, defaults: defaults, buildInfo: VaultBuildInfo(info: [:]))
+		#expect(checker.canChangeAutomaticUpdates)
+		#expect(checker.automaticallyChecks)
+		#expect(!checker.automaticallyDownloads)
+
+		checker.automaticallyDownloads = true
+		#expect(driver.automaticallyDownloads)
+		#expect(checker.automaticallyDownloads)
+		checker.automaticallyChecks = false
+		#expect(!driver.automaticallyChecks)
+		#expect(!checker.automaticallyDownloads, "Nothing downloads in the background while nothing is looked for")
+
+		checker.start()
+		driver.automaticallyChecks = true
+		driver.canCheckForUpdates = false
+		#expect(checker.automaticallyChecks, "A change Sparkle makes itself shows once its state changes")
+	}
+
+	@Test("a build that doesn't update itself offers no automatic updates")
+	func noAutomaticUpdatesWithoutUpdater() throws {
+		let checker = UpdateChecker(defaults: try isolatedDefaults(), buildInfo: VaultBuildInfo(info: [:]))
+		#if DEBUG
+		#expect(!checker.canChangeAutomaticUpdates)
+		checker.automaticallyChecks = false
+		#expect(checker.automaticallyChecks)
+		#endif
+	}
+
 	@Test("a direct nightly installation keeps its channel when a newer stable build replaces it")
 	func nightlyDefaultSurvivesStableReplacement() throws {
 		let domain = "nightly-default-\(UUID().uuidString)"
@@ -315,6 +347,8 @@ private final class TestUpdateDriver: VaultUpdateDriver {
 	var availableUpdateVersion: String? {
 		didSet { updateChanged?(availableUpdateVersion) }
 	}
+	var automaticallyChecks = true
+	var automaticallyDownloads = false
 	var stateChanged: (() -> Void)?
 	var updateChanged: ((String?) -> Void)?
 	var starts = 0

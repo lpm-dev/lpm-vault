@@ -79,7 +79,8 @@ struct BackupFormatTests {
 	func roundTrip() throws {
 		let app = BackupAppSection(
 			settings: .init(appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .stable,
-				projectOrder: [Self.vault], environmentOrders: [Self.vault: ["staging", "default"]]),
+				projectOrder: [Self.vault], environmentOrders: [Self.vault: ["staging", "default"]],
+				preferences: .init(app: VaultSettings.standard, updates: .standard)),
 			icons: [Self.vault: .choice(.emoji("🚀"))],
 			destinations: [Self.vault: [vercelDestination(source: "default")]])
 		let written = try #require(payload(projects: [
@@ -192,7 +193,8 @@ struct BackupAppSectionTests {
 	private func section() -> BackupAppSection {
 		BackupAppSection(
 			settings: .init(appearance: .light, keySort: .ascending, quitShortcut: .doublePress, updateChannel: .nightly,
-				projectOrder: [Self.vault, "other-vault"], environmentOrders: [Self.vault: ["production", "default"]]),
+				projectOrder: [Self.vault, "other-vault"], environmentOrders: [Self.vault: ["production", "default"]],
+				preferences: Self.preferences),
 			icons: [
 				Self.vault: .choice(.symbol("bolt.fill", .blue)),
 				"other-vault": .image(name: "logo.png", png: Data([0x89, 0x50, 0x4E, 0x47])),
@@ -204,8 +206,48 @@ struct BackupAppSectionTests {
 			]])
 	}
 
+	private static let preferences = BackupAppSection.Preferences(
+		app: VaultSettings.Snapshot(
+			security: .init(lockAfter: .thirtyMinutes, valueApproval: .afterFifteenMinutes, clipboardClear: .twoMinutes,
+				rehide: .fiveMinutes, hidesFromCapture: false),
+			newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: true, remindsToBackUp: false),
+		updates: .init(checks: false, downloads: true))
+
+	private static let listedSettings = #""appearance":"dark","keySort":"ascending","quitShortcut":"hold","updateChannel":"stable","projectOrder":[],"environmentOrders":{}"#
+	private static let preferenceSettings = #""security":{"lockAfter":120,"valueApproval":0,"clipboardClear":10,"rehide":0,"hidesFromCapture":true},"newProjects":{"keepHistory":true,"askBeforeCLIReads":false},"backupReminder":true,"automaticUpdates":{"check":true,"download":false}"#
+
 	private func read(_ text: String) throws -> BackupAppSection {
 		try BackupAppSection(json: LPMConfigJSON(parsing: Data(text.utf8), rejectDuplicateKeys: true))
+	}
+
+	@Test("a version 1 section, from before LPM Vault's own settings, reads with none, which leaves this Mac's")
+	func versionOne() throws {
+		let section = try read(#"{"version":1,"settings":{\#(Self.listedSettings)}}"#)
+		#expect(section.settings?.appearance == .dark)
+		#expect(section.settings?.preferences == nil)
+		#expect(throws: BackupAppSection.DecodingError.unreadable, "Version 1 has no such settings") {
+			try read(#"{"version":1,"settings":{\#(Self.listedSettings),\#(Self.preferenceSettings)}}"#)
+		}
+	}
+
+	@Test("version 2 carries every setting of LPM Vault's own, and refuses one missing or out of its choices")
+	func versionTwoPreferences() throws {
+		let section = try read(#"{"version":2,"settings":{\#(Self.listedSettings),\#(Self.preferenceSettings)}}"#)
+		#expect(section.settings?.preferences == .init(app: VaultSettings.standard, updates: .standard))
+		#expect(BackupAppSection(settings: .init(appearance: .dark, keySort: .ascending, quitShortcut: .hold, updateChannel: .stable,
+			projectOrder: [], environmentOrders: [:])).json() == nil, "Nothing writes a version 2 section without them")
+		for broken in [
+			Self.preferenceSettings.replacingOccurrences(of: #","backupReminder":true"#, with: ""),
+			Self.preferenceSettings.replacingOccurrences(of: #""lockAfter":120"#, with: #""lockAfter":7"#),
+			Self.preferenceSettings.replacingOccurrences(of: #""lockAfter":120"#, with: #""lockAfter":120.0"#),
+			Self.preferenceSettings.replacingOccurrences(of: #""hidesFromCapture":true"#, with: #""hidesFromCapture":1"#),
+			Self.preferenceSettings.replacingOccurrences(of: #""download":false"#, with: #""download":false,"later":true"#),
+		] {
+			#expect(throws: BackupAppSection.DecodingError.unreadable, "\(broken)") {
+				try read(#"{"version":2,"settings":{\#(Self.listedSettings),\#(broken)}}"#)
+			}
+		}
+		#expect(throws: BackupAppSection.DecodingError.unreadable) { try read(#"{"version":2,"settings":{\#(Self.listedSettings)}}"#) }
 	}
 
 	@Test("a section reads back as it was written")
@@ -218,7 +260,7 @@ struct BackupAppSectionTests {
 
 	@Test("unknown or missing fields, newer versions, and icons without settings are refused")
 	func strictness() throws {
-		#expect(throws: BackupAppSection.DecodingError.newerVersion) { try read(#"{"version":2,"future":true}"#) }
+		#expect(throws: BackupAppSection.DecodingError.newerVersion) { try read(#"{"version":3,"future":true}"#) }
 		for text in [
 			#"{"version":1,"extra":1}"#,
 			#"{"version":1.0}"#,

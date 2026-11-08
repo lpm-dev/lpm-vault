@@ -356,7 +356,7 @@ struct VaultStoreTests {
 		let clock = AutoLockClock()
 		let keychain = MockKeychainService()
 		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-			autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now }, autoLockDuration: 120)
+			autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now })
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
 		clock.now = 80
@@ -1088,8 +1088,7 @@ struct VaultStoreTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now },
-			autoLockDuration: 120
+			autoLockNow: { clock.now }
 		)
 
 		await store.unlock()
@@ -1157,8 +1156,7 @@ struct VaultStoreTests {
 				biometricService: MockBiometricService(),
 				apiService: MockAPIService(),
 				autoLockSleep: { duration in try await sleeper.sleep(duration) },
-				autoLockNow: { clock.now },
-				autoLockDuration: 120
+				autoLockNow: { clock.now }
 			)
 
 			await store.unlock()
@@ -1180,8 +1178,7 @@ struct VaultStoreTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now },
-			autoLockDuration: 120
+			autoLockNow: { clock.now }
 		)
 
 		await store.unlock()
@@ -1209,7 +1206,7 @@ struct VaultStoreTests {
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now }, autoLockDuration: 120
+			autoLockNow: { clock.now }
 		)
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
@@ -1246,7 +1243,7 @@ struct VaultStoreTests {
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now }, autoLockDuration: 120
+			autoLockNow: { clock.now }
 		)
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
@@ -1265,25 +1262,78 @@ struct VaultStoreTests {
 		#expect(store.autoLockCountdownSeconds == nil)
 	}
 
-	@Test("short idle intervals show a countdown immediately")
-	func autoLockCountdownSupportsShortIdleIntervals() async {
+	@Test("the shortest lock time waits half a minute, then counts down the rest")
+	func shortestLockTimeCountsDownItsLastHalfMinute() async throws {
 		let sleeper = AutoLockSleeper()
 		let clock = AutoLockClock()
+		let settings = VaultSettings(defaults: try isolatedDefaults())
+		settings.lockAfter = .oneMinute
 		let store = VaultStore(
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now }, autoLockDuration: 20
+			autoLockNow: { clock.now }, settings: settings
 		)
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
-		#expect(store.autoLockCountdownSeconds == 20)
-		#expect(await sleeper.durations == [.seconds(1)])
-		clock.now = 20
+		#expect(await sleeper.durations == [.seconds(30)])
+		#expect(store.autoLockCountdownSeconds == nil)
+		clock.now = 60
 		store.recordUserActivity()
 		#expect(!store.isUnlocked)
-		#expect(store.autoLockCountdownSeconds == nil)
 		await sleeper.resume(at: 0)
+	}
+
+	@Test("a shorter lock time applies at once, not after the longer time's wait")
+	func shorterLockTimeAppliesAtOnce() async throws {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let settings = VaultSettings(defaults: try isolatedDefaults())
+		settings.lockAfter = .thirtyMinutes
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, settings: settings
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		#expect(await sleeper.durations == [.seconds(1770)])
+
+		clock.now = 10
+		settings.lockAfter = .oneMinute
+		while await sleeper.count < 2 { await Task.yield() }
+		#expect(await sleeper.durations.last == .seconds(30), "The new time runs from the change, in the change's own wait")
+		clock.now = 40
+		await sleeper.resume(at: 1)
+		while await sleeper.count < 3 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 30)
+		clock.now = 70
+		await sleeper.resume(at: 2)
+		#expect(try await waitUntil { !store.isUnlocked })
+		await sleeper.resume(at: 0)
+	}
+
+	@Test("a longer lock time keeps the vault unlocked past the old time")
+	func longerLockTimeKeepsVaultUnlocked() async throws {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let settings = VaultSettings(defaults: try isolatedDefaults())
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, settings: settings
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		settings.lockAfter = .fiveMinutes
+		while await sleeper.count < 2 { await Task.yield() }
+		clock.now = 121
+		store.recordUserActivity()
+		#expect(store.isUnlocked, "Two minutes passed, but the vault now locks after five")
+		await sleeper.resume(at: 0)
+		await sleeper.resume(at: 1)
 	}
 
 	@Test("a cancelled idle task cannot clear a new session's countdown")
@@ -1294,7 +1344,7 @@ struct VaultStoreTests {
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now }, autoLockDuration: 120
+			autoLockNow: { clock.now }
 		)
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
@@ -6779,7 +6829,7 @@ extension SheetInteractionTests {
 				keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 				apiService: MockAPIService(),
 				autoLockSleep: { duration in try await sleeper.sleep(duration) },
-				autoLockNow: { clock.now }, autoLockDuration: 120
+				autoLockNow: { clock.now }
 			)
 			defer { store.lock() }
 			await store.unlock()
@@ -6810,7 +6860,7 @@ extension SheetInteractionTests {
 			let keychain = MockKeychainService()
 			keychain.envStorage["column-activity"] = (name: "Columns", path: "", environments: ["default": ["TOKEN": "fixture-value"]])
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-				autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now }, autoLockDuration: 120)
+				autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now })
 			await store.unlock()
 			defer { store.lock() }
 			store.openProject(id: "column-activity")

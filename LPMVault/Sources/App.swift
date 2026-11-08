@@ -73,18 +73,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			return quitGate.handle(input, at: event.timestamp) ? nil : event
 		}
 
-		let workspaceCenter = NSWorkspace.shared.notificationCenter
-		for name in [
-			NSWorkspace.sessionDidResignActiveNotification,
-			NSWorkspace.willSleepNotification,
-			NSWorkspace.screensDidSleepNotification,
-		] {
-			workspaceCenter.addObserver(
-				self,
-				selector: #selector(handleSecurityNotification(_:)),
-				name: name,
-				object: nil
-			)
+		observeSecurityNotifications()
+	}
+
+	/// What locks the vault at once: switching users, the Mac sleeping and its displays sleeping.
+	static let workspaceLockNotifications: [Notification.Name] = [
+		NSWorkspace.sessionDidResignActiveNotification,
+		NSWorkspace.willSleepNotification,
+		NSWorkspace.screensDidSleepNotification,
+	]
+
+	/// What macOS tells every app as the screen locks or the screen saver
+	/// starts, which can be well before the displays sleep.
+	static let systemLockNotifications: [Notification.Name] = [
+		Notification.Name("com.apple.screenIsLocked"),
+		Notification.Name("com.apple.screensaver.didstart"),
+	]
+
+	/// Locks the vault on each of `workspaceLockNotifications` from
+	/// `workspace` and `systemLockNotifications` from `system`.
+	func observeSecurityNotifications(
+		workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
+		system: NotificationCenter = DistributedNotificationCenter.default()
+	) {
+		for name in Self.workspaceLockNotifications {
+			workspace.addObserver(self, selector: #selector(handleSecurityNotification(_:)), name: name, object: nil)
+		}
+		for name in Self.systemLockNotifications {
+			system.addObserver(self, selector: #selector(handleSecurityNotification(_:)), name: name, object: nil)
 		}
 	}
 
@@ -141,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		localEventMonitor = nil
 		quitShortcutMonitor = nil
 		NSWorkspace.shared.notificationCenter.removeObserver(self)
+		DistributedNotificationCenter.default().removeObserver(self)
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -173,6 +190,7 @@ struct LPMVaultApp: App {
 		AppDelegate.requestTermination()
 	}
 	@State private var isObscured = false
+	@State private var captureProtection = VaultCaptureProtection()
 
 	var body: some Scene {
 		// Main window — opens automatically on launch
@@ -185,6 +203,9 @@ struct LPMVaultApp: App {
 				.vaultAppearance(appearanceSettings.selection)
 				.tint(VaultPalette.accent)
 				.vaultPrivacyProtected(isObscured)
+				.onChange(of: store.settings.hidesFromCapture, initial: true) { _, hides in
+					captureProtection.setEnabled(hides)
+				}
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
 					isObscured = true
 				}
@@ -205,6 +226,9 @@ struct LPMVaultApp: App {
 					}
 					appDelegate.recordUserActivity = { [store] in
 						store.recordUserActivity()
+					}
+					store.automaticUpdates = { [updateChecker] in
+						.init(checks: updateChecker.automaticallyChecks, downloads: updateChecker.automaticallyDownloads)
 					}
 					quitCoordinator.attach(store)
 					appDelegate.shouldTerminate = { [quitCoordinator] in quitCoordinator.shouldTerminate(sessionEnding: $0) }

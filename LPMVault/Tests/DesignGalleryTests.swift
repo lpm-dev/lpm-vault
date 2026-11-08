@@ -298,6 +298,16 @@ extension SheetInteractionTests {
 			store.showSettings(.account)
 			#expect(try await host.waitForText("SERVER"))
 			try await save(host, "09-settings", dark: dark)
+			store.locateCLI = { .found(path: "/opt/homebrew/bin/lpm", version: "1.4.2") }
+			for (category, text, name) in [
+				(VaultSettingsCategory.security, "LOCKING", "21-settings-security"), (.general, "LOCAL HISTORY", "22-settings-general"),
+				(.cli, "lpm 1.4.2", "23-settings-cli"), (.backup, "REMINDER", "24-settings-backup"),
+				(.updates, "Check automatically", "25-settings-updates"), (.about, "Release notes", "26-settings-about"),
+			] {
+				store.showSettings(category)
+				#expect(try await host.waitForText(text))
+				try await save(host, name, dark: dark)
+			}
 			store.closeAccountPage()
 			_ = try await host.waitUntil { !store.isShowingAccountPage }
 

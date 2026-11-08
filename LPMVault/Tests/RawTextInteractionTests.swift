@@ -585,7 +585,7 @@ private struct FixInTableView: View {
 			environments: ["default"], selectedEnvironment: "default",
 			mode: .constant(.environment("default")), filter: .constant(.all),
 			environmentViewMode: $viewMode, sortOrder: .constant(.ascending),
-			searchText: "", selectedKey: .constant(nil), revealedKeys: .constant([]),
+			searchText: "", selectedKey: .constant(nil), revealedKeys: .constant([]), valueAccess: .unguarded,
 			showsInspector: .constant(false), columnWidths: .constant(VaultProjectTableColumnWidths()),
 			isCopyingAll: false, cliAccess: nil,
 			onCopyAll: {},

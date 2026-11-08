@@ -14,6 +14,7 @@ def verify(config):
         "SURequireSignedFeed": True,
         "SUVerifyUpdateBeforeExtraction": True,
         "SUAutomaticallyUpdate": False,
+        "SUEnableAutomaticChecks": True,
         "SUSendProfileInfo": False,
     }
     for key, value in expected.items():

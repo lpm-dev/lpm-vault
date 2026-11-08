@@ -30,14 +30,10 @@ enum VaultConstants {
 	/// Maximum recommended vault size in bytes (90KB warning threshold)
 	static let maxVaultSizeWarning = 90 * 1024
 
-	/// Clipboard auto-clear delay in seconds
-	static let clipboardClearDelay: TimeInterval = 10
-
 	/// Biometric auth cache duration in seconds (2 minutes)
 	static let biometricCacheDuration: TimeInterval = 2 * 60
 
-	/// Idle time before an unlocked vault locks itself (2 minutes)
-	static let vaultAutoLockDuration: TimeInterval = 2 * 60
+	/// How long before the vault locks itself the title bar counts down.
 	static let vaultAutoLockCountdownDuration: TimeInterval = 30
 
 	/// LPM API base URL

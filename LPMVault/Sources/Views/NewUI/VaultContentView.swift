@@ -76,10 +76,14 @@ struct VaultContentView: View {
 	let searchText: String
 	@Binding var selectedKey: String?
 	@Binding var revealedKeys: Set<String>
+	/// What a reveal goes through, which may ask for Touch ID first.
+	let valueAccess: VaultValueAccess
 	@Binding var showsInspector: Bool
 	@Binding var columnWidths: VaultProjectTableColumnWidths
 	let isCopyingAll: Bool
 	var isCopiedAll = false
+	/// How long a copy stays on the clipboard, which the copy toast counts down from.
+	var clipboardClear = VaultClipboardClear.standard
 	var canUseSecrets = true
 	/// Whether the project's newer data lets its values change.
 	var canEditValues = true
@@ -917,7 +921,7 @@ struct VaultContentView: View {
 					.foregroundStyle(VaultPalette.toastConfirmation)
 					.accessibilityHidden(true)
 				Text("Copied \(copiedLineCount.counted("line")) ")
-					+ Text("· clears in \(Int(VaultConstants.clipboardClearDelay))s").foregroundStyle(VaultPalette.toastSecondaryText)
+					+ Text("· clears in \(clipboardClear.countdown)").foregroundStyle(VaultPalette.toastSecondaryText)
 			}
 		} else if let rawSaved, rawSaved.receipt.projectId == project.id, rawSaved.receipt.environment == selectedEnvironment {
 			savedToast(rawSaved)
@@ -1124,13 +1128,17 @@ struct VaultContentView: View {
 		if keys.allSatisfy(revealedKeys.contains) {
 			revealedKeys.subtract(keys)
 		} else {
-			revealedKeys.formUnion(keys)
+			valueAccess.reveal { revealedKeys.formUnion(keys) }
 		}
 	}
 
 	private func toggleReveal(_ key: String) {
 		guard canUseSecrets, !publicKeys.contains(key) else { return }
-		if revealedKeys.contains(key) { revealedKeys.remove(key) } else { revealedKeys.insert(key) }
+		if revealedKeys.contains(key) {
+			revealedKeys.remove(key)
+		} else {
+			valueAccess.reveal { revealedKeys.insert(key) }
+		}
 	}
 }
 

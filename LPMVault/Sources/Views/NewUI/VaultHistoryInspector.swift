@@ -225,11 +225,15 @@ struct VaultHistoryInspector: View {
 						help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
 						disabled: obscured, compact: true
 					) {
-						if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
+						if shown {
+							history.hide(valueSide)
+						} else {
+							store.valueAccess.reveal { Task { await history.show(valueSide) } }
+						}
 					}
 					// Every control shows at rest, as in the key inspector, so the box's end never looks empty.
 					VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true, quiet: true) {
-						Task { await copy(valueSide) }
+						store.valueAccess.copy { Task { await copy(valueSide) } }
 					}
 					let menuID = "\(environment)\u{0}\(key)\u{0}\(sideName)"
 					VaultRowIconButton(systemImage: "ellipsis", help: "More for the \(side) value of \(key)", compact: true,

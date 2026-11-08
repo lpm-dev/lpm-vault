@@ -9,6 +9,14 @@ struct VaultSettingsOverlay: View {
 	let category: VaultSettingsCategory
 
 	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+	// Optional, as a page that shows none of them, such as Platforms, can be shown without them.
+	@Environment(VaultAppearanceSettings.self) private var appearance: VaultAppearanceSettings?
+	@Environment(VaultQuitSettings.self) private var quit: VaultQuitSettings?
+	@Environment(UpdateChecker.self) private var updates: UpdateChecker?
+
+	private var pageDefaults: VaultSettingsPageDefaults {
+		VaultSettingsPageDefaults(settings: store.settings, appearance: appearance, quit: quit, updates: updates)
+	}
 
 	/// How far the panel stays from the title bar, the window's bottom and its sides.
 	static let margin: CGFloat = 40
@@ -85,6 +93,10 @@ struct VaultSettingsOverlay: View {
 			.font(.system(size: 15, weight: .semibold))
 			.lineLimit(1)
 			Spacer(minLength: 12)
+			if pageDefaults.hasChanges(on: category) {
+				VaultBarButton(title: "Restore Defaults", height: 28) { pageDefaults.restore(category) }
+					.help("Put this page’s settings back as LPM Vault first had them")
+			}
 			closeButton
 		}
 		.padding(.horizontal, 20)
@@ -117,6 +129,53 @@ struct VaultSettingsOverlay: View {
 		.frame(width: Self.menuWidth, alignment: .leading)
 		.frame(maxHeight: .infinity)
 		.background(VaultPalette.sidebar)
+	}
+}
+
+/// Which of a Settings page's settings differ from LPM Vault's defaults, and
+/// putting them back. The update channel and the LPM home are choices with
+/// consequences of their own, never defaults to restore.
+@MainActor
+struct VaultSettingsPageDefaults {
+	let settings: VaultSettings
+	var appearance: VaultAppearanceSettings?
+	var quit: VaultQuitSettings?
+	var updates: UpdateChecker?
+
+	func hasChanges(on category: VaultSettingsCategory) -> Bool {
+		let standard = VaultSettings.standard
+		switch category {
+		case .general:
+			return quit.map { $0.selection != VaultQuitShortcut.standard } == true
+				|| settings.newProjectsKeepHistory != standard.newProjectsKeepHistory
+		case .security: return settings.security != standard.security
+		case .appearance: return appearance.map { $0.selection != .system } == true
+		case .cli: return settings.newProjectsAskBeforeCLIReads != standard.newProjectsAskBeforeCLIReads
+		case .backup: return settings.remindsToBackUp != standard.remindsToBackUp
+		case .updates:
+			let automatic = BackupAppSection.AutomaticUpdates.standard
+			guard let updates, updates.canChangeAutomaticUpdates else { return false }
+			return updates.automaticallyChecks != automatic.checks || updates.automaticallyDownloads != automatic.downloads
+		case .account, .platforms, .about: return false
+		}
+	}
+
+	func restore(_ category: VaultSettingsCategory) {
+		let standard = VaultSettings.standard
+		switch category {
+		case .general:
+			quit?.selection = VaultQuitShortcut.standard
+			settings.newProjectsKeepHistory = standard.newProjectsKeepHistory
+		case .security: settings.security = standard.security
+		case .appearance: appearance?.selection = .system
+		case .cli: settings.newProjectsAskBeforeCLIReads = standard.newProjectsAskBeforeCLIReads
+		case .backup: settings.remindsToBackUp = standard.remindsToBackUp
+		case .updates:
+			let automatic = BackupAppSection.AutomaticUpdates.standard
+			updates?.automaticallyChecks = automatic.checks
+			updates?.automaticallyDownloads = automatic.downloads
+		case .account, .platforms, .about: break
+		}
 	}
 }
 

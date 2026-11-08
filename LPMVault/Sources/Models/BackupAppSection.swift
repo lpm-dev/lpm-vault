@@ -5,7 +5,9 @@ import Foundation
 /// too. The CLI checks it only as JSON, so this reads it strictly, refusing
 /// anything it doesn't know, as the format asks of the app that owns it.
 struct BackupAppSection: Equatable, Sendable {
-	static let version = 1
+	/// Version 2 added `Settings.preferences`; a version 1 section, which
+	/// LPM Vault still reads, has none.
+	static let version = 2
 	/// The format's own limit on projects, so nothing keyed by project passes it.
 	static let maximumProjects = 10_000
 	/// More than a 128-pixel PNG takes, which is what icons are kept as.
@@ -23,6 +25,23 @@ struct BackupAppSection: Equatable, Sendable {
 		var projectOrder: [String]
 		/// Each project's order of its environments, by vault ID.
 		var environmentOrders: [String: [String]]
+		/// LPM Vault's own settings and its automatic updates; nil only in a
+		/// version 1 section, made before they existed, which leaves this
+		/// Mac's as they are.
+		var preferences: Preferences?
+	}
+
+	struct Preferences: Equatable, Sendable {
+		var app: VaultSettings.Snapshot
+		var updates: AutomaticUpdates
+	}
+
+	/// Whether updates are looked for, and installed, in the background.
+	struct AutomaticUpdates: Equatable, Sendable {
+		var checks: Bool
+		var downloads: Bool
+
+		static let standard = AutomaticUpdates(checks: true, downloads: false)
 	}
 
 	enum Icon: Equatable, Sendable {
@@ -86,9 +105,9 @@ struct BackupAppSection: Equatable, Sendable {
 		guard case .number(let raw)? = json["version"], !raw.isEmpty, raw.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 })
 		else { throw .unreadable }
 		guard let version = Int(raw), version <= Self.version else { throw .newerVersion }
-		guard version == Self.version, String(version) == raw else { throw .unreadable }
+		guard version >= 1, String(version) == raw else { throw .unreadable }
 		let fields = try Fields(json, required: ["version"], optional: ["settings", "icons", "destinations"])
-		settings = try fields.optional("settings").map(Self.settings)
+		settings = try fields.optional("settings").map { json throws(DecodingError) in try Self.settings(json, version: version) }
 		icons = [:]
 		if let json = fields.optional("icons") {
 			guard settings != nil else { throw .unreadable }
@@ -109,7 +128,8 @@ struct BackupAppSection: Equatable, Sendable {
 	// MARK: - Settings
 
 	private static func json(_ settings: Settings) -> LPMConfigJSON? {
-		guard settings.projectOrder.count <= maximumProjects, settings.environmentOrders.count <= maximumProjects,
+		guard let preferences = settings.preferences,
+			settings.projectOrder.count <= maximumProjects, settings.environmentOrders.count <= maximumProjects,
 			Set(settings.projectOrder).count == settings.projectOrder.count,
 			settings.projectOrder.allSatisfy(EnvValidation.isSafeVaultId)
 		else { return nil }
@@ -125,11 +145,56 @@ struct BackupAppSection: Equatable, Sendable {
 			.init(key: "updateChannel", value: .string(settings.updateChannel.rawValue)),
 			.init(key: "projectOrder", value: .array(settings.projectOrder.map(LPMConfigJSON.string))),
 			.init(key: "environmentOrders", value: .object(orders)),
-		])
+		] + json(preferences))
 	}
 
-	private static func settings(_ json: LPMConfigJSON) throws(DecodingError) -> Settings {
-		let fields = try Fields(json, required: ["appearance", "keySort", "quitShortcut", "updateChannel", "projectOrder", "environmentOrders"])
+	private static let preferenceKeys: Set<String> = ["security", "newProjects", "backupReminder", "automaticUpdates"]
+
+	private static func json(_ preferences: Preferences) -> [LPMConfigJSON.Member] {
+		let security = preferences.app.security
+		return [
+			.init(key: "security", value: .object([
+				.init(key: "lockAfter", value: .number(String(security.lockAfter.rawValue))),
+				.init(key: "valueApproval", value: .number(String(security.valueApproval.rawValue))),
+				.init(key: "clipboardClear", value: .number(String(security.clipboardClear.rawValue))),
+				.init(key: "rehide", value: .number(String(security.rehide.rawValue))),
+				.init(key: "hidesFromCapture", value: .bool(security.hidesFromCapture)),
+			])),
+			.init(key: "newProjects", value: .object([
+				.init(key: "keepHistory", value: .bool(preferences.app.newProjectsKeepHistory)),
+				.init(key: "askBeforeCLIReads", value: .bool(preferences.app.newProjectsAskBeforeCLIReads)),
+			])),
+			.init(key: "backupReminder", value: .bool(preferences.app.remindsToBackUp)),
+			.init(key: "automaticUpdates", value: .object([
+				.init(key: "check", value: .bool(preferences.updates.checks)),
+				.init(key: "download", value: .bool(preferences.updates.downloads)),
+			])),
+		]
+	}
+
+	private static func preferences(_ fields: Fields) throws(DecodingError) -> Preferences {
+		let security = try Fields(fields.value("security"),
+			required: ["lockAfter", "valueApproval", "clipboardClear", "rehide", "hidesFromCapture"])
+		let newProjects = try Fields(fields.value("newProjects"), required: ["keepHistory", "askBeforeCLIReads"])
+		let updates = try Fields(fields.value("automaticUpdates"), required: ["check", "download"])
+		guard let lockAfter = VaultLockInterval(rawValue: try security.integer("lockAfter")),
+			let valueApproval = VaultValueApproval(rawValue: try security.integer("valueApproval")),
+			let clipboardClear = VaultClipboardClear(rawValue: try security.integer("clipboardClear")),
+			let rehide = VaultRehideInterval(rawValue: try security.integer("rehide"))
+		else { throw .unreadable }
+		return Preferences(
+			app: VaultSettings.Snapshot(
+				security: .init(lockAfter: lockAfter, valueApproval: valueApproval, clipboardClear: clipboardClear,
+					rehide: rehide, hidesFromCapture: try security.bool("hidesFromCapture")),
+				newProjectsKeepHistory: try newProjects.bool("keepHistory"),
+				newProjectsAskBeforeCLIReads: try newProjects.bool("askBeforeCLIReads"),
+				remindsToBackUp: try fields.bool("backupReminder")),
+			updates: AutomaticUpdates(checks: try updates.bool("check"), downloads: try updates.bool("download")))
+	}
+
+	private static func settings(_ json: LPMConfigJSON, version: Int) throws(DecodingError) -> Settings {
+		let listed: Set<String> = ["appearance", "keySort", "quitShortcut", "updateChannel", "projectOrder", "environmentOrders"]
+		let fields = try Fields(json, required: version >= 2 ? listed.union(preferenceKeys) : listed)
 		guard let appearance = VaultAppearance(rawValue: try fields.string("appearance")),
 			let keySort = VaultKeySortOrder(rawValue: try fields.string("keySort")),
 			let quitShortcut = VaultQuitShortcut(rawValue: try fields.string("quitShortcut")),
@@ -147,7 +212,8 @@ struct BackupAppSection: Equatable, Sendable {
 		}
 		return Settings(
 			appearance: appearance, keySort: keySort, quitShortcut: quitShortcut, updateChannel: updateChannel,
-			projectOrder: projectOrder, environmentOrders: environmentOrders)
+			projectOrder: projectOrder, environmentOrders: environmentOrders,
+			preferences: version >= 2 ? try preferences(fields) : nil)
 	}
 
 	/// Environment names, each once, no more than a project can have.
@@ -281,6 +347,19 @@ struct BackupAppSection: Equatable, Sendable {
 		func string(_ key: String) throws(DecodingError) -> String {
 			guard case .string(let text) = try value(key) else { throw .unreadable }
 			return text
+		}
+
+		func bool(_ key: String) throws(DecodingError) -> Bool {
+			guard case .bool(let flag) = try value(key) else { throw .unreadable }
+			return flag
+		}
+
+		/// A whole number written plainly, as `json` writes one: digits only, no leading zero.
+		func integer(_ key: String) throws(DecodingError) -> Int {
+			guard case .number(let raw) = try value(key), (1...9).contains(raw.utf8.count),
+				raw.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), raw == "0" || !raw.hasPrefix("0"), let number = Int(raw)
+			else { throw .unreadable }
+			return number
 		}
 	}
 }

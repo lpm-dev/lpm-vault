@@ -45,6 +45,7 @@ targets:
         SURequireSignedFeed: true
         SUVerifyUpdateBeforeExtraction: true
         SUAutomaticallyUpdate: false
+        SUEnableAutomaticChecks: true
         SUSendProfileInfo: false
     sources:
       - path: Sources

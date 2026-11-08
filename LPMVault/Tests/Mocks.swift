@@ -368,6 +368,9 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> { lock.withLock { historyState } }
 
+	var historyUsage: Result<VaultHistoryUsage, KeychainError> = .success(VaultHistoryUsage(projects: 0, records: 0))
+	func historyUsageResult() -> Result<VaultHistoryUsage, KeychainError> { lock.withLock { historyUsage } }
+
 	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
 		lock.withLock { historyTimeline }
 	}
@@ -1378,6 +1381,9 @@ final class PoolObservation: @unchecked Sendable {
 final class InMemoryKeychainBackend: KeychainStoreBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var items: [String: [String: Data]] = [:]
+	/// Each item's CLI approval, which it keeps across writes, as an item's
+	/// access control does; one never set is automatic.
+	private var approvals: [String: [String: VaultCliAccess]] = [:]
 
 	func read(service: String, account: String) throws -> Data? {
 		lock.withLock { items[service]?[account] }
@@ -1385,6 +1391,27 @@ final class InMemoryKeychainBackend: KeychainStoreBackend, @unchecked Sendable {
 
 	func write(service: String, account: String, data: Data) throws {
 		lock.withLock { items[service, default: [:]][account] = data }
+	}
+
+	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
+		lock.withLock {
+			items[service, default: [:]][account] = data
+			approvals[service, default: [:]][account] = access
+		}
+	}
+
+	func cliAccess(service: String, account: String) throws -> VaultCliAccess {
+		lock.withLock { items[service]?[account] == nil ? .automatic : approvals[service]?[account] ?? .automatic }
+	}
+
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
+		try lock.withLock {
+			guard items[service]?[account] != nil else {
+				throw KeychainStoreError.status(operation: "change CLI approval", code: errSecItemNotFound)
+			}
+			approvals[service, default: [:]][account] = access
+			return access
+		}
 	}
 
 	func add(service: String, account: String, data: Data) throws {
@@ -1398,11 +1425,17 @@ final class InMemoryKeychainBackend: KeychainStoreBackend, @unchecked Sendable {
 
 	@discardableResult
 	func delete(service: String, account: String) throws -> Bool {
-		lock.withLock { items[service]?.removeValue(forKey: account) != nil }
+		lock.withLock {
+			approvals[service]?.removeValue(forKey: account)
+			return items[service]?.removeValue(forKey: account) != nil
+		}
 	}
 
 	func accounts(service: String) throws -> [String: VaultCliAccess] {
-		lock.withLock { (items[service] ?? [:]).mapValues { _ in .automatic } }
+		lock.withLock {
+			let approvals = approvals[service] ?? [:]
+			return Dictionary(uniqueKeysWithValues: (items[service] ?? [:]).keys.map { ($0, approvals[$0] ?? .automatic) })
+		}
 	}
 }
 

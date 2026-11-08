@@ -23,7 +23,7 @@ extension SheetInteractionTests {
 					mode: .constant(.matrix), filter: .constant(.all),
 					environmentViewMode: .constant(.table), sortOrder: .constant(.ascending),
 					searchText: "",
-					selectedKey: .constant(nil), revealedKeys: .constant(["API_URL", "PORT"]),
+					selectedKey: .constant(nil), revealedKeys: .constant(["API_URL", "PORT"]), valueAccess: .unguarded,
 					showsInspector: .constant(false),
 					columnWidths: .constant(VaultProjectTableColumnWidths()),
 					isCopyingAll: false, cliAccess: nil,

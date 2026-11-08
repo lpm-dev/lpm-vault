@@ -81,6 +81,12 @@ enum ImportPersistenceResult: Sendable {
 	case failure(KeychainError)
 }
 
+/// What a project created on this Mac starts with, as Settings gives it.
+struct NewProjectDefaults: Equatable, Sendable {
+	var asksBeforeCLIReads = false
+	var keepsHistory = true
+}
+
 struct ProjectCreationPersistenceCommit: Sendable {
 	let cliAccess: VaultCliAccess?
 	let orgAssociations: [String: String]
@@ -400,6 +406,22 @@ actor VaultPersistenceCoordinator {
 		return service.getProjectResultWithoutPrompting(vaultId: vaultId)
 	}
 
+	/// Gives a project just created what Settings says a new one starts with,
+	/// in the lock scope that created it, before the scope ends and records
+	/// its history; says what couldn't be set, which the project keeps as it
+	/// was created.
+	private func applyNewProjectDefaults(_ defaults: NewProjectDefaults, to project: VaultProject) -> String? {
+		var failed: [String] = []
+		if !defaults.keepsHistory, case .failure = service.setHistoryEnabledResult(vaultId: project.id, enabled: false) {
+			failed.append("keep no local history")
+		}
+		if defaults.asksBeforeCLIReads, case .failure = service.setCliAccess(vaultId: project.id, access: .requireApproval) {
+			failed.append("ask before the LPM CLI reads its values")
+		}
+		guard !failed.isEmpty else { return nil }
+		return "LPM Vault couldn’t set \(project.name.escapingDirectionControls) to \(failed.joined(separator: " or ")). You can change it in Project Settings."
+	}
+
 	func cliAccess(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
 		service.cliAccessResult(vaultId: vaultId)
 	}
@@ -465,10 +487,11 @@ actor VaultPersistenceCoordinator {
 
 	func createProject(
 		_ project: VaultProject,
-		orgSlug: String?
+		orgSlug: String?,
+		defaults: NewProjectDefaults = NewProjectDefaults()
 	) -> ProjectCreationPersistenceResult {
 		switch service.withKeychainTransaction({
-			createProjectUnlocked(project, orgSlug: orgSlug)
+			createProjectUnlocked(project, orgSlug: orgSlug, defaults: defaults)
 		}) {
 		case .success(let result): result
 		case .failure(let error): .failure(error)
@@ -477,7 +500,8 @@ actor VaultPersistenceCoordinator {
 
 	private func createProjectUnlocked(
 		_ project: VaultProject,
-		orgSlug: String?
+		orgSlug: String?,
+		defaults: NewProjectDefaults
 	) -> ProjectCreationPersistenceResult {
 		guard case .success(var associations) = loadOrgAssociationsResult()
 		else { return .failure(.encodingFailed) }
@@ -494,12 +518,14 @@ actor VaultPersistenceCoordinator {
 			project: .create(project, source: VaultHistorySource(.createEnvironment)),
 			data: mutations
 		)
-		let warning: String?
+		var warnings: [String] = []
 		switch saveResult {
-		case .success: warning = nil
-		case .successWithWarning(let message): warning = message
+		case .success: break
+		case .successWithWarning(let message): warnings.append(message)
 		case .failure(let error): return .failure(error)
 		}
+		if let message = applyNewProjectDefaults(defaults, to: project) { warnings.append(message) }
+		let warning = warnings.isEmpty ? nil : warnings.joined(separator: " ")
 
 		return .success(ProjectCreationPersistenceCommit(
 			cliAccess: try? service.cliAccessResult(vaultId: project.id).get(),
@@ -1250,7 +1276,8 @@ actor VaultPersistenceCoordinator {
 		orgSlug: String?,
 		version: Int,
 		binding: SyncPrincipalBinding,
-		existing: ProjectCreationRecord? = nil
+		existing: ProjectCreationRecord? = nil,
+		defaults: NewProjectDefaults = NewProjectDefaults()
 	) -> ImportPersistenceResult {
 		switch service.withKeychainTransaction({
 			importProjectUnlocked(
@@ -1258,7 +1285,8 @@ actor VaultPersistenceCoordinator {
 				orgSlug: orgSlug,
 				version: version,
 				binding: binding,
-				existing: existing
+				existing: existing,
+				defaults: defaults
 			)
 		}) {
 		case .success(let result): return result
@@ -1271,7 +1299,8 @@ actor VaultPersistenceCoordinator {
 		orgSlug: String?,
 		version: Int,
 		binding: SyncPrincipalBinding,
-		existing: ProjectCreationRecord?
+		existing: ProjectCreationRecord?,
+		defaults: NewProjectDefaults
 	) -> ImportPersistenceResult {
 		guard case .success(var associations) = loadOrgAssociationsResult()
 		else { return .failure(.encodingFailed) }
@@ -1335,17 +1364,21 @@ actor VaultPersistenceCoordinator {
 			data: mutations
 		)
 
-		let warning: String?
+		var warnings: [String] = []
 		switch saveResult {
 		case .success:
-			warning = nil
+			break
 		case .successWithWarning(let message):
-			warning = message
+			warnings.append(message)
 		case .failure(.duplicateItem):
 			return .duplicate
 		case .failure(let error):
 			return .failure(error)
 		}
+		// Only a project new to this Mac starts with Settings' defaults; one
+		// merged into an existing project keeps its own.
+		if existing == nil, let message = applyNewProjectDefaults(defaults, to: importedProject) { warnings.append(message) }
+		let warning = warnings.isEmpty ? nil : warnings.joined(separator: " ")
 
 		return .success(
 			ImportPersistenceCommit(
@@ -1599,6 +1632,10 @@ actor VaultPersistenceCoordinator {
 
 	func removeFromHistory(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
 		service.removeFromHistoryResult(vaultId: vaultId, review: review, selection: selection)
+	}
+
+	func historyUsage() -> Result<VaultHistoryUsage, KeychainError> {
+		service.historyUsageResult()
 	}
 
 	func setHistoryEnabled(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {

@@ -34,7 +34,8 @@ struct VaultAppearanceSettingsSection: View {
 	}
 }
 
-/// The installed version and the update channel, as the Settings page's Updates card shows them.
+/// The installed version, automatic updates and the update channel, as the
+/// Settings page's Updates card shows them.
 struct VaultUpdateSettingsSection: View {
 	@Environment(UpdateChecker.self) private var updateChecker
 
@@ -45,6 +46,18 @@ struct VaultUpdateSettingsSection: View {
 				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates, height: 28) {
 					updates.checkForUpdates()
 				}
+			}
+			VaultHairline()
+			VaultSettingsRow(title: "Check automatically",
+				detail: updates.canChangeAutomaticUpdates ? "Looks for a new version in the background and offers it in the title bar."
+					: "This build doesn’t update itself.") {
+				VaultSettingsSwitch(title: "Check automatically", isOn: $updates.automaticallyChecks,
+					disabled: !updates.canChangeAutomaticUpdates)
+			}
+			VaultSettingsRow(title: "Download and install in the background",
+				detail: "Installs the next time LPM Vault quits, without asking first.") {
+				VaultSettingsSwitch(title: "Download and install in the background", isOn: $updates.automaticallyDownloads,
+					disabled: !updates.canChangeAutomaticUpdates || !updates.automaticallyChecks)
 			}
 			VaultHairline()
 			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
@@ -222,7 +235,7 @@ struct VaultLPMHomeSettingsSection: View {
 }
 
 /// A settings card's rows, with the spacing every card shares.
-private struct VaultSettingsRows<Content: View>: View {
+struct VaultSettingsRows<Content: View>: View {
 	@ViewBuilder let content: Content
 
 	var body: some View {
@@ -233,7 +246,7 @@ private struct VaultSettingsRows<Content: View>: View {
 
 /// A setting's name and explanation, with its control on the trailing side.
 /// A detail that's a value, such as the version, can be selected and copied.
-private struct VaultSettingsRow<Control: View>: View {
+struct VaultSettingsRow<Control: View>: View {
 	let title: Text
 	let detail: String
 	var detailIsSelectable = false
@@ -280,4 +293,59 @@ private struct VaultSettingsRow<Control: View>: View {
 enum VaultSettingsLayout {
 	/// Each segment's width in the page's segmented pickers: "Double press" with room to spare.
 	static let segment: CGFloat = 104
+	/// A menu's width: "After 15 min" with room for its chevron.
+	static let menu: CGFloat = 148
+}
+
+/// A setting's choices as a menu on its row's trailing side.
+struct VaultSettingsMenu<Value: Hashable>: View {
+	let title: String
+	let options: [(value: Value, label: String)]
+	@Binding var selection: Value
+	var disabled = false
+
+	var body: some View {
+		VaultMenuField(
+			title: title,
+			options: options.map { VaultMenuOption(value: $0.value, label: $0.label) },
+			selection: Binding(get: { selection }, set: { if let value = $0 { selection = value } }),
+			disabled: disabled)
+			.frame(width: VaultSettingsLayout.menu)
+	}
+}
+
+/// A setting that's on or off, as a switch on its row's trailing side.
+struct VaultSettingsSwitch: View {
+	let title: String
+	@Binding var isOn: Bool
+	var disabled = false
+
+	var body: some View {
+		Toggle(title, isOn: $isOn)
+			.toggleStyle(VaultSwitchStyle())
+			.controlSize(.small)
+			.disabled(disabled)
+	}
+}
+
+/// What LPM Vault always does, said plainly rather than offered as a switch
+/// that would only weaken it.
+struct VaultSettingsFact: View {
+	let text: String
+
+	var body: some View {
+		HStack(alignment: .firstTextBaseline, spacing: 8) {
+			Image(systemName: "checkmark")
+				.font(.system(size: 10, weight: .bold))
+				.foregroundStyle(VaultPalette.greenTintText)
+				.frame(width: 12)
+				.accessibilityHidden(true)
+			Text(text)
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.fixedSize(horizontal: false, vertical: true)
+				.frame(maxWidth: .infinity, alignment: .leading)
+		}
+		.accessibilityElement(children: .combine)
+	}
 }

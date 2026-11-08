@@ -196,6 +196,7 @@ private struct VaultKeyEditor: View {
 		.task(id: inspectedValues(draft, cards: cards).mapValues(ExactText.init)) {
 			await inspectCharacters(inspectedValues(draft, cards: cards))
 		}
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in revealedEnvironments.removeAll() }
 		.onDisappear { characterInspections = [:] }
 	}
 
@@ -1103,7 +1104,8 @@ private struct VaultKeyEditor: View {
 			revealedKeys.remove(key)
 			revealedEnvironments.removeAll()
 		} else {
-			revealedKeys.insert(key)
+			let key = key
+			store.valueAccess.reveal { revealedKeys.insert(key) }
 		}
 	}
 
@@ -1116,7 +1118,7 @@ private struct VaultKeyEditor: View {
 		if revealedEnvironments.contains(environment) {
 			revealedEnvironments.remove(environment)
 		} else {
-			revealedEnvironments.insert(environment)
+			store.valueAccess.reveal { revealedEnvironments.insert(environment) }
 		}
 	}
 

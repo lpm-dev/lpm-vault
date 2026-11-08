@@ -821,6 +821,10 @@ struct VaultBackupRestorePresentation: View {
 			appearance.selection = settings.appearance
 			quit.selection = settings.quitShortcut
 			updates.channel = settings.updateChannel
+			if let restored = settings.preferences?.updates {
+				updates.automaticallyChecks = restored.checks
+				updates.automaticallyDownloads = restored.downloads
+			}
 		}
 	}
 }

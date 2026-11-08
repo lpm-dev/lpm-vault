@@ -31,7 +31,8 @@ class ReleaseSecurity(unittest.TestCase):
     def test_release_configuration_fails_closed(self):
         valid = dict(SUFeedURL=config.FEED_URL, SUPublicEDKey=config.PUBLIC_KEY,
                      SURequireSignedFeed=True, SUVerifyUpdateBeforeExtraction=True,
-                     SUAutomaticallyUpdate=False, SUSendProfileInfo=False)
+                     SUAutomaticallyUpdate=False, SUEnableAutomaticChecks=True,
+                     SUSendProfileInfo=False)
         config.verify(valid)
         for key in valid:
             missing = valid.copy()
