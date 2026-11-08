@@ -261,7 +261,7 @@ struct VaultPaneLayoutTests {
 @Suite("Workspace table column layout")
 @MainActor
 struct VaultTableColumnLayoutTests {
-	@Test("the key column fits the longest key shown, up to its default, and gives what it doesn't need to the values")
+	@Test("the key column fits the longest key shown, up to a little past its default, and gives what it doesn't need to the values")
 	func keyColumnFitsKeys() {
 		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production")]
 		let short = VaultTableColumnLayout.keyWidth(for: ["PORT", "HOST"], publicKeys: [], marks: 3)
@@ -273,8 +273,10 @@ struct VaultTableColumnLayoutTests {
 		#expect(abs(fitted.totalWidth - plain.totalWidth) < 0.5, "The same width, shared differently")
 
 		let long = VaultTableColumnLayout.keyWidth(for: ["PORT", String(repeating: "W", count: 60)], publicKeys: [], marks: 3)
-		#expect(VaultTableColumnLayout(columns: columns, available: 700, keyWidth: long)[.key] == VaultMetrics.keyColumn,
-			"The longest key sets the width, up to the default")
+		#expect(VaultTableColumnLayout(columns: columns, available: 700, keyWidth: long)[.key] == VaultTableColumnLayout.fittedKeyMaximum,
+			"The longest key sets the width, up to its cap")
+		let publicURL = VaultTableColumnLayout.keyWidth(for: ["NEXT_PUBLIC_API_URL"], publicKeys: ["NEXT_PUBLIC_API_URL"], marks: 3)
+		#expect(publicURL <= VaultTableColumnLayout.fittedKeyMaximum, "A typical long public key fits whole with its marks")
 		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: ["PORT"], marks: 3)
 			> VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 3), "A public key's globe takes room")
 		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 1)

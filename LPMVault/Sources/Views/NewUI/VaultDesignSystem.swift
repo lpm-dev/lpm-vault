@@ -66,7 +66,7 @@ enum VaultPalette {
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
 	/// A band that starts a section inside a list, set off from the rows on both sides.
-	static let sectionBand = adaptive(light: 0xF4F4F7, dark: 0x19191C)
+	static let sectionBand = adaptive(light: 0xF4F4F7, dark: 0x252529)
 	/// A menu row under the pointer or the arrow keys: a step up from the popover's card in both appearances.
 	static let menuHighlight = adaptive(light: 0xE9E9EE, dark: 0x37373D)
 	static let sidebarHover = adaptive(light: 0xEDEDF1, dark: 0x202023)
@@ -135,8 +135,8 @@ enum VaultMetrics {
 	static let paneDividerHitWidth: CGFloat = 9
 	static let contentMinimum: CGFloat = 420
 	static let tableHeader: CGFloat = 34
-	static let matrixRow: CGFloat = 44
-	static let fileRow: CGFloat = 44
+	static let matrixRow: CGFloat = 36
+	static let fileRow: CGFloat = 36
 	static let statusBar: CGFloat = 30
 	static let keyColumn: CGFloat = 270
 	/// The space after a scroll view's content, so its end scrolls clear of a pinned footer's line.
@@ -563,7 +563,7 @@ struct VaultBarButton: View {
 	}
 
 	private var background: Color {
-		// Off, even a filled button is only outlined, so it never passes for a working secondary one.
+		// Off, even a filled button is only outlined, so it never passes for a working one.
 		if disabled { return .clear }
 		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
@@ -575,7 +575,7 @@ struct VaultBarButton: View {
 	private var border: Color {
 		if filled && !disabled { return .clear }
 		if active { return VaultPalette.selectedBorder }
-		if disabled && !borderless { return VaultPalette.border }
+		if disabled && !borderless { return VaultPalette.divider }
 		return borderless ? .clear : VaultPalette.border
 	}
 
@@ -597,7 +597,6 @@ struct VaultBarButton: View {
 				}
 			}
 			.foregroundStyle(foreground)
-			.opacity(disabled ? 0.75 : 1)
 			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
 			.frame(minWidth: title == nil ? height : nil, maxWidth: fillsWidth ? .infinity : nil)
 			.frame(height: height)
@@ -679,9 +678,13 @@ struct VaultOutlineButton: View {
 	var disabled = false
 	/// Drawn without a border or fill until the pointer is over it, as in a toolbar.
 	var borderless = false
+	/// Draws nothing until the pointer or keyboard focus reaches it, as a table
+	/// row's actions do on a row that isn't hovered or selected.
+	var resting = false
 	let action: () -> Void
 
 	@State private var hovering = false
+	@Environment(\.vaultControlFocused) private var focused
 
 	private var background: Color {
 		if active { return VaultPalette.selectedFill }
@@ -706,7 +709,9 @@ struct VaultOutlineButton: View {
 					.font(.system(size: 12.5, weight: borderless ? .regular : .medium))
 				}
 			}
-			.foregroundStyle(disabled ? VaultPalette.textFaint
+			// Hidden by color, not opacity, so it stays named for accessibility.
+			.foregroundStyle(resting && !hovering && !focused ? Color.clear
+				: disabled ? VaultPalette.textFaint
 				: (active ? VaultPalette.selectedText : (borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary)))
 			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
 			.frame(width: title == nil ? 28 : nil, height: 28)
@@ -985,8 +990,9 @@ struct VaultKeyStatusMarks: View {
 
 	private func mark(_ view: VaultSmartView) -> some View {
 		Image(systemName: view.symbol)
-			.font(.system(size: 11.5, weight: view == .drift ? .medium : .semibold))
-			.foregroundStyle(view == .drift && emphasized ? VaultPalette.textSecondary : view.tint)
+			.font(.system(size: view == .drift ? 11 : 11.5, weight: view == .drift ? .regular : .semibold))
+			// Drift is often meant, so at rest it stays behind the marks that need fixing.
+			.foregroundStyle(view == .drift ? (emphasized ? VaultPalette.textSecondary : VaultPalette.textFaint) : view.tint)
 			.frame(width: 14, height: 14)
 			.help(view.meaning)
 			.accessibilityLabel(view.meaning)
@@ -1094,8 +1100,8 @@ struct VaultCheckedValue: View {
 					if problem != nil { glyph(.invalid) }
 					VaultValueText(text: isRevealed ? value : VaultValueText.mask, masked: !isRevealed, size: size, fails: problem != nil)
 				}
-				// A shown value that fails is named with its reason, in full where the cell cuts it.
-				.help(problem.map { isRevealed ? "\(value)\n\($0)" : $0 } ?? "")
+				// A shown value reads in full on hover, where the cell cuts it, with why it fails.
+				.help(isRevealed ? ([value] + [problem].compactMap { $0 }).joined(separator: "\n") : (problem ?? ""))
 			} else if isRequired {
 				HStack(spacing: 5) {
 					glyph(.invalid)
@@ -1139,41 +1145,52 @@ struct VaultValueText: View {
 	var fails = false
 
 	var body: some View {
-		// A URL too long for its cell gives up its scheme before its host, so
-		// environments that differ by host still read differently side by side.
-		if let compact = Self.compactForm(of: text, masked: masked, fails: fails) {
+		// A URL too long for its cell gives up its path first, then the middle of
+		// what follows its scheme; never the scheme, which can be what a rule checks.
+		if !masked, let separator = Self.schemeSeparator(in: text) {
+			let scheme = String(text[..<separator.upperBound])
+			let origin = Self.origin(of: text)
 			ViewThatFits(in: .horizontal) {
-				styled(text).fixedSize()
-				styled(compact)
+				styled(text, truncation: .tail).fixedSize()
+				if let origin { styled(origin + "/…", truncation: .tail).fixedSize() }
+				HStack(spacing: 0) {
+					styled(scheme, truncation: .tail).fixedSize()
+					styled(String((origin ?? text).dropFirst(scheme.count)), truncation: .middle)
+				}
 			}
 		} else {
-			styled(text)
+			styled(text, truncation: .tail)
 		}
 	}
 
-	private func styled(_ shown: String) -> some View {
+	private func styled(_ shown: String, truncation: Text.TruncationMode) -> some View {
 		Text(shown)
 			.font(masked ? VaultTypography.tabular(size) : VaultTypography.code(size))
 			.tracking(masked ? 1.2 : 0)
 			.foregroundStyle(fails ? VaultPalette.redText : (masked ? VaultPalette.masked : VaultPalette.textSecondary))
 			.lineLimit(1)
-			.truncationMode(.tail)
+			.truncationMode(truncation)
 			.accessibilityHidden(true)
 	}
 
-	/// The shorter form a cell too narrow for `text` shows instead: a URL
-	/// without its scheme, unless the value fails, when the scheme can be why.
-	nonisolated static func compactForm(of text: String, masked: Bool, fails: Bool) -> String? {
-		masked || fails ? nil : withoutScheme(text)
+	/// A URL's scheme and host, such as "https://api.acme.io" for
+	/// "https://api.acme.io/v1/users", when there's a path, query or fragment
+	/// after them to leave out; nil otherwise, and for a value that isn't a URL.
+	nonisolated static func origin(of value: String) -> String? {
+		guard let separator = schemeSeparator(in: value) else { return nil }
+		let rest = value[separator.upperBound...]
+		guard let end = rest.firstIndex(where: { "/?#".contains($0) }), end > rest.startIndex else { return nil }
+		let after = rest[end...]
+		guard after != "/" else { return nil }
+		return String(value[..<end])
 	}
 
-	/// A URL without its scheme, such as "api.acme.io/v1" for "https://api.acme.io/v1";
-	/// nil for a value that isn't a URL.
-	nonisolated static func withoutScheme(_ value: String) -> String? {
+	/// Where "://" ends a scheme at the start of `value` with something after it.
+	private nonisolated static func schemeSeparator(in value: String) -> Range<String.Index>? {
 		guard let separator = value.range(of: "://"), separator.lowerBound > value.startIndex,
 			value[..<separator.lowerBound].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }),
 			value[separator.upperBound...].contains(where: { !$0.isWhitespace })
 		else { return nil }
-		return String(value[separator.upperBound...])
+		return separator
 	}
 }

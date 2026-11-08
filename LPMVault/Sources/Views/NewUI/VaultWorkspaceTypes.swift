@@ -34,7 +34,7 @@ enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
 
 enum VaultEnvironmentViewMode: String, CaseIterable, Identifiable {
   case table = "Table"
-  case raw = "Raw text"
+  case raw = "Raw Text"
 
   var id: String { rawValue }
 }
@@ -85,7 +85,7 @@ struct VaultTableColumnLayout {
   /// `keyWidth` is the width the keys shown need, which the key column takes
   /// instead of its default when narrower, so the value columns get the rest.
   init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil) {
-    let fittedKey = keyWidth.map { min(VaultTableColumn.key.defaultWidth, max(Self.fittedKeyMinimum, $0)) }
+    let fittedKey = keyWidth.map { min(Self.fittedKeyMaximum, max(Self.fittedKeyMinimum, $0)) }
     func defaultWidth(_ column: VaultTableColumn) -> CGFloat {
       column == .key ? (fittedKey ?? column.defaultWidth) : column.defaultWidth
     }
@@ -132,6 +132,8 @@ struct VaultTableColumnLayout {
   /// its status glyphs; the table scrolls rather than cut keys shorter. A
   /// person can still drag it down to the key column's minimum.
   static let fittedKeyMinimum: CGFloat = 200
+  /// A little past the default, so a key as long as NEXT_PUBLIC_API_URL keeps its whole name beside its marks.
+  static let fittedKeyMaximum: CGFloat = 300
 
   /// The width a key cell needs for the longest of `keys`: its name in the
   /// selected row's weight, a public key's globe, the status marks and the

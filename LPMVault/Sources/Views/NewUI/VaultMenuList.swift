@@ -16,6 +16,13 @@ extension View {
 	}
 }
 
+/// A menu row as it's drawn: the row sets its own colors for every state.
+private struct VaultMenuRowStyle: ButtonStyle {
+	func makeBody(configuration: Configuration) -> some View {
+		configuration.label
+	}
+}
+
 /// The coordinate space a scrolling menu measures its rows in. Outside the
 /// generic list, so a geometry reader's sendable closure can name it.
 private let vaultMenuScrollSpace = "VaultMenuList.scroll"
@@ -57,6 +64,7 @@ struct VaultMenuList<ID: Hashable>: View {
 	let onChoose: (ID) -> Void
 
 	@Environment(\.vaultPopoverDismiss) private var dismiss
+	@Environment(\.vaultPopoverRoom) private var room
 	@State private var highlighted: ID?
 	/// Where the rows sit in a menu that scrolls, against its visible height.
 	@State private var scrolledFrame: CGRect = .zero
@@ -93,7 +101,7 @@ struct VaultMenuList<ID: Hashable>: View {
 			}
 		}
 		.padding(6)
-		CappedHeight(maximum: maximumHeight) {
+		CappedHeight(maximum: min(maximumHeight, room)) {
 			ViewThatFits(in: .vertical) {
 				list
 				// Its own strips, as a long menu's, so a row is never hidden under them.
@@ -115,13 +123,15 @@ struct VaultMenuList<ID: Hashable>: View {
 		}
 		.frame(width: width)
 		.background {
+			// Through the binding, so keys pressed in quick succession each see the last one's row.
+			let highlight = $highlighted
 			VaultMenuKeys { key in
 				switch key {
-				case .up: highlighted = Self.row(after: highlighted, by: -1, in: rows)
-				case .down: highlighted = Self.row(after: highlighted, by: 1, in: rows)
+				case .up: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: -1, in: rows)
+				case .down: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: 1, in: rows)
 				case .open:
-					guard let highlighted else { return false }
-					onChoose(highlighted)
+					guard let chosen = highlight.wrappedValue else { return false }
+					onChoose(chosen)
 				case .close: dismiss()
 				}
 				return true
@@ -165,10 +175,10 @@ struct VaultMenuList<ID: Hashable>: View {
 					.lineLimit(1)
 				Spacer(minLength: 4)
 				if let detail = row.detail {
+					// A row that can't be chosen says what it needs, so its reason reads plainly.
 					Text(detail)
-						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: 11))
-						// A row that can't be chosen says why, so its reason stays readable.
-						.foregroundStyle(VaultPalette.textTertiary)
+						.font(row.detailIsShortcut ? VaultTypography.tabular(11.5) : .system(size: row.isEnabled ? 11 : 11.5))
+						.foregroundStyle(row.isEnabled ? VaultPalette.textTertiary : VaultPalette.textSecondary)
 						.lineLimit(1)
 				}
 			}
@@ -177,7 +187,8 @@ struct VaultMenuList<ID: Hashable>: View {
 			.background(RoundedRectangle(cornerRadius: 6).fill(isHighlighted ? VaultPalette.menuHighlight : .clear))
 			.contentShape(Rectangle())
 		}
-		.buttonStyle(.plain)
+		// Draws the row as given, without the plain style's dimming of a disabled row's reason.
+		.buttonStyle(VaultMenuRowStyle())
 		// The arrow keys move the tint, so a row needs no focus ring of its own.
 		.focusEffectDisabled()
 		.disabled(!row.isEnabled)

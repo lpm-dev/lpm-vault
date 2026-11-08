@@ -55,8 +55,8 @@ struct VaultHistoryTextTests {
 		#expect(text.since(date(2026, 11, 4, 13, 0)) == "since \(clock(13, 0)) today")
 		#expect(text.since(date(2026, 10, 30, 9, 10)) == "since 30 Oct, \(clock(9, 10))")
 		let full = text.full(date(2026, 11, 4, 13, 40))
-		#expect(full.hasPrefix("Today at ") && !full.contains("2026") && full.contains("13:40:00"), "\(full)")
-		#expect(!text.full(date(2026, 11, 2, 13, 40)).hasPrefix("Today"))
+		#expect(full.hasPrefix("Today, ") && !full.contains("2026") && full.contains("13:40:00"), "\(full)")
+		#expect(text.full(date(2026, 11, 2, 13, 40)).hasPrefix("2 Nov, "), "Another day reads as the list's moments do, with seconds")
 	}
 
 	@Test("an entry reads as one line naming what it did")

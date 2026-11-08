@@ -1514,7 +1514,7 @@ private struct VaultSchemaKeyEditor: View {
 		Button { addingRule = true } label: {
 			HStack(spacing: 5) {
 				Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
-				Text("Add rule").font(.system(size: 12))
+				Text("Add Rule").font(.system(size: 12))
 				Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
 			}
 			.foregroundStyle(addingRule ? VaultPalette.selectedText : VaultPalette.textSecondary)
@@ -1526,7 +1526,7 @@ private struct VaultSchemaKeyEditor: View {
 		}
 		.buttonStyle(VaultPressStyle())
 		.disabled(!canEdit)
-		.accessibilityLabel("Add rule")
+		.accessibilityLabel("Add Rule")
 		.vaultPopover(isPresented: $addingRule, arrowEdge: .bottom) {
 			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, in: context)) }) { field in
 				addingRule = false
@@ -2320,8 +2320,8 @@ private struct VaultAddRuleMenu: View {
 	let onAdd: (ProjectEnvSchemaRule.Field) -> Void
 
 	var body: some View {
-		// Side by side, every rule shows at once instead of scrolling.
-		VaultMenuList(rows: rows, width: 540, columns: 2, label: "Add rule", onChoose: onAdd)
+		// One column, as a menu reads: it scrolls past its height, with cues at either end.
+		VaultMenuList(rows: rows, width: 320, label: "Add Rule", onChoose: onAdd)
 	}
 
 	/// Each section's rules, the first carrying its section's label; a rule

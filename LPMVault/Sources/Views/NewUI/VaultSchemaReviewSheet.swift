@@ -102,7 +102,7 @@ struct VaultSchemaReviewSheet: View {
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			} actions: {
-				VaultBarButton(title: (draft?.changeCount ?? 0) > 1 ? "Discard all" : "Discard", disabled: saving || draft == nil, height: 28) {
+				VaultBarButton(title: (draft?.changeCount ?? 0) > 1 ? "Discard All" : "Discard", disabled: saving || draft == nil, height: 28) {
 					store.discardSchemaDraft(in: project.id)
 					dismiss()
 				}

@@ -41,6 +41,9 @@ struct VaultPopoverDismissAction: Equatable {
 
 extension EnvironmentValues {
 	@Entry var vaultPopoverDismiss = VaultPopoverDismissAction()
+	/// The most height a popover has beside its view inside its window, which
+	/// a long menu scrolls within rather than covering the title bar.
+	@Entry var vaultPopoverRoom: CGFloat = .infinity
 }
 
 /// Sits behind the view a popover is shown for, so the popover knows where it is.
@@ -68,6 +71,7 @@ private struct VaultPopoverAnchor<Content: View>: NSViewRepresentable {
 		presenter.show(AnyView(
 			content()
 				.environment(\.vaultPopoverDismiss, VaultPopoverDismissAction(presenter: presenter))
+				.environment(\.vaultPopoverRoom, presenter.room())
 				.environment(\.self, context.environment)
 		))
 	}
@@ -85,6 +89,10 @@ private final class VaultPopoverAnchorView: NSView {
 /// system's does, for whatever looks for one.
 final class VaultPopoverPanel: NSPanel {
 	var onCancel: () -> Void = {}
+	/// Set as the popover starts to close, while it may still be fading out.
+	private(set) var isClosing = false
+
+	func beginClosing() { isClosing = true }
 
 	override var canBecomeKey: Bool { true }
 	override var canBecomeMain: Bool { false }
@@ -108,9 +116,10 @@ final class VaultPopoverPresenter: NSObject {
 	private var observers: [any NSObjectProtocol] = []
 	private var size: CGSize = .zero
 
-	/// How far a popover sits from the view it's shown for, and from the screen's edges.
+	/// How far a popover sits from the view it's shown for, and from the screen's and window's edges.
 	nonisolated static let gap: CGFloat = 6
 	nonisolated static let screenMargin: CGFloat = 8
+	nonisolated static let windowMargin: CGFloat = 12
 
 	func show(_ content: AnyView) {
 		let root = AnyView(VaultPopoverCard(content: content) { [weak self] size in self?.resize(to: size) })
@@ -162,7 +171,23 @@ final class VaultPopoverPresenter: NSObject {
 		observers.removeAll()
 		let parent = panel.parent
 		parent?.removeChildWindow(panel)
-		panel.orderOut(nil)
+		panel.beginClosing()
+		// It fades out as it faded in, unless Reduce Motion is on or its window is going; only its removal waits.
+		if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || !panel.isVisible || parent?.isVisible != true {
+			panel.orderOut(nil)
+		} else {
+			NSAnimationContext.runAnimationGroup { context in
+				context.duration = 0.1
+				panel.animator().alphaValue = 0
+			} completionHandler: {
+				MainActor.assumeIsolated { panel.orderOut(nil) }
+			}
+			// A fade can be cut short, as while the app is busy; the panel goes regardless.
+			Task { @MainActor in
+				try? await Task.sleep(for: .milliseconds(200))
+				panel.orderOut(nil)
+			}
+		}
 		self.panel = nil
 		hosting = nil
 		size = .zero
@@ -220,20 +245,47 @@ final class VaultPopoverPresenter: NSObject {
 		dismiss()
 	}
 
-	private func resize(to newSize: CGSize) {
-		guard let panel, let anchor, let window = anchor.window, newSize.width > 0, newSize.height > 0 else { return }
-		size = newSize
+	/// Where the anchor is and the room around it, in screen coordinates.
+	private func placement() -> (anchor: CGRect, window: CGRect, screen: CGRect)? {
+		guard let anchor, let window = anchor.window else { return nil }
 		let anchorFrame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
 		let content = window.contentView.map { window.convertToScreen($0.convert($0.bounds, to: nil)) } ?? window.frame
-		let frame = Self.frame(
-			size: newSize,
-			beside: anchorFrame,
-			on: edge,
-			window: Self.area(of: content, for: anchorFrame),
-			screen: (window.screen ?? NSScreen.main)?.visibleFrame ?? .infinite
-		)
+		return (anchorFrame, Self.area(of: content, for: anchorFrame), (window.screen ?? NSScreen.main)?.visibleFrame ?? .infinite)
+	}
+
+	/// The most height the popover has beside its anchor inside the window.
+	func room() -> CGFloat {
+		guard let placement = placement() else { return .infinity }
+		return Self.room(beside: placement.anchor, on: edge, window: placement.window, screen: placement.screen)
+	}
+
+	private func resize(to newSize: CGSize) {
+		guard let panel, let placement = placement(), newSize.width > 0, newSize.height > 0 else { return }
+		size = newSize
+		let frame = Self.frame(size: newSize, beside: placement.anchor, on: edge, window: placement.window, screen: placement.screen)
 		panel.setFrame(frame, display: true)
 		panel.invalidateShadow()
+	}
+
+	/// Below this, a window has too little room for a menu to be any use, so it uses the screen's, as a menu goes past its window.
+	nonisolated static let minimumRoom: CGFloat = 200
+
+	/// The most height a popover beside `anchor` has: the larger of the room
+	/// below and above it, or the whole height beside it, inside `window`
+	/// when that's enough to be of use and otherwise on `screen`.
+	nonisolated static func room(beside anchor: CGRect, on edge: Edge, window: CGRect, screen: CGRect) -> CGFloat {
+		func room(in bounds: CGRect) -> CGFloat? {
+			guard !bounds.isNull, bounds.height.isFinite else { return nil }
+			return switch edge {
+			case .top, .bottom: max(anchor.minY - gap - bounds.minY, bounds.maxY - anchor.maxY - gap, 0)
+			case .leading, .trailing: bounds.height
+			}
+		}
+		let screenBounds = screen.insetBy(dx: screenMargin, dy: screenMargin)
+		if let inWindow = room(in: window.insetBy(dx: windowMargin, dy: windowMargin).intersection(screenBounds)), inWindow >= minimumRoom {
+			return inWindow
+		}
+		return room(in: screenBounds) ?? .infinity
 	}
 
 	/// The part of `window` a popover for `anchor` may cover: all of it but
@@ -250,7 +302,7 @@ final class VaultPopoverPresenter: NSObject {
 	/// menu does; beside, it's centered on it.
 	nonisolated static func frame(size: CGSize, beside anchor: CGRect, on edge: Edge, window: CGRect, screen: CGRect) -> CGRect {
 		let screenBounds = screen.insetBy(dx: screenMargin, dy: screenMargin)
-		for bounds in [window.intersection(screen).insetBy(dx: screenMargin, dy: screenMargin), screenBounds] {
+		for bounds in [window.insetBy(dx: windowMargin, dy: windowMargin).intersection(screenBounds), screenBounds] {
 			if let origin = origin(size: size, beside: anchor, on: edge, in: bounds) { return CGRect(origin: origin, size: size) }
 		}
 		// No room on either side: on `edge`, over the anchor if it must be, on the screen.
@@ -280,7 +332,10 @@ final class VaultPopoverPresenter: NSObject {
 			let fitsAbove = above + size.height <= bounds.maxY
 			guard fitsBelow || fitsAbove else { return nil }
 			let y = edge == .bottom ? (fitsBelow ? below : above) : (fitsAbove ? above : below)
-			return CGPoint(x: along(anchor.minX, from: bounds.minX, to: bounds.maxX - size.width), y: y)
+			// From the anchor's leading edge, or hanging back from its trailing edge where that
+			// runs out of room, as a menu near the screen's edge does.
+			let x = anchor.minX + size.width <= bounds.maxX ? anchor.minX : anchor.maxX - size.width
+			return CGPoint(x: along(x, from: bounds.minX, to: bounds.maxX - size.width), y: y)
 		case .leading, .trailing:
 			let before = anchor.minX - gap - size.width
 			let after = anchor.maxX + gap

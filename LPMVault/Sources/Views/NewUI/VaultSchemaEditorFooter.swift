@@ -174,7 +174,7 @@ struct VaultSchemaEditorFooter: View {
 
 	private func reviewButton(blocker: Blocker?) -> some View {
 		let changes = store.schemaDraft(for: project.id)?.changeCount ?? 0
-		return VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
+		return VaultBarButton(title: "Review & Save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
 			action: onReview)
 			.help("Review the changes, then save them to lpm.json (⌘S)")
 	}

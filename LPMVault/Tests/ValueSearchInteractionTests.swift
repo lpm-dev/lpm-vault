@@ -314,7 +314,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 
 			try await host.click(".env", region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
-			try await host.click("Raw text")
+			try await host.click("Raw Text")
 			NotificationCenter.default.post(name: .findValue, object: nil)
 			let sheet = try await fixture.sheet(of: host)
 			let field = try #require(secureField(in: sheet))

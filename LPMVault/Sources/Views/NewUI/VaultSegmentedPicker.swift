@@ -45,9 +45,9 @@ struct VaultSegmentedPicker<Value: Hashable>: View {
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
 					.background {
 						if selected {
+							// The tray has the one edge; the chosen segment is told by its fill and text.
 							RoundedRectangle(cornerRadius: 5)
 								.fill(VaultPalette.selectedFill)
-								.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.selectedBorder, lineWidth: 1) }
 								.padding(2)
 						}
 					}

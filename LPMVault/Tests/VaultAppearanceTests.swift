@@ -388,21 +388,16 @@ struct VaultPointingHandTests {
 
 @Suite("Value text")
 struct VaultValueTextTests {
-	@Test("a URL can drop its scheme to keep its host, and other values are left as they are")
-	func urlWithoutScheme() {
-		#expect(VaultValueText.withoutScheme("https://api.acme.io/v1") == "api.acme.io/v1")
-		#expect(VaultValueText.withoutScheme("http://localhost:3000") == "localhost:3000")
-		#expect(VaultValueText.withoutScheme("postgres+ssl://db.example.com/app") == "db.example.com/app")
-		#expect(VaultValueText.withoutScheme("k3J9x2Lq8vR4mP7wZ1nB5cT6") == nil)
-		#expect(VaultValueText.withoutScheme("://nothing-before") == nil)
-		#expect(VaultValueText.withoutScheme("https://") == nil)
-		#expect(VaultValueText.withoutScheme("not a url: https://example.com") == nil, "Only a value that begins with a scheme is a URL")
+	@Test("a narrow cell shortens a URL to its scheme and host, never dropping the scheme, and leaves other values as they are")
+	func urlOrigin() {
+		#expect(VaultValueText.origin(of: "https://api.acme.io/v1/users") == "https://api.acme.io")
+		#expect(VaultValueText.origin(of: "postgres+ssl://db.example.com:5432/app?sslmode=require") == "postgres+ssl://db.example.com:5432")
+		#expect(VaultValueText.origin(of: "https://api.acme.io?debug=1") == "https://api.acme.io")
+		#expect(VaultValueText.origin(of: "http://localhost:3000") == nil, "Nothing after the host to leave out")
+		#expect(VaultValueText.origin(of: "https://api.acme.io/") == nil)
+		#expect(VaultValueText.origin(of: "k3J9x2Lq8vR4mP7wZ1nB5cT6") == nil)
+		#expect(VaultValueText.origin(of: "://nothing-before/x") == nil)
+		#expect(VaultValueText.origin(of: "not a url: https://example.com/x") == nil, "Only a value that begins with a scheme is a URL")
 	}
 
-	@Test("a narrow cell drops a passing URL's scheme, but a failing URL keeps it, since the scheme can be why it fails")
-	func failingURLKeepsScheme() {
-		#expect(VaultValueText.compactForm(of: "https://api.acme.io", masked: false, fails: false) == "api.acme.io")
-		#expect(VaultValueText.compactForm(of: "http://localhost:3000", masked: false, fails: true) == nil)
-		#expect(VaultValueText.compactForm(of: "https://api.acme.io", masked: true, fails: false) == nil, "A hidden value has no URL to show")
-	}
 }

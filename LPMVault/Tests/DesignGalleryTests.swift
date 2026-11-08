@@ -210,14 +210,14 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("7 declared keys"))
 			try await save(host, "04-schema", dark: dark)
 
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let prefixes = try await host.popoverWindow()
 			try await saveWithPopover(host, "16-popover-client-prefixes", dark: dark, popover: prefixes)
 			try await closePopover(prefixes, in: host)
 
 			try await host.click("PORT")
-			#expect(try await host.waitForText("Add rule"))
-			try await host.click("Add rule")
+			#expect(try await host.waitForText("Add Rule"))
+			try await host.click("Add Rule")
 			let rules = try await host.popoverWindow()
 			try await saveWithPopover(host, "17-popover-add-rule", dark: dark, popover: rules)
 			try await closePopover(rules, in: host)

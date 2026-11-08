@@ -146,7 +146,7 @@ struct VaultSchemaView: View {
 			} else {
 				// Whole parts go as the header narrows, the note first, never part of a word.
 				ViewThatFits(in: .horizontal) {
-					location(path: "lpm.json › envSchema", note: "· plain text, shared with the team")
+					location(path: "lpm.json › envSchema", note: "plain text, shared with the team")
 					location(path: "lpm.json › envSchema", note: nil)
 					location(path: "lpm.json", note: nil)
 					Color.clear.frame(width: 0, height: 0)
@@ -158,7 +158,7 @@ struct VaultSchemaView: View {
 				// Shown in every state, and off while they can't be used, so the page keeps its shape.
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
 				// A count of none reads as a stray number, so the title only counts what there is.
-				VaultOutlineButton(systemImage: "globe", title: clientPrefixCount == 0 ? "Client prefixes" : "Client prefixes · \(clientPrefixCount)",
+				VaultOutlineButton(systemImage: "globe", title: clientPrefixCount == 0 ? "Client Prefixes" : "Client Prefixes · \(clientPrefixCount)",
 					help: "Prefixes that make keys public",
 					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
 					.fixedSize()
@@ -180,8 +180,8 @@ struct VaultSchemaView: View {
 	private func location(path: String, note: String?) -> some View {
 		HStack(spacing: 5) {
 			Image(systemName: "doc").font(.system(size: 11)).accessibilityHidden(true)
-			Text(path).font(VaultTypography.tabular(11.5))
-			if let note { Text(note).font(.system(size: 12.5)) }
+			// One run of text, so the note's " · " is spaced as every other line's is.
+			Text(path).font(VaultTypography.tabular(11.5)) + Text(note.map { " · \($0)" } ?? "").font(.system(size: 12.5))
 		}
 		.foregroundStyle(VaultPalette.textTertiary)
 		.lineLimit(1)
@@ -448,7 +448,7 @@ struct VaultSchemaView: View {
 									.foregroundStyle(VaultPalette.textTertiary)
 									.padding(.horizontal, 20)
 									.padding(.vertical, 12)
-									.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+									.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 							}
 							ForEach(listed.groups, id: \.name) { group in
@@ -673,7 +673,7 @@ struct VaultSchemaView: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.opacity(state == .removed ? 0.6 : 1)
 		}
-		.padding(.vertical, 11)
+		.padding(.vertical, 8)
 		.vaultRowBackground(selected: selected)
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
@@ -707,7 +707,7 @@ struct VaultSchemaView: View {
 		HStack(spacing: 0) {
 			HStack(spacing: 8) {
 				Text(stored.key.escapingDirectionControls)
-					.font(VaultTypography.tabular(13))
+					.font(VaultTypography.tabular(13, .medium))
 					.foregroundStyle(VaultPalette.textSecondary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -748,7 +748,7 @@ struct VaultSchemaView: View {
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 	}
 
-	private static let undeclaredRowHeight: CGFloat = 44
+	private static let undeclaredRowHeight: CGFloat = 36
 
 	private func groupsHeader(count: Int) -> some View {
 		HStack(spacing: 8) {
@@ -937,7 +937,7 @@ struct VaultSchemaView: View {
 			.layoutPriority(1)
 	}
 
-	/// Review & save and Discard for the whole draft, while the panel that
+	/// Review & Save and Discard for the whole draft, while the panel that
 	/// offers its own way to the review is closed. What blocks saving reads
 	/// in full on hover and opens with Show.
 	@ViewBuilder
@@ -961,12 +961,12 @@ struct VaultSchemaView: View {
 						.accessibilityLabel(VaultSchemaEditorFooter.showLabel(show))
 				}
 			}
-			VaultBarButton(title: changes > 1 ? "Discard all" : "Discard", disabled: saving, height: 22) {
+			VaultBarButton(title: changes > 1 ? "Discard All" : "Discard", disabled: saving, height: 22) {
 				if unreadable { confirmsDiscard = true } else { onDiscardAll() }
 			}
 			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can't be read, this can't be undone."
 				: "Discard your unsaved changes to the schema. ⌘Z brings them back.")
-			VaultBarButton(title: saving ? "Saving…" : "Review & save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
+			VaultBarButton(title: saving ? "Saving…" : "Review & Save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
 				height: 22, action: onReview)
 				.help(editingUnavailable ?? "Review the changes, then save them to lpm.json")
 		}

@@ -309,28 +309,15 @@ private struct VaultKeyEditor: View {
 
 	// MARK: - Sections
 
-	/// The key's name first, renamed in place with the pencil beside it, and
-	/// only closing beside it, so a long name keeps the row; below, where its
-	/// values are kept, with what acts on all of them.
+	/// Every inspector's header: what it shows and what acts on all of it on
+	/// the first line, with closing last; the name, renamed in place with the
+	/// pencil beside it; then where its values are kept.
 	private func header(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?, saved: [String], cards: [String]) -> some View {
 		let allRevealed = store.canUseLocalSecrets
 			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
 		return VStack(alignment: .leading, spacing: 0) {
 			HStack(spacing: 4) {
-				nameField(draft, issue: issue)
-					.frame(maxWidth: .infinity, alignment: .leading)
-				VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", compact: true, action: onClose)
-			}
-			HStack(spacing: 4) {
-				HStack(spacing: 5) {
-					Image(systemName: "lock.fill")
-						.font(.system(size: 9, weight: .semibold))
-						.accessibilityHidden(true)
-					Text("Encrypted · \(saved.count == 1 ? "in 1 env" : "in \(saved.count) envs")")
-						.font(.system(size: 11.5))
-						.lineLimit(1)
-				}
-				.foregroundStyle(VaultPalette.textTertiary)
+				Text("KEY").vaultSectionLabel()
 				Spacer(minLength: 4)
 				VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values", compact: true) {
 					toggleRevealAll(allRevealed)
@@ -339,9 +326,23 @@ private struct VaultKeyEditor: View {
 				.opacity(store.canUseLocalSecrets ? 1 : 0.45)
 				.hidden(isPublic)
 				deleteControl(saved: saved)
+				Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14).padding(.horizontal, 2)
+				VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", compact: true, action: onClose)
 			}
+			nameField(draft, issue: issue)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.top, 4)
+			HStack(spacing: 5) {
+				Image(systemName: "lock.fill")
+					.font(.system(size: 9, weight: .semibold))
+					.accessibilityHidden(true)
+				Text("Encrypted · \(saved.count == 1 ? "in 1 env" : "in \(saved.count) envs")")
+					.font(.system(size: 11.5))
+					.lineLimit(1)
+			}
+			.foregroundStyle(VaultPalette.textTertiary)
 		}
-		.padding(.leading, 18)
+		.padding(.leading, 16)
 		.padding(.trailing, 12)
 		.padding(.top, 12)
 		.padding(.bottom, 14)
@@ -439,7 +440,7 @@ private struct VaultKeyEditor: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 		}
-		.padding(.horizontal, 18)
+		.padding(.horizontal, 16)
 		.padding(.bottom, renamed || issue != nil ? 14 : 0)
 	}
 
@@ -460,7 +461,7 @@ private struct VaultKeyEditor: View {
 			}
 			addRows(addable, draft: draft, checks: checks)
 		}
-		.padding(.horizontal, 18)
+		.padding(.horizontal, 16)
 		.padding(.vertical, 12)
 	}
 
@@ -863,7 +864,7 @@ private struct VaultKeyEditor: View {
 					cardAction(action) { onOpenRules(checkedKey) }
 				}
 			}
-			.padding(.horizontal, 18)
+			.padding(.horizontal, 16)
 			.padding(.vertical, 12)
 			VaultHairline()
 		case .unreadable?:
@@ -874,7 +875,7 @@ private struct VaultKeyEditor: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
 			}
-			.padding(.horizontal, 18)
+			.padding(.horizontal, 16)
 			.padding(.vertical, 12)
 			VaultHairline()
 		case .noFolder?, nil:
@@ -962,7 +963,7 @@ private struct VaultKeyEditor: View {
 				}
 			}
 		}
-		.padding(.horizontal, 18)
+		.padding(.horizontal, 16)
 		.padding(.vertical, 12)
 	}
 
@@ -998,7 +999,7 @@ private struct VaultKeyEditor: View {
 					.keyboardShortcut("s", modifiers: .command)
 			}
 		}
-		.padding(.horizontal, 18)
+		.padding(.horizontal, 16)
 		.padding(.vertical, 12)
 	}
 

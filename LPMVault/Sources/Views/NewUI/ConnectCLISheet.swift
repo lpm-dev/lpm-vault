@@ -68,11 +68,16 @@ struct ConnectCLISheet: View {
 			header
 			VaultHairline()
 			ScrollView {
-				VStack(alignment: .leading, spacing: 18) {
-					if status == .noFolder { missingFolderNotice }
-					vaultIDSection
-					projectSection
-					terminalSection
+				// Numbered steps, in the order they're done: the folder only while none is linked.
+				VStack(alignment: .leading, spacing: 22) {
+					if status == .noFolder {
+						VStack(alignment: .leading, spacing: 8) {
+							step(1, "Choose the project folder")
+							missingFolderNotice
+						}
+					}
+					projectSection(number: status == .noFolder ? 2 : 1)
+					terminalSection(number: status == .noFolder ? 3 : 2)
 				}
 				.padding(.horizontal, 24)
 				.padding(.top, 18)
@@ -143,7 +148,9 @@ struct ConnectCLISheet: View {
 	private var vaultIDSection: some View {
 		// One line: the ID is in the JSON below too, so it needs no box of its own.
 		HStack(alignment: .firstTextBaseline, spacing: 8) {
-			sectionTitle("Vault ID")
+			Text("Vault ID")
+				.font(.system(size: 12, weight: .medium))
+				.foregroundStyle(VaultPalette.textSecondary)
 			Text(projectId)
 				.font(VaultTypography.tabular(12.5, .medium))
 				.foregroundStyle(VaultPalette.textSecondary)
@@ -166,13 +173,14 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	private var projectSection: some View {
+	private func projectSection(number: Int) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 8) {
-				sectionTitle("Add it to your project")
+				step(number, "Add it to your project")
 				Spacer()
 				VaultSegmentedPicker(title: "Add it to your project", options: SetupMode.allCases.map { ($0, $0.title) }, selection: $setupMode)
 			}
+			vaultIDSection
 			VStack(alignment: .leading, spacing: 0) {
 				HStack(spacing: 8) {
 					Text(setupMode == .copyJSON ? "./lpm.json" : displayPath)
@@ -335,11 +343,11 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	private var terminalSection: some View {
+	private func terminalSection(number: Int) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
-			HStack(alignment: .firstTextBaseline, spacing: 8) {
-				sectionTitle("Use it from the terminal")
-				Text("In the linked project folder · \(VaultProject.displayName(for: guidance.environment))")
+			HStack(alignment: .center, spacing: 8) {
+				step(number, "Use it from the terminal")
+				Text("in the linked project folder · \(VaultProject.displayName(for: guidance.environment))")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -356,25 +364,23 @@ struct ConnectCLISheet: View {
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			if let warning = guidance.warning {
 				VaultInlineWarning(text: warning)
-					.padding(.top, 4)
 			}
-			HStack(alignment: .firstTextBaseline, spacing: 8) {
-				Text("An explicit --env overrides a script's own environment.")
-					.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
-				Spacer(minLength: 8)
-				let more = guidance.commands.count - 1
-				if more > 0 {
-					Button(showsAllCommands ? "Show Fewer" : "Show \(more) More \(more == 1 ? "Command" : "Commands")") {
-						showsAllCommands.toggle()
-					}
-					.buttonStyle(.plain)
-					.font(.system(size: 11.5, weight: .medium))
-					.foregroundStyle(VaultPalette.textSecondary)
-					.vaultPointingHand()
-					.fixedSize()
+			let more = guidance.commands.count - 1
+			if more > 0 {
+				// A disclosure, as Optional task environments is, so it reads as something that opens.
+				Button { showsAllCommands.toggle() } label: {
+					Label(showsAllCommands ? "Show Fewer" : "Show \(more) More \(more == 1 ? "Command" : "Commands")",
+						systemImage: showsAllCommands ? "chevron.down" : "chevron.right")
+						.font(.system(size: 12, weight: .medium))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.contentShape(Rectangle())
 				}
+				.buttonStyle(.plain)
+				.accessibilityValue(showsAllCommands ? "Expanded" : "Collapsed")
 			}
+			Text("An explicit --env overrides a script's own environment.")
+				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
 		}
 	}
 
@@ -390,24 +396,31 @@ struct ConnectCLISheet: View {
 						.lineLimit(1)
 						.truncationMode(.tail)
 				}
-				if status == .notLinked {
-					Text("·").foregroundStyle(VaultPalette.textTertiary)
+				if status != .noFolder {
+					Text("·").foregroundStyle(VaultPalette.textTertiary).accessibilityHidden(true)
 				}
+				// Both go to lpm.dev's pages, so they're the same kind of link.
 				if status == .notLinked || status == .noFolder {
-					Button("Install LPM CLI") { openURL(Self.installURL) }
-						.help("Linking doesn't install the LPM CLI. This opens how to install it.")
-						.buttonStyle(.plain)
-						.font(.system(size: 11.5, weight: .semibold))
-						.foregroundStyle(VaultPalette.accentForeground)
-						.vaultPointingHand()
+					footerLink("Install LPM CLI", help: "Linking doesn't install the LPM CLI. This opens how to install it.", url: Self.installURL)
+					Text("·").foregroundStyle(VaultPalette.textTertiary).accessibilityHidden(true)
 				}
+				footerLink("Docs", help: "How the LPM CLI reads lpm.json", url: Self.docsURL)
 			}
 			.help(folder.isEmpty ? "" : Self.configURL(folder).path)
 		} actions: {
-			VaultBarButton(title: "Docs", height: 30) { openURL(Self.docsURL) }
 			VaultBarButton(title: "Done", filled: status != .noFolder, height: 30) { dismiss() }
 				.keyboardShortcut(.defaultAction)
 		}
+	}
+
+	private func footerLink(_ title: String, help: String, url: URL) -> some View {
+		Button(title) { openURL(url) }
+			.help(help)
+			.buttonStyle(.plain)
+			.font(.system(size: 11.5, weight: .semibold))
+			.foregroundStyle(VaultPalette.accentForeground)
+			.vaultPointingHand()
+			.fixedSize()
 	}
 
 	// MARK: - Status
@@ -438,6 +451,21 @@ struct ConnectCLISheet: View {
 	}
 
 	// MARK: - Actions
+
+	/// A step's number and title, in the order the steps are done.
+	private func step(_ number: Int, _ title: String) -> some View {
+		HStack(spacing: 8) {
+			Text("\(number)")
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(VaultPalette.accentText)
+				.frame(width: 18, height: 18)
+				.background(Circle().fill(VaultPalette.accentTint))
+				.accessibilityHidden(true)
+			sectionTitle(title)
+				.accessibilityLabel("Step \(number): \(title)")
+				.accessibilityAddTraits(.isHeader)
+		}
+	}
 
 	private func sectionTitle(_ title: String) -> some View {
 		Text(title)

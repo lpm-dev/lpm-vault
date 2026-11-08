@@ -472,7 +472,7 @@ extension ProjectEnvSchemaRule {
 		var declaredKeys: Set<String>?
 	}
 
-	/// Whether a row can be added, with the hint the "Add rule" menu shows.
+	/// Whether a row can be added, with the hint the "Add Rule" menu shows.
 	struct Availability: Equatable, Sendable {
 		let isAvailable: Bool
 		let hint: String

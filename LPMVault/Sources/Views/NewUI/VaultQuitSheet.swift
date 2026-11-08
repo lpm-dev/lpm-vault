@@ -304,8 +304,8 @@ struct VaultQuitSheet: View {
 	private var actions: some View {
 		switch coordinator.phase {
 		case .idle, .reviewing:
-			VaultBarButton(title: "Discard all", height: 28) { coordinator.discardAndQuit() }
-				.help("Discard all (⌘⌫)")
+			VaultBarButton(title: "Discard All", height: 28) { coordinator.discardAndQuit() }
+				.help("Discard All (⌘⌫)")
 			VaultBarButton(title: "Cancel", height: 28) { coordinator.cancel() }
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(title: "Save and quit", filled: true, height: 28) { coordinator.saveAndQuit() }

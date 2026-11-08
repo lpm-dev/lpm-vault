@@ -33,7 +33,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		let removal = removing.flatMap { prefix in context.map { Prefixes.removing(prefix, in: $0) } }
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
-				Text("Client prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
+				Text("Client Prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
 				Text("Keys that start with one of these are public, so their values can ship in client code.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -76,7 +76,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 				Spacer(minLength: 8)
 				if canEdit {
-					VaultBarButton(title: "Review & save…", disabled: onReview == nil, height: 24) { onReview?() }
+					VaultBarButton(title: "Review & Save…", disabled: onReview == nil, height: 24) { onReview?() }
 						.help("Changes here join the Schema draft until you review and save them to lpm.json (⌘S)")
 				}
 			}

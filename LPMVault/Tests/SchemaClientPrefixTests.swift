@@ -447,7 +447,7 @@ extension SheetInteractionTests {
 		func addPrefix() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("WIDGET_", in: popover))
 			#expect(try await host.waitForText("2 of 32 custom prefixes", in: popover))
@@ -463,8 +463,8 @@ extension SheetInteractionTests {
 			})
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-prefixes")?.rejection == nil && store.currentSchemaDraftEvaluation(for: "schema-prefixes") != nil })
 			#expect(try await host.waitForText("3 of 32 custom prefixes", in: popover), "lpm.json's two and the imported SHOP_")
-			try await host.click("Review & save…", in: popover)
-			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The popover's Review & save opens the review")
+			try await host.click("Review & Save…", in: popover)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The popover's Review & Save opens the review")
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
 			#expect(try await host.waitUntil { !popover.isVisible }, "The review takes over from the popover")
@@ -475,12 +475,12 @@ extension SheetInteractionTests {
 		func escapeFromField() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let popover = try await host.popoverWindow()
 			try await host.settle()
 			try host.key("\u{1b}", code: 53, in: popover)
 			#expect(try await host.waitUntil { !popover.isVisible }, "Esc closes the popover as it opens")
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let reopened = try await host.popoverWindow()
 			try host.typeText("ACME_", placeholder: "e.g. PUBLIC_", in: reopened)
 			try host.key("\u{1b}", code: 53, in: reopened)
@@ -493,7 +493,7 @@ extension SheetInteractionTests {
 		func staleReturn() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let popover = try await host.popoverWindow()
 			try host.typeText("ACME_PUBLIC_", placeholder: "e.g. PUBLIC_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
@@ -587,7 +587,7 @@ extension SheetInteractionTests {
 		func addKeepsFocus() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("SHOP_", in: popover))
 			let gate = EvaluationGate()
@@ -624,7 +624,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-prefixes") { $0.set(.overridden(.object([.init(key: "required", value: .bool(true))])), for: .key("TOKEN")) }
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-prefixes") != nil })
 			try await host.click("TOKEN")
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("loses the Secret an import gives it", in: sheet))
@@ -642,14 +642,14 @@ extension SheetInteractionTests {
 		func removePrefix() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Client prefixes")
+			try await host.click("Client Prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("WIDGET_", in: popover))
 			// The prefix's remove button, 20 points wide, ends its row as far from the popover's
 			// right edge as the title starts from its left, an inset that differs between macOS
 			// versions. Recognition places where text starts, and lines, reliably; CI reads
 			// "2 keys ×" as one run and boxes the count loosely along it.
-			let title = try await host.labelFrame("Client prefixes", in: popover)
+			let title = try await host.labelFrame("Client Prefixes", in: popover)
 			let count = try await host.labelFrame("2 keys", in: popover)
 			let width = try #require(popover.contentView).bounds.width
 			try NativeTestClick.send(to: popover, at: NSPoint(x: width - title.minX - 10, y: count.midY))

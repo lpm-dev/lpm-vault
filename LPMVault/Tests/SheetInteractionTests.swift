@@ -180,6 +180,14 @@ final class SheetTestHost<V: View> {
 		try scrollToEnd(scrollView)
 	}
 
+	/// Scrolls `targetWindow`'s first scroll view to its end, as a person
+	/// scrolls a long menu down to its last rows.
+	func scrollToEnd(in targetWindow: NSWindow) throws {
+		let content = try #require(targetWindow.contentView)
+		content.layoutSubtreeIfNeeded()
+		try scrollToEnd(try #require(Self.firstScrollView(in: content), "The window has a scroll view"))
+	}
+
 	private func scrollToEnd(_ scrollView: NSScrollView) throws {
 		let clip = scrollView.contentView
 		let documentHeight = scrollView.documentView?.frame.height ?? 0
@@ -580,7 +588,7 @@ final class SheetTestHost<V: View> {
 	func popoverWindow() async throws -> NSWindow {
 		var found: NSWindow?
 		_ = try await waitUntil {
-			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") && !Self.isClosing($0) }
 			found = showing.count == 1 ? showing.first : nil
 			return found != nil
 		}
@@ -660,6 +668,11 @@ final class SheetTestHost<V: View> {
 		return try #require(text.lines.first { $0.contains(label) })
 	}
 
+	/// A popover that has started to close, which may still be fading out.
+	static func isClosing(_ window: NSWindow) -> Bool {
+		(window as? VaultPopoverPanel)?.isClosing == true
+	}
+
 	func generatorWindow() async throws -> NSWindow {
 		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
@@ -676,11 +689,10 @@ final class SheetTestHost<V: View> {
 		try await waitUntil { !panel.isVisible }
 	}
 
-	/// The generator is the only popover these fixtures present. Fall back to its
-	/// heading in case a future macOS hosts popovers in another window class.
+	/// The generator's popover, told from a menu's by its heading, leaving out
+	/// popovers already closing.
 	func visibleGeneratorWindow() async throws -> NSWindow? {
-		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) }
-		if let popover = candidates.first(where: { $0.className.contains("Popover") }) { return popover }
+		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) && !Self.isClosing($0) }
 		for candidate in candidates where !window.sheets.contains(candidate) {
 			guard let content = candidate.contentView else { continue }
 			if AccessibilityTree.text(in: content, root: candidate).contains("Generate value", options: .caseInsensitive) { return candidate }
@@ -818,7 +830,7 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		#expect(host.view.bounds.size == size)
-		let note = try await host.drawnFrame(saying: "Values stay encrypted on this Mac until you unlock.")
+		let note = try await host.drawnFrame(saying: "Saved values stay encrypted in this Mac's Keychain.")
 		let button = try await host.drawnFrame(saying: "Unlock")
 		#expect(abs(note.midX - host.view.bounds.width / 2) < 3, "The note is centered: \(note)")
 		#expect(note.maxY < button.minY && button.minY - note.maxY < 60, "The note sits just under Unlock: \(note) \(button)")

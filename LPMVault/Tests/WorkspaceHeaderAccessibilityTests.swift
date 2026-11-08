@@ -164,8 +164,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { selected(in: host) == ["Drift, 1"] })
 			_ = try await host.clickSidebarEnvironment(".env")
 			#expect(try await host.waitUntil { selected(in: host) == ["Table"] })
-			try #require(chip("Raw text", in: host)).press()
-			#expect(try await host.waitUntil { selected(in: host) == ["Raw text"] })
+			try #require(chip("Raw Text", in: host)).press()
+			#expect(try await host.waitUntil { selected(in: host) == ["Raw Text"] })
 		}
 
 		@Test("the sync status is one control, the size it's drawn, and opens its menu in the app's popover")
@@ -228,7 +228,7 @@ extension SheetInteractionTests {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox && $0.says("Reveal all values") }
 		}
 
-		private static let chips: Set<String> = ["All keys", "Drift, 1", "Missing, 1", "Invalid, 1", "Table", "Raw text"]
+		private static let chips: Set<String> = ["All keys", "Drift, 1", "Missing, 1", "Invalid, 1", "Table", "Raw Text"]
 
 		private func chip<V: View>(_ name: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .button && $0.label == name }

@@ -436,7 +436,7 @@ extension SheetInteractionTests {
 			try await host.click("Table")
 			#expect(try await host.waitForText("KEY", exactly: true))
 			#expect(try await host.waitForText("Raw text edit not saved"))
-			try await host.click("Raw text")
+			try await host.click("Raw Text")
 			#expect(try await editorView(in: host).string.contains("LOG_LEVEL=debug"))
 			try await host.click("Cancel")
 			#expect(try await host.waitForText("API_TOKEN=\(VaultRawText.mask)"))
@@ -501,7 +501,7 @@ extension SheetInteractionTests {
 				size: NSSize(width: 1300, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["raw"] != nil })
 			try await host.clickSidebarEnvironment(".env")
-			try await host.click("Raw text")
+			try await host.click("Raw Text")
 			#expect(try await host.waitForText("API_TOKEN="))
 			try await host.settle()
 			return host

@@ -49,6 +49,35 @@ struct VaultPopoverTests {
 		#expect(frame.maxY == anchor.minY - VaultPopoverPresenter.gap, "It still opens below")
 	}
 
+	@Test("a menu has the larger of the room below and above its view inside the window, so a long one scrolls rather than covering the title bar")
+	func roomBesideView() {
+		let window = CGRect(x: 0, y: 100, width: 1280, height: 754)
+		let anchor = CGRect(x: 1000, y: 452, width: 120, height: 28)
+		let room = VaultPopoverPresenter.room(beside: anchor, on: .bottom, window: window, screen: screen)
+		let above = window.maxY - VaultPopoverPresenter.windowMargin - anchor.maxY - VaultPopoverPresenter.gap
+		#expect(room == above, "More room above than below")
+		let size = CGSize(width: 320, height: room)
+		let frame = VaultPopoverPresenter.frame(size: size, beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(frame.maxY <= window.maxY - VaultPopoverPresenter.windowMargin && frame.minY > anchor.maxY, "A menu that tall fits above, inside the window")
+	}
+
+	@Test("a window too small to hold a menu gives it the screen's room instead, so its rows still show")
+	func roomInSmallWindow() {
+		let window = CGRect(x: 400, y: 400, width: 240, height: 80)
+		let anchor = CGRect(x: 420, y: 420, width: 80, height: 28)
+		let room = VaultPopoverPresenter.room(beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(room >= VaultPopoverPresenter.minimumRoom, "\(room)")
+		#expect(room == screen.maxY - VaultPopoverPresenter.screenMargin - anchor.maxY - VaultPopoverPresenter.gap)
+	}
+
+	@Test("a menu too wide to run right from its view hangs back from the view's trailing edge, as a menu near the edge does")
+	func hangsFromTrailingEdge() {
+		let window = CGRect(x: 0, y: 0, width: 1280, height: 754)
+		let anchor = CGRect(x: 1100, y: 400, width: 120, height: 28)
+		let frame = VaultPopoverPresenter.frame(size: CGSize(width: 320, height: 200), beside: anchor, on: .bottom, window: window, screen: screen)
+		#expect(frame.maxX == anchor.maxX)
+	}
+
 	@Test("a popover that doesn't fit below its view inside the window opens above it there, not past the window's bottom")
 	func flipsInsideWindow() {
 		let window = CGRect(x: 100, y: 150, width: 1280, height: 740)
@@ -136,5 +165,64 @@ struct VaultSyncExplanationTests {
 			== "Changed on this Mac since the last sync.")
 		#expect(VaultTitleBarView.syncExplanation(isLoggedIn: true, status: .neverSynced, last: nil)
 			== "Not pulled or pushed with this account yet.")
+	}
+}
+
+extension SheetInteractionTests {
+	@Suite("The app's popover window", .serialized)
+	@MainActor
+	struct VaultPopoverWindowTests {
+		@Test("a popover open as its window closes goes with it, leaving no window behind")
+		func closesWithItsWindow() async throws {
+			let host = SheetTestHost(PopoverFixture(), size: NSSize(width: 320, height: 200), keepsRequestedSize: true, usesHostingView: true)
+			try await host.click("Open")
+			let popover = try await host.popoverWindow()
+			#expect(try await host.waitForText("Inside", in: popover))
+			host.window.close()
+			#expect(try await host.waitUntil { !popover.isVisible }, "The popover's window is gone with its own")
+		}
+
+		@Test("a menu's arrow keys and Return choose a row, however quickly they're pressed")
+		func keyboardChoice() async throws {
+			let chosen = ChosenMenuRow()
+			let host = SheetTestHost(MenuFixture(chosen: chosen), size: NSSize(width: 320, height: 240), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.click("Choose")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Second", in: menu))
+			try host.key("\u{f701}", code: 125, modifiers: [.numericPad, .function], in: menu)
+			try host.key("\u{f701}", code: 125, modifiers: [.numericPad, .function], in: menu)
+			try host.key("\r", code: 36, in: menu)
+			#expect(try await host.waitUntil { chosen.id == 2 }, "Down twice from the start is the second row")
+			#expect(try await host.waitUntil { !menu.isVisible })
+		}
+	}
+}
+
+@MainActor
+private final class ChosenMenuRow {
+	var id: Int?
+}
+
+private struct MenuFixture: View {
+	let chosen: ChosenMenuRow
+
+	var body: some View {
+		VaultBarMenu(accessibilityLabel: "Choose", rows: [
+			VaultMenuList<Int>.Row(id: 1, title: "First"), .init(id: 2, title: "Second"), .init(id: 3, title: "Third"),
+		], onChoose: { chosen.id = $0 }) {
+			Text("Choose")
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
+	}
+}
+
+private struct PopoverFixture: View {
+	@State private var isPresented = false
+
+	var body: some View {
+		Button("Open") { isPresented = true }
+			.vaultPopover(isPresented: $isPresented) { Text("Inside").padding(20) }
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
 }

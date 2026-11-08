@@ -37,8 +37,8 @@ struct VaultProjectSettingsView: View {
 			header
 			VaultHairline()
 			ScrollView {
+				// The title bar names the project and the rows below edit it, so the page starts with them.
 				VStack(alignment: .leading, spacing: 20) {
-					identity
 					section("PROJECT") {
 						nameRow
 						VaultHairline()
@@ -119,21 +119,6 @@ struct VaultProjectSettingsView: View {
 		}
 		.padding(.horizontal, 20)
 		.frame(height: 60)
-	}
-
-	private var identity: some View {
-		HStack(spacing: 14) {
-			VaultProjectIconView(appearance: store.projectIcons.appearance(of: settings.icon, for: project.id), size: 48)
-			VStack(alignment: .leading, spacing: 3) {
-				Text(VaultProjectRenamePolicy.normalizedName(settings.name) ?? project.name)
-					.font(.system(size: 17, weight: .semibold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-				Text("\(Set(project.environments.values.flatMap(\.keys)).count.counted("key")) · \(project.secretCount.counted("stored value")) · \(project.environmentNames.count.counted("environment"))")
-					.font(VaultTypography.tabular(12))
-					.foregroundStyle(VaultPalette.textTertiary)
-			}
-		}
 	}
 
 	// MARK: - Rows

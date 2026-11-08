@@ -61,11 +61,10 @@ struct VaultHistoryText {
 		calendar.isDate(date, inSameDayAs: now) ? "since \(clock(date)) today" : "since \(moment(date))"
 	}
 
-	/// The inspector's full time: "Today at 13:40:07", or "Nov 4, 2026 at 13:40:07" on another day.
+	/// The inspector's full time, as the list says a moment with its seconds:
+	/// "Today, 13:40:07", "Nov 3, 13:40:07" or "Nov 3, 2025, 13:40:07".
 	func full(_ date: Date) -> String {
-		calendar.isDate(date, inSameDayAs: now)
-			? "Today at \(date.formatted(style(date: .omitted, time: .standard)))"
-			: date.formatted(style(date: .abbreviated, time: .standard))
+		"\(day(date)), \(date.formatted(style(date: .omitted, time: .standard)))"
 	}
 
 	/// The status bar: "312 changes kept on this Mac since Oct 2, 2026", or

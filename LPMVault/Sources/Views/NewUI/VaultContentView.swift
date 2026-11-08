@@ -345,41 +345,37 @@ struct VaultContentView: View {
 		}
 	}
 
-	@ViewBuilder
+	/// The page's title and what it counts: the project's keys, values and
+	/// environments, or one environment's keys. No swatch goes before an
+	/// environment's name, so every page's title starts at the same edge.
+	private func identity(_ derived: VaultContentDerivation) -> (title: String, counts: String) {
+		if case .matrix = mode {
+			return ("All variables",
+				"\(derived.allKeys.count.counted("key")) · \(project.secretCount.counted("value")) · \(environments.count.counted("env"))")
+		}
+		let stored = project.secretCount(for: selectedEnvironment)
+		let declaredOnly = max(0, derived.environmentKeys.count - stored)
+		return (VaultProject.displayName(for: selectedEnvironment),
+			stored.counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) only in lpm.json"))
+	}
+
 	private func headerIdentity(_ derived: VaultContentDerivation, showsApproval: Bool, showsCounts: Bool = true) -> some View {
-		HStack(spacing: 10) {
-			if case .matrix = mode {
-				Text("All variables")
-					.vaultPageTitle()
-				if showsCounts {
-					// The values are what the sidebar counts beside the project.
-					Text("\(derived.allKeys.count.counted("key")) · \(project.secretCount.counted("value")) · \(environments.count.counted("env"))")
+		let (title, counts) = identity(derived)
+		return HStack(spacing: 10) {
+			Text(title)
+				.vaultPageTitle()
+			if showsCounts {
+				// One line about the project, every part between the same " · ", the approval last
+				// as a fact about it; it opens Project Settings, where it changes.
+				HStack(spacing: 0) {
+					Text(counts + (showsApproval ? " · " : ""))
 						.font(VaultTypography.tabular(12.5))
 						.foregroundStyle(VaultPalette.textTertiary)
+					if showsApproval {
+						VaultCliApprovalLink(presentation: VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts),
+							action: onProjectSettings)
+					}
 				}
-			} else {
-				// No swatch before the name: every page's title starts at the same edge, and the sidebar keeps the color.
-				Text(VaultProject.displayName(for: selectedEnvironment))
-					.vaultPageTitle()
-				if showsCounts {
-					let stored = project.secretCount(for: selectedEnvironment)
-					let declaredOnly = max(0, derived.environmentKeys.count - stored)
-					Text(stored.counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) more from lpm.json"))
-						.font(VaultTypography.tabular(12.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-				}
-			}
-			if showsApproval && showsCounts {
-				// Part of the project's line, as a fact about it; it opens Project Settings, where it changes.
-				HStack(spacing: 6) {
-					Text("·")
-						.font(VaultTypography.tabular(12.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.accessibilityHidden(true)
-					VaultCliApprovalLink(presentation: VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts),
-						action: onProjectSettings)
-				}
-				.padding(.leading, -4)
 			}
 		}
 		.lineLimit(1)
@@ -1003,7 +999,7 @@ struct VaultContentView: View {
 		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
-			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) from lpm.json"))
+			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) only in lpm.json"))
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
 		let details: [Text] = []
 		return ViewThatFits(in: .horizontal) {
@@ -1170,7 +1166,7 @@ private struct VaultMatrixRow: View {
 			HStack(spacing: 0) {
 				HStack(spacing: 8) {
 					Text(key)
-						.font(VaultTypography.tabular(13, isSelected ? .medium : .regular))
+						.font(VaultTypography.tabular(13, .medium))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)
@@ -1348,8 +1344,9 @@ private struct VaultEnvironmentRow: View {
 			// and stay in place, pressable and named, on the others.
 			HStack(spacing: 2) {
 				if value == nil {
+					// Rests with the row's other actions; the row already says the value is missing.
 					VaultOutlineButton(systemImage: "plus", title: "Add Value", help: "Add a value for \(key)", label: "Add Value for \(key)",
-						disabled: !canEdit, borderless: true, action: onAdd)
+						disabled: !canEdit, borderless: true, resting: !showsActions, action: onAdd)
 				} else {
 					VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value",
 						resting: !showsActions, action: onReveal)
@@ -1408,7 +1405,7 @@ private struct VaultEnvironmentRow: View {
 	private func keyLabel(compact: Bool) -> some View {
 		HStack(spacing: 8) {
 			Text(key)
-				.font(VaultTypography.tabular(13, isSelected ? .medium : .regular))
+				.font(VaultTypography.tabular(13, .medium))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 				.layoutPriority(1)

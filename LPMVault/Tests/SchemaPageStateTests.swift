@@ -225,15 +225,15 @@ extension SheetInteractionTests {
 			#expect(try await waitForTable(in: host) { $0.contains("KEY_00") }, "The first row scrolls back into view, below the header")
 		}
 
-		@Test("with the panel closed, the status bar offers Review & save and Discard; ⌘Z brings a discarded draft back")
+		@Test("with the panel closed, the status bar offers Review & Save and Discard; ⌘Z brings a discarded draft back")
 		func statusBarActions() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			#expect(try await !host.text().contains("Review & save"), "Nothing to review without a draft")
+			#expect(try await !host.text().contains("Review & Save"), "Nothing to review without a draft")
 			store.editSchemaDraft(in: "schema-keys") { $0.set(.declared(.object([.init(key: "format", value: .string("port"))])), for: .key("PORT")) }
 			#expect(try await host.waitForText("1 unsaved change", footer: 30))
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
@@ -338,7 +338,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys") != nil })
 			for _ in 0..<2 { try host.press(.down) }
 			#expect(try await panelShows("Override rules", in: host), "DATABASE_URL is imported, so its panel is read-only")
-			#expect(try await panelShows("Review & save", in: host))
+			#expect(try await panelShows("Review & Save", in: host))
 			try host.shortcut("s", code: 1)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 		}

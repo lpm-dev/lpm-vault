@@ -205,7 +205,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("1 unsaved change"))
 			#expect(try await host.waitForText("Draft"))
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-panel") != nil })
-			try await host.click("Review & save")
+			try await host.click("Review & Save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
@@ -322,8 +322,12 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
 			#expect(try await host.waitForText("STORED VALUES", exactly: true))
-			try await host.click("Add rule")
-			try await host.click("CI storage", in: try await host.popoverWindow())
+			try await host.click("Add Rule")
+			let menu = try await host.popoverWindow()
+			// CI storage is the menu's last row, past its first screenful.
+			try host.scrollToEnd(in: menu)
+			try await host.click("CI storage", in: menu)
+			#expect(try await host.waitUntil { !menu.isVisible })
 			#expect(try await host.waitForText("variable"))
 			#expect(store.schemaDraft(for: "schema-panel") == nil)
 		}

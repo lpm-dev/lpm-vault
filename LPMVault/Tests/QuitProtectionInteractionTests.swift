@@ -131,7 +131,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForElement(saying: "Quit with unsaved changes?", in: sheet).role?.rawValue == "AXHeading")
 			#expect(try await host.waitForText("demo-api · 1 key", in: sheet))
 			#expect(!(try await host.text(in: sheet).contains("folder")), "The row's symbol isn't read")
-			#expect(try await host.waitForText("Discard all", in: sheet))
+			#expect(try await host.waitForText("Discard All", in: sheet))
 			try await host.click("Save and quit", in: sheet)
 			#expect(try await host.waitUntil { outcome.terminations == 1 })
 			#expect(keychain.envStorage["demo"]?.environments["default"]?["TOKEN"] == "two")

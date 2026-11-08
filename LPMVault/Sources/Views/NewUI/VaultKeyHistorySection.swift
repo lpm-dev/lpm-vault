@@ -57,7 +57,7 @@ struct VaultKeyHistorySection: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 		}
-		.padding(.horizontal, 18)
+		.padding(.horizontal, 16)
 		.padding(.vertical, 12)
 		.task(id: input) { await read() }
 	}
