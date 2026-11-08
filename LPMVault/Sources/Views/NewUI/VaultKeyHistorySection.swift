@@ -89,14 +89,15 @@ struct VaultKeyHistorySection: View {
 		case .read(let groups):
 			let ordered = store.orderedEnvironmentNames(for: project)
 			ForEach(groups, id: \.environment) { group in
-				// The environment labels the group; each change reads as a plain line under it.
-				VStack(alignment: .leading, spacing: 8) {
+				// The environment labels the group; each change is one quieter line under it.
+				VStack(alignment: .leading, spacing: 2) {
 					HStack(spacing: 7) {
 						VaultEnvSwatch(color: VaultHistoryEnvironmentChip(group.environment, in: ordered).color, size: 7)
 						Text(VaultProject.displayName(for: group.environment))
-							.font(.system(size: 11.5, weight: .semibold))
-							.foregroundStyle(VaultPalette.textSecondary)
+							.font(.system(size: 12.5, weight: .medium))
+							.foregroundStyle(VaultPalette.textPrimary)
 					}
+					.padding(.bottom, 2)
 					.accessibilityElement(children: .combine)
 					ForEach(group.changes, id: \.entry.id) { change in
 						changeRow(change, environment: group.environment)
@@ -138,37 +139,35 @@ struct VaultKeyHistorySection: View {
 		}
 	}
 
-	/// What changed on the first line, when and by what on the second, and
-	/// the rollback on the trailing edge.
+	/// What changed, when, and by what, on one line under its environment,
+	/// with the rollback on the trailing edge.
 	private func changeRow(_ change: Change, environment: String) -> some View {
 		let badge = VaultHistoryText.badge(change.entry)
 		let moment = text.moment(VaultHistoryText.date(change.entry.time))
 		return HStack(spacing: 8) {
-			VStack(alignment: .leading, spacing: 2) {
+			HStack(spacing: 5) {
 				Text(Self.kind(change.keyChange))
-					.font(.system(size: 12.5))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
+					.foregroundStyle(VaultPalette.textSecondary)
 					.truncationMode(.middle)
-				HStack(spacing: 5) {
-					Text(moment)
-						.font(VaultTypography.tabular(11))
-					Text("·")
-					Text(badge.text)
-						.font(.system(size: 11))
-						.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
-				}
-				.font(.system(size: 11))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
+					.layoutPriority(1)
+				Text("·").foregroundStyle(VaultPalette.textFaint)
+				Text(moment)
+					.font(VaultTypography.tabular(12))
+					.foregroundStyle(VaultPalette.textTertiary)
+				Text("·").foregroundStyle(VaultPalette.textFaint)
+				Text(badge.text)
+					.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
 			}
+			.font(.system(size: 12))
+			.lineLimit(1)
 			.accessibilityElement(children: .combine)
 			Spacer(minLength: 4)
 			VaultRowIconButton(
 				systemImage: "arrow.uturn.backward",
 				help: "Roll \(key) in \(VaultProject.displayName(for: environment)) back to its value before this change",
 				label: "Roll Back… \(key) in \(environment) to its value before \(moment)",
-				compact: true
+				compact: true,
+				quiet: true
 			) {
 				Task { await rollBack(change, environment: environment) }
 			}

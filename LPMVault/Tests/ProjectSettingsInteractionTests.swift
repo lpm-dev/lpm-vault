@@ -42,6 +42,26 @@ extension SheetInteractionTests {
 			return Fixture(store: store, keychain: keychain, preferences: preferences, domain: domain, images: images)
 		}
 
+		@Test("the icon is changed from one Choose… menu: a symbol, emoji or monogram, an image file, or back to Automatic once it isn't")
+		func iconChooseMenu() async throws {
+			let fixture = try makeFixture(path: "")
+			defer { fixture.tearDown() }
+			let host = SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
+				.environment(VaultAppearanceSettings(defaults: fixture.preferences)),
+				size: NSSize(width: 1100, height: 720), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+			#expect(try await host.waitForText("Project icon"))
+			#expect(try await !host.text().contains("Choose File…"), "One menu, not two buttons that read alike")
+			try await host.click("Choose icon")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Image File…", in: menu))
+			#expect(try await !host.waitForElement(saying: "Use Automatic", in: menu).isEnabledNow, "Already automatic")
+			try await host.click("Symbol, Emoji or Monogram…", in: menu)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The picker opens")
+		}
+
 		@Test("Project Settings, opened by the request its ⌘I command posts, shows the detected icon, folder, CLI approval and Delete Locally, and Save renames the project")
 		func pageOpensAndSaves() async throws {
 			let folder = try ProjectIconFixture.folder()
@@ -99,7 +119,7 @@ extension SheetInteractionTests {
 		}
 
 		private func editingName<V: View>(in host: SheetTestHost<V>) -> Bool {
-			((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.placeholderString == "Project name"
+			((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.shownPlaceholder == "Project name"
 		}
 
 		@Test("only Rename focuses the name; Project Settings opened afterwards doesn't")
@@ -161,7 +181,7 @@ extension SheetInteractionTests {
 			#expect(try await !host.text().contains("Delete Locally"), "The page didn't open")
 		}
 
-		@Test("Revert ends the edits, and Reset shows only while an icon is chosen")
+		@Test("Revert ends the edits, and Use Automatic is a choice only while an icon is chosen")
 		func revertAndReset() async throws {
 			let fixture = try makeFixture(path: "")
 			defer { fixture.tearDown() }
@@ -169,15 +189,18 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("Choose Icon"))
-			#expect(try await !host.text().contains("Reset"))
+			#expect(try await host.waitForText("Choose icon"))
 			fixture.store.editProjectSettings(of: project) {
 				$0.name = "renamed"
 				$0.icon = .symbol("bolt.fill", .indigo)
 			}
 			#expect(try await host.waitForText("Unsaved changes"))
-			#expect(try await host.waitForText("Reset"))
 			#expect(try await host.waitForText("bolt.fill"))
+			try await host.click("Choose icon")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForElement(saying: "Use Automatic", in: menu).isEnabledNow, "Once an icon is chosen, Automatic is a choice")
+			try host.key("\u{1b}", code: 53, in: menu)
+			#expect(try await host.waitUntil { !menu.isVisible })
 			try await host.click("Revert")
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
@@ -286,7 +309,7 @@ extension SheetInteractionTests {
 				size: NSSize(width: 820, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
 			#expect(try await host.waitUntilRendered {
-				((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.placeholderString == "Project name"
+				((host.window.firstResponder as? NSText)?.delegate as? NSTextField)?.shownPlaceholder == "Project name"
 			})
 			#expect(try await host.waitForText("This project isn't linked to a folder."))
 		}

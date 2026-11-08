@@ -128,7 +128,7 @@ struct VaultProjectSettingsView: View {
 		row("Name") {
 			Text("Shown in the sidebar and the title bar.")
 		} controls: {
-			TextField("Project name", text: Binding(
+			TextField(vaultPrompt: "Project name", text: Binding(
 				get: { settings.name },
 				set: { name in store.editProjectSettings(of: project) { $0.name = name } }
 			))
@@ -167,15 +167,30 @@ struct VaultProjectSettingsView: View {
 				.frame(width: 28, height: 28)
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
 				.padding(.trailing, 6)
-			VaultBarButton(title: "Choose Icon…", disabled: isSaving, height: 28) { showsIconPicker = true }
-			VaultBarButton(title: isImporting ? "Choosing…" : "Choose File…", disabled: isSaving || isImporting, height: 28, action: chooseFile)
-			if !settings.icon.isAutomatic {
-				VaultBarButton(title: "Reset", disabled: isSaving, height: 28) {
-					store.projectIcons.clearImportFailure(for: project.id)
-					store.editProjectSettings(of: project) { $0.icon = .automatic }
-				}
-				.help("Reset to Automatic")
+			// One menu for every way to change it, rather than buttons that read alike.
+			VaultBarMenu(accessibilityLabel: "Choose icon", menuWidth: 248, rows: [
+				.init(id: IconChoice.picker, title: "Symbol, Emoji or Monogram…"),
+				.init(id: IconChoice.file, title: "Image File…", isEnabled: !isImporting),
+				.init(id: IconChoice.automatic, title: "Use Automatic", detail: settings.icon.isAutomatic ? "in use" : nil,
+					isEnabled: !settings.icon.isAutomatic, separated: true),
+			], onChoose: chooseIcon) {
+				Text(isImporting ? "Choosing…" : "Choose…").font(.system(size: 12.5, weight: .medium))
 			}
+			.disabled(isSaving)
+		}
+	}
+
+	private enum IconChoice: Hashable {
+		case picker, file, automatic
+	}
+
+	private func chooseIcon(_ choice: IconChoice) {
+		switch choice {
+		case .picker: showsIconPicker = true
+		case .file: chooseFile()
+		case .automatic:
+			store.projectIcons.clearImportFailure(for: project.id)
+			store.editProjectSettings(of: project) { $0.icon = .automatic }
 		}
 	}
 
@@ -355,6 +370,7 @@ struct VaultProjectSettingsView: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineSpacing(2)
 					.fixedSize(horizontal: false, vertical: true)
+					.frame(maxWidth: VaultMetrics.explanationWidth, alignment: .leading)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 			// Centered on the title's line, however short the controls are.

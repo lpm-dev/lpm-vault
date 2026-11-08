@@ -412,9 +412,11 @@ struct ConnectCLISheet: View {
 			}
 			.help(folder.isEmpty ? "" : Self.configURL(folder).path)
 		} actions: {
-			// Nothing is connected yet without a folder, so the sheet only closes.
-			VaultBarButton(title: status == .noFolder ? "Close" : "Done", filled: status != .noFolder, height: 30) { dismiss() }
-				.keyboardShortcut(.defaultAction)
+			// Without a folder nothing is connected yet, so the header's close is the only way out; Done comes with a folder.
+			if status != .noFolder {
+				VaultBarButton(title: "Done", filled: true, height: 30) { dismiss() }
+					.keyboardShortcut(.defaultAction)
+			}
 		}
 	}
 

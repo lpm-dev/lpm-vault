@@ -91,7 +91,7 @@ struct VaultHistoryView: View {
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.accessibilityHidden(true)
-					TextField("Key name", text: $keySearch)
+					TextField(vaultPrompt: "Key name", text: $keySearch)
 						.textFieldStyle(.plain)
 						.font(.system(size: 12.5))
 						.focused($keySearchFocused)

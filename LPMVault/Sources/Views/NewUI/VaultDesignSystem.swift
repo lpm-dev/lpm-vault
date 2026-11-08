@@ -94,6 +94,10 @@ enum VaultPalette {
 	static let switchOffBorder = adaptive(light: 0xBEBDC6, dark: 0x4A4A50)
 	/// Darkens a control while it's pressed, over whatever fill it has.
 	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
+	/// A default button while it's off: its accent, faded, so it keeps its place
+	/// beside Cancel; fainter in dark, where a faded accent still reads as on.
+	static let accentOff = adaptive(light: 0x5E5CE6, dark: 0x5E5CE6, lightOpacity: 0.4, darkOpacity: 0.2)
+	static let accentOffText = adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, lightOpacity: 0.8, darkOpacity: 0.36)
 	/// What dims the window behind an overlay, such as Settings.
 	static let scrim = adaptive(light: 0x1C1C1E, dark: 0x000000, lightOpacity: 0.32, darkOpacity: 0.5)
 
@@ -163,6 +167,8 @@ enum VaultMetrics {
 	static let environmentActionsColumn: CGFloat = 142
 	/// The widest a settings-style page's column of cards grows.
 	static let formWidth: CGFloat = 720
+	/// The widest an explanation under a setting runs, for an easy line to read, however wide its card.
+	static let explanationWidth: CGFloat = 560
 	/// Below this window width, opening the inspector hides the sidebar, so the
 	/// table keeps room for its environments; the title bar's button brings it back.
 	static let sidebarAutoHideWidth: CGFloat = 1180
@@ -583,7 +589,7 @@ struct VaultBarButton: View {
 	@State private var hovering = false
 
 	private var foreground: Color {
-		if disabled { return filled ? .white.opacity(0.75) : VaultPalette.disabledText }
+		if disabled { return filled ? VaultPalette.accentOffText : VaultPalette.disabledText }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
 		if active { return VaultPalette.selectedText }
@@ -592,7 +598,7 @@ struct VaultBarButton: View {
 
 	private var background: Color {
 		// Off, a filled button keeps its color, faded, so it stays the default and never passes for a working one.
-		if disabled { return filled ? (destructive ? VaultPalette.destructiveFill : VaultPalette.accent).opacity(0.4) : .clear }
+		if disabled { return filled ? (destructive ? VaultPalette.destructiveFill.opacity(0.4) : VaultPalette.accentOff) : .clear }
 		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
 		if active { return VaultPalette.selectedFill }
@@ -1026,8 +1032,9 @@ struct VaultKeyStatusMarks: View {
 	private func mark(_ view: VaultSmartView) -> some View {
 		Image(systemName: view.symbol)
 			.font(.system(size: view == .drift ? 11 : 11.5, weight: view == .drift ? .regular : .semibold))
-			// Drift is often meant, so at rest it stays behind the marks that need fixing.
+			// Drift is often meant, so at rest it stays behind the marks that need fixing, still 3:1 against the row.
 			.foregroundStyle(view == .drift ? (emphasized ? VaultPalette.textSecondary : VaultPalette.textFaint) : view.tint)
+			.opacity(view == .drift && !emphasized ? 0.75 : 1)
 			.frame(width: 14, height: 14)
 			.help(view.meaning)
 			.accessibilityLabel(view.meaning)

@@ -382,10 +382,13 @@ final class VaultPopoverPresenter: NSObject {
 	}
 
 	/// The part of `window` a popover for `anchor` may cover: all of it but
-	/// the app's title bar, which a popover from the content leaves clear.
+	/// the app's title bar and the status bar along its bottom, which a popover
+	/// from the content between them leaves clear.
 	nonisolated static func area(of window: CGRect, for anchor: CGRect) -> CGRect {
-		let content = window.divided(atDistance: VaultMetrics.titleBar, from: .maxYEdge).remainder
-		return anchor.maxY <= content.maxY ? content : window
+		let belowTitleBar = window.divided(atDistance: VaultMetrics.titleBar, from: .maxYEdge).remainder
+		guard anchor.maxY <= belowTitleBar.maxY else { return window }
+		let content = belowTitleBar.divided(atDistance: VaultMetrics.statusBar, from: .minYEdge).remainder
+		return anchor.minY >= content.minY ? content : belowTitleBar
 	}
 
 	/// Where a popover of `size` goes beside `anchor`: on `edge`, or on the

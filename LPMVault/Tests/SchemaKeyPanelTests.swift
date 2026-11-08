@@ -340,12 +340,14 @@ extension SheetInteractionTests {
 			let button = try await host.waitForElement(saying: "Add Rule")
 			try await host.click("Add Rule")
 			let menu = try await host.popoverWindow()
-			// Two columns, so every rule shows at once, CI storage, the last, too, and the menu starts level with its button.
+			// Two columns, so every rule shows at once, CI storage, the last, too, and the menu hangs from its button, as its chevron says.
 			let storage = try await host.waitForElement(saying: "CI storage", in: menu)
 			#expect(menu.frame.contains(CGPoint(x: storage.frame.midX, y: storage.frame.midY)), "Shown without scrolling")
-			#expect(menu.frame.height < 380, "Half a one-column menu's height: \(menu.frame.height)")
-			#expect(abs(menu.frame.maxY - (button.frame.maxY + VaultPopoverPresenter.besideLift)) < 1,
-				"Level with the button: menu \(menu.frame), button \(button.frame)")
+			#expect(menu.frame.height < 360, "Half a one-column menu's height: \(menu.frame.height)")
+			let below = abs(menu.frame.maxY - (button.frame.minY - VaultPopoverPresenter.gap)) < 1
+			let above = abs(menu.frame.minY - (button.frame.maxY + VaultPopoverPresenter.gap)) < 1
+			#expect(below || above, "Against the button: menu \(menu.frame), button \(button.frame)")
+			#expect(abs(menu.frame.maxX - button.frame.maxX) < 1 || abs(menu.frame.minX - button.frame.minX) < 1, "Lined up with one of its edges")
 			try await host.click("CI storage", in: menu)
 			#expect(try await host.waitUntil { !menu.isVisible })
 			#expect(try await host.waitForText("variable"))

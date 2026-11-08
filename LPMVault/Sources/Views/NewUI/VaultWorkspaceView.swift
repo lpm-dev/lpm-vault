@@ -351,7 +351,6 @@ struct VaultWorkspaceView: View {
 								searchText: $searchText,
 								showsAccountSwitcher: shows(.account),
 								onNewProject: { showNewProject = true },
-								onCloudProjects: { showCloudProjects = true },
 								onNewEnvironment: { showNewEnvironment = true },
 								onProjectSettings: { openProjectSettings($0, focusingName: false) },
 								onRenameProject: { openProjectSettings($0, focusingName: true) },
@@ -579,7 +578,8 @@ struct VaultWorkspaceView: View {
 					VaultAccountSwitcher(
 						store: store,
 						isPresented: shows(.account),
-						onSignOut: { confirmsSignOut = true }
+						onSignOut: { confirmsSignOut = true },
+						onImport: { showCloudProjects = true }
 					)
 					.frame(width: VaultPaneBudget.clamp(
 						store.layout.sidebarWidth,

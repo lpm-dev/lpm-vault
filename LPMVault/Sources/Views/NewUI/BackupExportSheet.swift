@@ -251,7 +251,7 @@ struct BackupExportSheet: View {
 		HStack(spacing: 6) {
 			Group {
 				if reveals {
-					TextField(title, text: text)
+					TextField(vaultPrompt: title, text: text)
 				} else {
 					SecureField(title, text: text)
 				}

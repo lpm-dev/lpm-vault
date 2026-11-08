@@ -187,3 +187,12 @@ struct VaultInlineWarning: View {
 		.accessibilityElement(children: .combine)
 	}
 }
+
+extension TextField where Label == Text {
+	/// A field whose prompt, while it's empty, is drawn in the placeholder
+	/// color, 4.5:1 on any surface a field sits on, rather than the system's
+	/// lighter gray. The prompt names the field for VoiceOver too.
+	init(vaultPrompt prompt: String, text: Binding<String>, axis: Axis = .horizontal) {
+		self.init(text: text, prompt: Text(prompt).foregroundStyle(VaultPalette.placeholder), axis: axis) { Text(prompt) }
+	}
+}

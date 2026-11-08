@@ -37,6 +37,8 @@ struct PlatformsView: View {
 					addPlatformSection
 					revocationSection
 				}
+				// As wide as Settings' other parts, inside the overlay.
+				.frame(maxWidth: showsHeader ? .infinity : VaultMetrics.formWidth, alignment: .leading)
 				.padding(.horizontal, showsHeader ? 20 : 28)
 				.padding(.top, showsHeader ? 18 : 24)
 				.padding(.bottom, 20)
@@ -165,31 +167,35 @@ struct PlatformsView: View {
 					}
 				}
 			}
-			VStack(alignment: .leading, spacing: 0) {
-				if connections.isEmpty {
-					if platforms.isLoading {
+			if connections.isEmpty, !platforms.isLoading {
+				// A flat note, not a card: the cards below are the platforms to connect.
+				emptyState
+			} else {
+				VStack(alignment: .leading, spacing: 0) {
+					if connections.isEmpty {
 						Text("Loading…")
 							.font(.system(size: 12.5))
 							.foregroundStyle(VaultPalette.textTertiary)
 							.padding(16)
-					} else {
-						emptyState
+					}
+					ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
+						if index > 0 { VaultHairline() }
+						connectionRow(connection)
 					}
 				}
-				ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
-					if index > 0 { VaultHairline() }
-					connectionRow(connection)
-				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.vaultPlatformCard()
 			}
-			.frame(maxWidth: .infinity, alignment: .leading)
-			.vaultPlatformCard()
 			cleanupNotes
 		}
 	}
 
 	private var emptyState: some View {
-		HStack(spacing: 12) {
-			VaultCardIcon(systemImage: "cloud")
+		HStack(alignment: .firstTextBaseline, spacing: 10) {
+			Image(systemName: "cloud")
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 2) {
 				Text("No platforms connected")
 					.font(.system(size: 13, weight: .semibold))
@@ -201,8 +207,10 @@ struct PlatformsView: View {
 			}
 			Spacer(minLength: 0)
 		}
-		.padding(16)
+		.padding(.horizontal, 14)
+		.padding(.vertical, 12)
 		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sectionBand))
 	}
 
 	private func connectionRow(_ connection: PlatformConnection) -> some View {

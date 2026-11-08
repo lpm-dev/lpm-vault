@@ -176,7 +176,7 @@ struct VaultProjectIconPicker: View {
 	/// moves to the grid.
 	private func searchField(_ prompt: String) -> some View {
 		HStack(spacing: 6) {
-			TextField(prompt, text: $query)
+			TextField(vaultPrompt: prompt, text: $query)
 				.textFieldStyle(.plain)
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)

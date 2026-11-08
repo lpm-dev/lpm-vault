@@ -9,7 +9,8 @@ extension SheetInteractionTests {
 	@MainActor
 	struct HistoryInteractionTests {
 		private static let projectID = "history-ui"
-		private static let sidebar = CGRect(x: 0, y: 0, width: 0.3, height: 1)
+		/// The sidebar's column below the title bar, which names the project too.
+		private static let sidebar = CGRect(x: 0, y: 0, width: 0.3, height: 0.92)
 		private static let initial: [String: [String: String]] = ["production": ["API_KEY": "k1", "DB_URL": "db1"], "staging": ["API_KEY": "s1"]]
 		private static let edited: [String: [String: String]] = ["production": ["API_KEY": "k2", "DB_URL": "db1"], "staging": ["API_KEY": "s1"]]
 

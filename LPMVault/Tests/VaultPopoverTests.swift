@@ -100,15 +100,18 @@ struct VaultPopoverTests {
 		#expect(frame.minY >= screen.minY + VaultPopoverPresenter.screenMargin)
 	}
 
-	@Test("the area a popover may use leaves out the window's title bar, unless the popover's view is in it")
+	@Test("the area a popover may use leaves out the window's title bar and the status bar along its bottom, unless the popover's view is in one")
 	func clearOfTitleBar() {
 		let screen = CGRect(x: 0, y: 0, width: 1440, height: 1200)
 		let window = CGRect(x: 100, y: 50, width: 1280, height: 800)
 		let content = CGRect(x: 400, y: 500, width: 120, height: 28)
 		#expect(VaultPopoverPresenter.area(of: window, for: content).maxY == window.maxY - VaultMetrics.titleBar)
+		#expect(VaultPopoverPresenter.area(of: window, for: content).minY == window.minY + VaultMetrics.statusBar)
+		let inStatusBar = CGRect(x: 400, y: window.minY + 4, width: 120, height: 28)
+		#expect(VaultPopoverPresenter.area(of: window, for: inStatusBar).minY == window.minY, "A popover from the status bar may use the room beside it")
 		let inTitleBar = CGRect(x: 1100, y: window.maxY - 37, width: 120, height: 28)
 		#expect(VaultPopoverPresenter.area(of: window, for: inTitleBar) == window)
-		let tall = CGSize(width: 240, height: 400)
+		let tall = CGSize(width: 240, height: 380)
 		let frame = VaultPopoverPresenter.frame(size: tall, beside: content, on: .top, window: VaultPopoverPresenter.area(of: window, for: content), screen: screen)
 		#expect(frame.maxY <= window.maxY - VaultMetrics.titleBar, "No room above under the title bar, so it opens below")
 	}
@@ -131,6 +134,24 @@ struct VaultPopoverTests {
 
 @Suite("Menu columns")
 struct VaultMenuColumnTests {
+	@Test("in a menu of columns, up and down stay in a column, and left and right go across to the row nearest its height")
+	@MainActor
+	func columnKeys() {
+		typealias Row = VaultMenuList<Int>.Row
+		let columns: [[Row]] = [
+			[Row(id: 1, title: "A", section: "ONE"), Row(id: 2, title: "B"), Row(id: 3, title: "C", isEnabled: false), Row(id: 4, title: "D")],
+			[Row(id: 5, title: "E", section: "TWO"), Row(id: 6, title: "F"), Row(id: 7, title: "G")],
+		]
+		#expect(VaultMenuList.row(after: 4, by: 1, in: columns) == 1, "Down from a column's last row goes around to its first")
+		#expect(VaultMenuList.row(after: 2, by: 1, in: columns) == 4, "A row that can't be chosen is skipped")
+		#expect(VaultMenuList.row(after: nil, by: 1, in: columns) == 1)
+		#expect(VaultMenuList.row(beside: 2, by: 1, in: columns) == 6, "Across, level with it")
+		#expect(VaultMenuList.row(beside: 4, by: 1, in: columns) == 7, "The nearest row when the other column is shorter")
+		#expect(VaultMenuList.row(beside: 7, by: -1, in: columns) == 2, "Back, past the row that can't be chosen, to the nearest that can, the higher of two")
+		#expect(VaultMenuList.row(beside: 6, by: 1, in: columns) == 6, "Nowhere further to go")
+		#expect(VaultMenuList.row(beside: nil, by: 1, in: columns) == 1)
+	}
+
 	@Test("a long menu splits at section starts into columns as even as they can be, keeping its order")
 	@MainActor
 	func balancedColumns() {

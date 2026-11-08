@@ -353,7 +353,7 @@ private struct VaultKeyEditor: View {
 			ZStack(alignment: .leading) {
 				// Sizes the field to the name, with room for the insertion point.
 				Text(name.isEmpty ? "KEY_NAME" : name).font(font).padding(.trailing, 4).hidden().accessibilityHidden(true)
-				TextField("KEY_NAME", text: nameBinding)
+				TextField(vaultPrompt: "KEY_NAME", text: nameBinding)
 					.textFieldStyle(.plain)
 					.font(font)
 					.foregroundStyle(VaultPalette.textPrimary)
@@ -382,12 +382,19 @@ private struct VaultKeyEditor: View {
 		let allRevealed = store.canUseLocalSecrets
 			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
 		if !isPublic, cards.count > 1 {
-			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye",
-				help: allRevealed ? "Hide this key in all environments" : "Reveal this key in all environments", compact: true) {
-				toggleRevealAll(allRevealed)
+			// Named, as the page's own Reveal All is, beside the menu that sets every environment; just the eye where a narrow inspector has no room.
+			let name = allRevealed ? "Hide this key in all environments" : "Reveal this key in all environments"
+			ViewThatFits(in: .horizontal) {
+				VaultBarButton(systemImage: allRevealed ? "eye.slash" : "eye", title: allRevealed ? "Hide" : "Reveal", borderless: true,
+					disabled: !store.canUseLocalSecrets, height: 26) {
+					toggleRevealAll(allRevealed)
+				}
+				VaultBarButton(systemImage: allRevealed ? "eye.slash" : "eye", borderless: true, disabled: !store.canUseLocalSecrets, height: 26) {
+					toggleRevealAll(allRevealed)
+				}
 			}
-			.disabled(!store.canUseLocalSecrets)
-			.opacity(store.canUseLocalSecrets ? 1 : 0.45)
+			.help(name)
+			.accessibilityLabel(name)
 		}
 	}
 
@@ -455,6 +462,7 @@ private struct VaultKeyEditor: View {
 		return VStack(alignment: .leading, spacing: 12) {
 			HStack(spacing: 8) {
 				Text(singleEnvironment == nil ? "VALUES" : "VALUE").vaultSectionLabel()
+					.fixedSize()
 				Spacer(minLength: 4)
 				// The values' own controls, together at the trailing edge.
 				HStack(spacing: 2) {
@@ -482,7 +490,8 @@ private struct VaultKeyEditor: View {
 			let value = currentValue(in: source, draft: draft)
 			edit { $0.setValue(value, in: environments) }
 		} label: {
-			Text("Set All Environments")
+			// Short beside Reveal; its menu and its name for VoiceOver say what it sets.
+			Text("Set All")
 				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(sources.isEmpty ? VaultPalette.textFaint : VaultPalette.textSecondary)
 		}

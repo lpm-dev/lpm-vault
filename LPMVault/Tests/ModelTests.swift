@@ -33,7 +33,7 @@ extension SheetInteractionTests {
 			let lines = AccessibilityTree.lines(in: host.view, region: CGRect(x: contentStart, y: 0, width: 1 - contentStart, height: 1))
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 			let signIn = try #require(lines.first { $0.text.contains("Sign In with Browser") })
-			let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
+			let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Registry Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
 			#expect(explanation.bounds.minY > signIn.bounds.maxY)
 			#expect(signIn.bounds.minY > server.bounds.maxY)
 			#if DEBUG

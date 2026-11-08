@@ -142,17 +142,13 @@ struct VaultTitleBarView: View {
 	}
 
 	private var breadcrumb: some View {
+		// The app's mark, then where the window is: the project and its environment, or the app's name without one.
 		HStack(spacing: 7) {
 			VaultAppMark(size: 18)
-			Text("LPM Vault")
-				.font(.system(size: 13, weight: .semibold))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.fixedSize()
-
 			if let project {
-				Text("— \(project.name)")
-					.font(.system(size: 13))
-					.foregroundStyle(VaultPalette.textTertiary)
+				Text(project.name)
+					.font(.system(size: 13, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 
 				if case .environment(let environment) = mode {
@@ -163,11 +159,20 @@ struct VaultTitleBarView: View {
 						.accessibilityHidden(true)
 					Text(VaultProject.displayName(for: environment))
 						.font(.system(size: 13))
-						.foregroundStyle(VaultPalette.textTertiary)
+						.foregroundStyle(VaultPalette.textSecondary)
 						.lineLimit(1)
 				}
+			} else {
+				Text("LPM Vault")
+					.font(.system(size: 13, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.fixedSize()
 			}
 		}
+		// Read as the window's title, the app's name first, as a window's title bar is.
+		.accessibilityElement(children: .ignore)
+		.accessibilityLabel(windowTitle)
+		.accessibilityAddTraits(.isHeader)
 		.fixedSize(horizontal: false, vertical: true)
 	}
 
@@ -267,6 +272,14 @@ struct VaultTitleBarView: View {
 			.help(hasSaved ? "Publish to a saved destination or a new one" : "Publish an environment to a platform")
 			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
 		}
+	}
+
+	private var windowTitle: String {
+		guard let project else { return "LPM Vault" }
+		if case .environment(let environment) = mode {
+			return "LPM Vault — \(project.name) › \(VaultProject.displayName(for: environment))"
+		}
+		return "LPM Vault — \(project.name)"
 	}
 
 	private var isOrganization: Bool {

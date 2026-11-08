@@ -955,7 +955,7 @@ private struct NetlifyDestinationFields: View {
 			GridRow {
 				PublishDestinationField("Branch") {
 					VStack(alignment: .leading, spacing: 4) {
-						TextField("staging", text: $form.branch)
+						TextField(vaultPrompt: "staging", text: $form.branch)
 							.textFieldStyle(.plain)
 							.font(VaultTypography.tabular(12.5))
 							.foregroundStyle(VaultPalette.textPrimary)

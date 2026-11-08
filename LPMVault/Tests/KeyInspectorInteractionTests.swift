@@ -185,6 +185,22 @@ extension SheetInteractionTests {
 			}
 		}
 
+		@Test("with values in several environments, a labeled Reveal shows them all, and then says Hide")
+		func revealAllIsLabeled() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "one"], "production": ["TOKEN": "two"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 700))
+			defer { host.window.close() }
+			let reveal = try await host.waitForElement(saying: "Reveal this key in all environments")
+			#expect(reveal.role == .button)
+			let drawn = try await host.drawnFrame(saying: "Reveal this key in all environments")
+			#expect(drawn.width > 30, "It shows its name beside the eye, not the eye alone: \(drawn)")
+			let label = try await host.drawnFrame(saying: "VALUES")
+			#expect(label.height < 16 && label.width > 30, "The section's label stays on one line beside them: \(label)")
+			try await host.click("Reveal this key in all environments")
+			#expect(try await host.waitForText("Hide this key in all environments"))
+		}
+
 		@Test("a value's More menu opens in the app's popover: a format copies, and Generate opens the generator in its place")
 		func moreMenu() async throws {
 			let (store, _) = makeStore(["default": ["TOKEN": "old"]])

@@ -39,7 +39,7 @@ struct ConnectCoolifySheet: View {
 			VaultHairline()
 			VStack(alignment: .leading, spacing: 16) {
 				field("Coolify address") {
-					TextField("https://coolify.example.com", text: $address)
+					TextField(vaultPrompt: "https://coolify.example.com", text: $address)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(12.5))
 						.foregroundStyle(VaultPalette.textPrimary)

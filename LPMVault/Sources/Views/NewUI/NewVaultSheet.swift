@@ -42,7 +42,7 @@ struct NewVaultSheet: View {
 
 				VStack(alignment: .leading, spacing: 7) {
 					Text("PROJECT NAME").vaultSectionLabel()
-					TextField("my-api-server", text: $name)
+					TextField(vaultPrompt: "my-api-server", text: $name)
 						.textFieldStyle(.plain)
 						.font(.system(size: 12.5))
 						.foregroundStyle(VaultPalette.textPrimary)

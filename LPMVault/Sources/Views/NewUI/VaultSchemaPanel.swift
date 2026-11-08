@@ -571,7 +571,7 @@ private struct VaultSchemaKeyEditor: View {
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				if renamable {
-					TextField("KEY_NAME", text: $name)
+					TextField(vaultPrompt: "KEY_NAME", text: $name)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(13.5, .bold))
 						.autocorrectionDisabled()
@@ -743,7 +743,7 @@ private struct VaultSchemaKeyEditor: View {
 		let invalid = switch status { case .empty, .available: false; default: true }
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
-				TextField("KEY_NAME", text: $name)
+				TextField(vaultPrompt: "KEY_NAME", text: $name)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(13.5, .bold))
 					.autocorrectionDisabled()
@@ -1015,9 +1015,8 @@ private struct VaultSchemaKeyEditor: View {
 	/// Labeled above, with where it shows below, so neither goes once something is typed.
 	private var descriptionField: some View {
 		VStack(alignment: .leading, spacing: 6) {
-			Text("Description")
-				.font(.system(size: 12, weight: .semibold))
-				.foregroundStyle(VaultPalette.textSecondary)
+			// Labeled as the panel's other sections are.
+			Text("DESCRIPTION").vaultSectionLabel()
 				.accessibilityHidden(true)
 			TextField("Description", text: textBinding(\.description, field: "description"),
 				prompt: Text("Add a description").foregroundStyle(VaultPalette.placeholder), axis: .vertical)
@@ -1289,7 +1288,7 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private func textField(_ placeholder: String, label: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
-		TextField(placeholder, text: textBinding(text, field: field))
+		TextField(vaultPrompt: placeholder, text: textBinding(text, field: field))
 			.textFieldStyle(.plain)
 			.font(VaultTypography.tabular(12))
 			.autocorrectionDisabled()
@@ -1345,7 +1344,7 @@ private struct VaultSchemaKeyEditor: View {
 						}
 					}
 					if case .equals = condition.condition {
-						TextField("value", text: Binding(
+						TextField(vaultPrompt: "value", text: Binding(
 							get: { if case .equals(let value)? = self.rule.requiredWhen?.condition { value } else { "" } },
 							set: { text in
 								update(coalescing: "requiredWhen") { rule in
@@ -1531,8 +1530,8 @@ private struct VaultSchemaKeyEditor: View {
 		.buttonStyle(VaultPressStyle())
 		.disabled(!canEdit)
 		.accessibilityLabel("Add Rule")
-		// Beside the button, where the menu has the window's whole height and shows every rule at once.
-		.vaultPopover(isPresented: $addingRule, arrowEdge: .leading) {
+		// Below the button, as its chevron says, hanging back from its trailing edge into the page; above it where there's no room below.
+		.vaultPopover(isPresented: $addingRule, arrowEdge: .bottom) {
 			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, in: context)) }) { field in
 				addingRule = false
 				add(field)
@@ -2058,7 +2057,7 @@ private struct VaultScopeEditor: View {
 			if initialValue != nil {
 				VStack(alignment: .leading, spacing: 5) {
 					Text("Value").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-					TextField("value", text: $value)
+					TextField(vaultPrompt: "value", text: $value)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(12))
 						.focused($valueFocused)
@@ -2205,7 +2204,7 @@ struct VaultChipField: View {
 					.frame(height: 22)
 					.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				}
-				TextField(values.isEmpty ? placeholder : "Add", text: $entry)
+				TextField(vaultPrompt: values.isEmpty ? placeholder : "Add", text: $entry)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(11))
 					.frame(width: 110, height: 22)
@@ -2272,7 +2271,7 @@ struct VaultKeyPicker: View {
 					.font(.system(size: 10.5, weight: .medium))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.accessibilityHidden(true)
-				TextField("Search keys", text: $query)
+				TextField(vaultPrompt: "Search keys", text: $query)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12))
 					.focused($searchFocused)
@@ -2328,15 +2327,15 @@ private struct VaultAddRuleMenu: View {
 	let onAdd: (ProjectEnvSchemaRule.Field) -> Void
 
 	var body: some View {
-		// Two columns, split at section starts, so every rule shows at once and the menu can open
-		// level with its button; a window too short for that scrolls it, with cues at either end.
+		// Two columns, so every rule shows at once by its button: who needs a key and who sees it,
+		// then what its value is, about as tall. A window too short for that scrolls it, with cues at either end.
 		VaultMenuList(rows: rows, width: 500, columns: 2, maximumHeight: 640, label: "Add Rule", onChoose: onAdd)
 	}
 
 	/// Each section's rules, the first carrying its section's label; a rule
 	/// that can't be added yet says what it needs.
 	private var rows: [VaultMenuList<ProjectEnvSchemaRule.Field>.Row] {
-		ProjectEnvSchemaRule.Section.allCases.flatMap { section in
+		[ProjectEnvSchemaRule.Section.presence, .exposure, .shape, .defaults].flatMap { section in
 			fields.filter { $0.field.section == section }.enumerated().map { index, row in
 				VaultMenuList<ProjectEnvSchemaRule.Field>.Row(
 					id: row.field, title: row.field.title, detail: row.availability.hint,

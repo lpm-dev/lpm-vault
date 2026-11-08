@@ -1,13 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// ↑, ↓, Return and Esc in a window, wherever focus is there, while a menu
-/// shows over it; none while a sheet is attached.
+/// The arrow keys, Return and Esc in a window, wherever focus is there, while
+/// a menu shows over it; none while a sheet is attached. A handler that
+/// returns false lets the key go on, as one with nowhere to move does.
 struct VaultMenuKeys: NSViewRepresentable {
 	var handle: (Key) -> Bool
 
 	enum Key: Equatable, Sendable {
-		case up, down, open, close
+		case up, down, left, right, open, close
 	}
 
 	nonisolated static func key(modifiers: NSEvent.ModifierFlags, keyCode: UInt16) -> Key? {
@@ -15,6 +16,8 @@ struct VaultMenuKeys: NSViewRepresentable {
 		return switch keyCode {
 		case 126: .up
 		case 125: .down
+		case 123: .left
+		case 124: .right
 		case 36, 76: .open
 		case 53: .close
 		default: nil

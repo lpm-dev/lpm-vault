@@ -354,6 +354,15 @@ extension SheetInteractionTests {
 			let cancelFill = color(at: CGPoint(x: cancel.minX + 4, y: cancel.midY))
 			#expect(addFill.blue - max(addFill.red, addFill.green) > 20, "Add Key is tinted with the accent: \(addFill)")
 			#expect(abs(addFill.blue - cancelFill.blue) + abs(addFill.red - cancelFill.red) > 30, "Add Key \(addFill), Cancel \(cancelFill)")
+			if scheme == .dark {
+				// Its title, the whitest ink across the button's middle, is dimmed as disabled text is, not near white as a working button's.
+				var whitest = 0
+				for x in stride(from: add.minX + 8, to: add.maxX - 8, by: 0.5) {
+					let ink = color(at: CGPoint(x: x, y: add.midY))
+					whitest = max(whitest, min(ink.red, ink.green, ink.blue))
+				}
+				#expect(whitest < 150, "In dark, the title of a button that's off is dim: \(whitest)")
+			}
 			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.texts.contains { $0.contains("↩") } },
 				"Its shortcut waits until it's on")
 		}

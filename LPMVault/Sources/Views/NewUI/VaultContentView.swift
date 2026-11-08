@@ -356,7 +356,7 @@ struct VaultContentView: View {
 		let stored = project.secretCount(for: selectedEnvironment)
 		let declaredOnly = max(0, derived.environmentKeys.count - stored)
 		return (VaultProject.displayName(for: selectedEnvironment),
-			stored.counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) only in lpm.json"))
+			stored.counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) declared, not set"))
 	}
 
 	private func headerIdentity(_ derived: VaultContentDerivation, showsApproval: Bool, showsCounts: Bool = true) -> some View {
@@ -1041,7 +1041,7 @@ struct VaultContentView: View {
 		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
-			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) only in lpm.json"))
+			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) declared, not set"))
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
 		let details: [Text] = []
 		return ViewThatFits(in: .horizontal) {

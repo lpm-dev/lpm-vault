@@ -688,7 +688,8 @@ struct VaultSchemaView: View {
 				.lineLimit(1)
 		}
 		.padding(.horizontal, 20)
-		.padding(.vertical, 8)
+		// As tall as the groups' band, which holds a button, so the bands keep one rhythm.
+		.frame(minHeight: Self.bandHeight)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.vaultSectionBand()
 	}
@@ -741,6 +742,8 @@ struct VaultSchemaView: View {
 	private static let undeclaredRowHeight: CGFloat = 36
 	/// A borderless action's trailing inset, so its title ends where the page's bordered buttons' edges do: their 20-point inset, less its own padding.
 	private static let bandActionInset: CGFloat = 20 - 9
+	/// Every section band's height: its 26-point action and 7 points above and below.
+	private static let bandHeight: CGFloat = 40
 	private static let groupsExplanation = "Keys the LPM CLI checks together: all, one or none of a group's keys"
 
 	/// The groups' band, which says "none yet" while there are none, rather than a row of its own; what a group is, its tooltip says.
@@ -766,7 +769,7 @@ struct VaultSchemaView: View {
 		.padding(.leading, 20)
 		// The borderless button's title ends where the bordered buttons' edges above do.
 		.padding(.trailing, Self.bandActionInset)
-		.padding(.vertical, 8)
+		.frame(minHeight: Self.bandHeight)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.vaultSectionBand()
 	}

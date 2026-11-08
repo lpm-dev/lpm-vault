@@ -97,19 +97,36 @@ extension SheetInteractionTests {
 			return store
 		}
 
-		private func menu(_ store: VaultStore, isPresented: Binding<Bool> = .constant(true), onSignOut: @escaping () -> Void = {}) -> SheetTestHost<some View> {
-			SheetTestHost(VaultAccountSwitcher(store: store, isPresented: isPresented, onSignOut: onSignOut).frame(width: 264),
-				size: NSSize(width: 264, height: 320), keepsRequestedSize: true, usesHostingView: true)
+		private func menu(_ store: VaultStore, isPresented: Binding<Bool> = .constant(true), onSignOut: @escaping () -> Void = {},
+			onImport: @escaping () -> Void = {}) -> SheetTestHost<some View> {
+			SheetTestHost(VaultAccountSwitcher(store: store, isPresented: isPresented, onSignOut: onSignOut, onImport: onImport).frame(width: 264),
+				size: NSSize(width: 264, height: 360), keepsRequestedSize: true, usesHostingView: true)
 		}
 
-		@Test("the menu lists the person's own vault, then their organizations', then the account on lpm.dev and signing out")
+		@Test("signed in, the menu imports projects from lpm.dev, closing as the import opens; signed out, there's nothing there to import")
+		func importsFromLpmDev() async throws {
+			var imported = false
+			var shown = true
+			let signedIn = store(signedIn: true)
+			let host = menu(signedIn, isPresented: Binding(get: { shown }, set: { shown = $0 }), onImport: { imported = true })
+			defer { host.window.close() }
+			try await host.click("Import Projects from lpm.dev…")
+			#expect(try await host.waitUntil { imported && !shown })
+
+			let signedOut = menu(store(signedIn: false))
+			defer { signedOut.window.close() }
+			#expect(try await signedOut.waitForText("Sign In…"))
+			#expect(try await !signedOut.text().contains("Import Projects"))
+		}
+
+		@Test("the menu lists the person's own vault, then their organizations', then importing, the account on lpm.dev and signing out")
 		func signedInLayout() async throws {
 			let store = store(signedIn: true)
 			let host = menu(store)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Manage Account on lpm.dev"))
 			let order = host.lines().map(\.text)
-			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Manage Account on lpm.dev", "Sign Out…"].map { name in
+			let positions = ["PERSONAL", "tolga", "ORGANIZATIONS", "Acme", "Import Projects from lpm.dev…", "Manage Account on lpm.dev", "Sign Out…"].map { name in
 				order.firstIndex { $0.contains(name) }
 			}
 			#expect(positions.allSatisfy { $0 != nil } && positions == positions.sorted { ($0 ?? 0) < ($1 ?? 0) }, "\(order)")

@@ -126,20 +126,21 @@ struct VaultSettingsContent: View {
 	}
 
 	private var serverSettings: some View {
-		settingsSection("SERVER") {
+		// The registry the account signs in to and syncs with, not a project's environment.
+		settingsSection("REGISTRY SERVER") {
 			HStack(spacing: 12) {
 				VStack(alignment: .leading, spacing: 2) {
-					Text(store.appEnvironment == .production ? "Production" : "Local development")
+					Text(store.appEnvironment == .production ? "lpm.dev" : "Local development")
 						.font(.system(size: 13, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
-					Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
-						.font(VaultTypography.tabular(11))
+					Text(store.appEnvironment == .production ? "Used for account access and cloud sync" : "localhost:3000, for account access and cloud sync")
+						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 				Spacer()
 				#if DEBUG
 				VaultBarButton(
-					title: store.appEnvironment == .production ? "Use Local" : "Use Production"
+					title: store.appEnvironment == .production ? "Use Local" : "Use lpm.dev"
 				) {
 					store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
 				}

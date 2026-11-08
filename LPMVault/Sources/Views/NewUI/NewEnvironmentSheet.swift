@@ -124,7 +124,7 @@ struct VaultEnvironmentNameField: View {
 				Text(".env.")
 					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
-				TextField("staging", text: $name)
+				TextField(vaultPrompt: "staging", text: $name)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textPrimary)

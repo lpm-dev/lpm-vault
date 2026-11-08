@@ -79,8 +79,15 @@ struct VaultMenuList<ID: Hashable>: View {
 		let columnRows = Self.columns(of: rows, count: columns)
 		// A menu of options keeps a column for the check, so titles line up whichever is chosen.
 		let checks = rows.contains(where: \.isChecked)
-		let list = HStack(alignment: .top, spacing: 6) {
+		let list = HStack(alignment: .top, spacing: 0) {
 			ForEach(columnRows.indices, id: \.self) { index in
+				if index > 0 {
+					// Columns read as columns, a line between them.
+					VaultHairline(axis: .vertical)
+						.padding(.horizontal, 8)
+						.padding(.vertical, 4)
+						.accessibilityHidden(true)
+				}
 				VStack(alignment: .leading, spacing: 1) {
 					ForEach(columnRows[index]) { row in
 						if let section = row.section {
@@ -102,6 +109,8 @@ struct VaultMenuList<ID: Hashable>: View {
 				.frame(maxWidth: .infinity, alignment: .topLeading)
 			}
 		}
+		// As tall as its tallest column, which the line between columns spans, and no taller.
+		.fixedSize(horizontal: false, vertical: true)
 		.padding(6)
 		CappedHeight(maximum: min(maximumHeight, room)) {
 			ViewThatFits(in: .vertical) {
@@ -129,8 +138,11 @@ struct VaultMenuList<ID: Hashable>: View {
 			let highlight = $highlighted
 			VaultMenuKeys { key in
 				switch key {
-				case .up: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: -1, in: rows)
-				case .down: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: 1, in: rows)
+				case .up: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: -1, in: columnRows)
+				case .down: highlight.wrappedValue = Self.row(after: highlight.wrappedValue, by: 1, in: columnRows)
+				case .left, .right:
+					guard columnRows.count > 1 else { return false }
+					highlight.wrappedValue = Self.row(beside: highlight.wrappedValue, by: key == .left ? -1 : 1, in: columnRows)
 				case .open:
 					guard let chosen = highlight.wrappedValue else { return false }
 					onChoose(chosen)
@@ -239,6 +251,43 @@ struct VaultMenuList<ID: Hashable>: View {
 			let end = index + 1 < starts.count ? starts[index + 1] : sections.count
 			return sections[starts[index]..<end].flatMap { $0 }
 		}
+	}
+
+	/// The enabled row a step up or down from `current` in its own column,
+	/// around from either end; with none yet, the first column's first or last.
+	static func row(after current: ID?, by step: Int, in columns: [[Row]]) -> ID? {
+		guard let current, let column = columns.first(where: { $0.contains { $0.id == current } }) else {
+			return row(after: nil, by: step, in: columns.first ?? [])
+		}
+		return row(after: current, by: step, in: column)
+	}
+
+	/// The enabled row in the column `step` columns over from `current`'s,
+	/// nearest to its height, counting section labels as rows; with none yet,
+	/// the first enabled row of the column it would come from.
+	static func row(beside current: ID?, by step: Int, in columns: [[Row]]) -> ID? {
+		/// Each row's height down its column, a section label taking a row's.
+		func slots(_ column: [Row]) -> [Int] {
+			var slot = 0
+			return column.map { row in
+				if row.section != nil { slot += 1 }
+				defer { slot += 1 }
+				return slot
+			}
+		}
+		guard let current, let from = columns.firstIndex(where: { $0.contains { $0.id == current } }),
+			let position = columns[from].firstIndex(where: { $0.id == current })
+		else {
+			let start = step > 0 ? columns.first : columns.last
+			return start?.first(where: \.isEnabled)?.id
+		}
+		let to = from + step
+		guard columns.indices.contains(to) else { return current }
+		let height = slots(columns[from])[position]
+		let target = columns[to]
+		let targetSlots = slots(target)
+		let nearest = target.indices.filter { target[$0].isEnabled }.min { abs(targetSlots[$0] - height) < abs(targetSlots[$1] - height) }
+		return nearest.map { target[$0].id } ?? current
 	}
 
 	/// The enabled row a step up or down from `current`, around from either end, as in a menu.

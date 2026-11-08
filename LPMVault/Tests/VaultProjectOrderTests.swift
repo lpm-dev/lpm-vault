@@ -526,18 +526,16 @@ extension SheetInteractionTests {
 			#expect(abs(schema.edge - matrix.edge) > 2, "On the Schema page the Schema row is highlighted instead")
 		}
 
-		@Test("the lpm.dev import button shows only while signed in")
-		func importNeedsSignIn() async throws {
+		@Test("the projects header holds New Project alone, signed in or not; importing from lpm.dev is in the account menu")
+		func headerHoldsNewProject() async throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 			let host = sidebarHost(store)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Create env project"))
-			#expect(try await !host.text().contains("Import env project from lpm.dev"), "Signed out, there's nothing on lpm.dev to import")
 			store.currentUser = LPMUser(id: "user", username: "user", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
-			#expect(try await host.waitForText("Import env project from lpm.dev"))
-			store.currentUser = nil
-			#expect(try await host.waitForTextToDisappear("Import env project from lpm.dev"))
+			try await host.settle()
+			#expect(try await !host.text().contains("Import env project from lpm.dev"), "No unlabeled icon beside it")
 		}
 
 		@Test("the sidebar lists a project's schema and environments, and no smart views")
@@ -779,7 +777,7 @@ extension SheetInteractionTests {
 		) -> SheetTestHost<some View> {
 			SheetTestHost(VaultSidebarView(store: store, mode: .constant(mode),
 				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
-				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
+				onNewProject: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
 				onDeleteProject: onDeleteProject, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
 				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }, reorder: reorder),
 				size: NSSize(width: width, height: height), keepsRequestedSize: true, usesHostingView: true)

@@ -50,6 +50,7 @@ struct VaultPublishMenu: View {
 				case .down: highlighted = Self.item(after: highlighted, by: 1, in: items(entries))
 				case .open: if let highlighted { open(highlighted, in: entries) }
 				case .close: isPresented = false
+				case .left, .right: return false
 				}
 				return true
 			}

@@ -38,7 +38,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture.store)
 			defer { host.window.close() }
-			let name = try await host.drawnFrame(saying: "— billing-app")
+			let name = try await host.drawnFrame(saying: "LPM Vault — billing-app")
 			let refresh = try await host.drawnFrame(saying: "Refresh")
 			let sync = try await host.drawnFrame(saying: "Sync status: Local")
 			let connect = try await host.drawnFrame(saying: "Connect CLI")

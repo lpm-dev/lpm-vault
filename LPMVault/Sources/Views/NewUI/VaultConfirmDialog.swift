@@ -139,7 +139,7 @@ struct VaultPromptDialog: View {
 				.foregroundStyle(prompt.problem == nil ? VaultPalette.textSecondary : VaultPalette.redText)
 				.lineSpacing(3)
 				.fixedSize(horizontal: false, vertical: true)
-			TextField(prompt.placeholder, text: prompt.text)
+			TextField(vaultPrompt: prompt.placeholder, text: prompt.text)
 				.textFieldStyle(.plain)
 				.font(.system(size: 13))
 				.foregroundStyle(VaultPalette.textPrimary)

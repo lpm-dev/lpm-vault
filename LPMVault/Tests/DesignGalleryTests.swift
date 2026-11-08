@@ -18,7 +18,8 @@ extension SheetInteractionTests {
 	@MainActor
 	struct DesignGalleryTests {
 		private static let projectID = "storefront-api"
-		private static let sidebar = CGRect(x: 0, y: 0, width: 0.25, height: 1)
+		/// The sidebar's column below the title bar, which names the project too.
+		private static let sidebar = CGRect(x: 0, y: 0, width: 0.25, height: 0.92)
 		private static let now = Date(timeIntervalSince1970: 1_793_800_000)
 		private static let size = NSSize(width: 1280, height: 800)
 

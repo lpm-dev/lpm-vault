@@ -31,7 +31,6 @@ struct VaultSidebarView: View {
 	@Binding var showsAccountSwitcher: Bool
 
 	let onNewProject: () -> Void
-	let onCloudProjects: () -> Void
 	let onNewEnvironment: () -> Void
 	let onProjectSettings: (VaultProject) -> Void
 	let onRenameProject: (VaultProject) -> Void
@@ -212,23 +211,9 @@ struct VaultSidebarView: View {
 		HStack(spacing: 8) {
 			Text("PROJECTS").vaultSectionLabel()
 			Spacer(minLength: 4)
-
-			// The header has room for one name, so importing names itself on hover, as the footer's icons do.
-			if store.isLoggedIn {
-				Button(action: onCloudProjects) {
-					Image(systemName: "icloud.and.arrow.down")
-						.font(.system(size: 11, weight: .medium))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.frame(width: 24, height: 22)
-						.contentShape(Rectangle())
-				}
-				.buttonStyle(VaultPressStyle(cornerRadius: 5))
-				.vaultTooltip("Import from lpm.dev")
-				.accessibilityLabel("Import env project from lpm.dev")
-			}
+			// Importing from lpm.dev is in the account menu, with the account's other lpm.dev actions.
 			headerAction("New Project", systemImage: "plus", label: "Create env project", action: onNewProject)
 		}
-		// One height whether or not the lpm.dev import shows, so the list below never shifts.
 		.frame(height: 24)
 		.padding(.leading, 16)
 		.padding(.trailing, 6)
@@ -752,11 +737,14 @@ struct VaultAccountSwitcher: View {
 	@Binding var isPresented: Bool
 	/// Asks to sign out, which the workspace confirms first.
 	var onSignOut: () -> Void = {}
+	/// Opens the import of the account's projects from lpm.dev.
+	var onImport: () -> Void = {}
 
 	@State private var hovered: Choice?
 
 	private enum Choice: Hashable {
 		case account(SelectedAccount)
+		case importProjects
 		case manage
 		case signOut
 		case signIn
@@ -774,6 +762,10 @@ struct VaultAccountSwitcher: View {
 			}
 			VaultHairline().padding(.horizontal, 8).padding(.vertical, 6)
 			if store.isLoggedIn {
+				menuRow("Import Projects from lpm.dev…", systemImage: "icloud.and.arrow.down", choice: .importProjects) {
+					isPresented = false
+					onImport()
+				}
 				menuRow("Manage Account on lpm.dev", systemImage: "arrow.up.right.square", choice: .manage) {
 					if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
 					isPresented = false

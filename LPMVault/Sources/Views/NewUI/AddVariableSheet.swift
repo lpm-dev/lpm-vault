@@ -170,7 +170,7 @@ struct AddVariableSheet: View {
 						.truncationMode(.middle)
 				}
 			}
-			TextField("e.g. DATABASE_URL", text: $draft.key)
+			TextField(vaultPrompt: "e.g. DATABASE_URL", text: $draft.key)
 				.textFieldStyle(.plain)
 				.font(VaultTypography.tabular(13))
 				.foregroundStyle(VaultPalette.textPrimary)

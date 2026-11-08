@@ -685,8 +685,8 @@ extension SheetInteractionTests {
 		defer { store.lock() }
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example", showsTaskExample: true).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 620), keepsRequestedSize: true, usesHostingView: true)
 		defer { host.window.close() }
-		#expect(try await host.waitForText("Close", footer: 70), "Without a folder nothing is connected yet, so the sheet only closes")
 		#expect(try await host.waitForText("Docs", footer: 70))
+		#expect(try await !host.text(footer: 70).contains("Close"), "Without a folder nothing is connected yet; the header's close is the way out")
 		try await host.click("Copy example")
 		#expect(store.clipboard.pasteboard.string(forType: .string)?.contains("tasks") == true)
 	}

@@ -267,6 +267,7 @@ private struct VaultSettingsRow<Control: View>: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
+						.frame(maxWidth: VaultMetrics.explanationWidth, alignment: .leading)
 				}
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)

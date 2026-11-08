@@ -286,7 +286,7 @@ struct VaultSchemaGroupEditor: View {
 		VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				if renamable {
-					TextField("group_name", text: $field)
+					TextField(vaultPrompt: "group_name", text: $field)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(13.5, .bold))
 						.autocorrectionDisabled()
@@ -517,7 +517,7 @@ struct VaultSchemaGroupEditor: View {
 				if isEditable { addMemberButton(group) }
 			}
 			if isLarge {
-				TextField("Filter \(group.members.count.formatted()) members", text: $memberFilter)
+				TextField(vaultPrompt: "Filter \(group.members.count.formatted()) members", text: $memberFilter)
 					.textFieldStyle(.roundedBorder)
 					.font(VaultTypography.tabular(12))
 					.accessibilityLabel("Filter the group's members")
