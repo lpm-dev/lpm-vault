@@ -147,6 +147,31 @@ extension SheetInteractionTests {
 			try data.write(to: folder.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
 		}
 
+		/// The window with a popover open over it, drawn where it shows, with the shadow its window casts.
+		private func saveWithPopover<V: View>(_ host: SheetTestHost<V>, _ name: String, dark: Bool, popover: NSWindow) async throws {
+			let folder = try #require(DesignGallery.folder)
+			try await host.settle()
+			let base = try host.snapshot(host.view)
+			let card = try host.snapshot(try #require(popover.contentView))
+			let scale = CGFloat(base.width) / host.view.bounds.width
+			let view = host.window.convertToScreen(host.view.convert(host.view.bounds, to: nil))
+			let context = try #require(CGContext(data: nil, width: base.width, height: base.height, bitsPerComponent: 8, bytesPerRow: 0,
+				space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(base, in: CGRect(x: 0, y: 0, width: base.width, height: base.height))
+			context.setShadow(offset: CGSize(width: 0, height: -6 * scale), blur: 18 * scale,
+				color: NSColor.black.withAlphaComponent(dark ? 0.45 : 0.16).cgColor)
+			context.draw(card, in: CGRect(x: (popover.frame.minX - view.minX) * scale, y: (popover.frame.minY - view.minY) * scale,
+				width: CGFloat(card.width), height: CGFloat(card.height)))
+			let image = try #require(context.makeImage())
+			let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+			try data.write(to: folder.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+		}
+
+		private func closePopover<V: View>(_ popover: NSWindow, in host: SheetTestHost<V>) async throws {
+			try host.key("\u{1b}", code: 53, in: popover)
+			_ = try await host.waitUntil { !popover.isVisible }
+		}
+
 		private func sheet<V: View>(of host: SheetTestHost<V>) async throws -> NSWindow {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -159,6 +184,8 @@ extension SheetInteractionTests {
 			let fixture = try makeFixture()
 			defer { fixture.store.lock(); try? FileManager.default.removeItem(atPath: fixture.folder) }
 			let store = fixture.store
+			// Loading reads every project's CLI approval, as unlocking does.
+			#expect(await store.loadProjects())
 			await store.refreshCliAccess()
 			let host = try await host(VaultWorkspaceView(store: store), store: store, dark: dark)
 			defer { host.window.close() }
@@ -177,6 +204,18 @@ extension SheetInteractionTests {
 			try await host.click("Schema", region: Self.sidebar)
 			#expect(try await host.waitForText("7 declared keys"))
 			try await save(host, "04-schema", dark: dark)
+
+			try await host.click("Client prefixes")
+			let prefixes = try await host.popoverWindow()
+			try await saveWithPopover(host, "16-popover-client-prefixes", dark: dark, popover: prefixes)
+			try await closePopover(prefixes, in: host)
+
+			try await host.click("PORT")
+			#expect(try await host.waitForText("Add rule"))
+			try await host.click("Add rule")
+			let rules = try await host.popoverWindow()
+			try await saveWithPopover(host, "17-popover-add-rule", dark: dark, popover: rules)
+			try await closePopover(rules, in: host)
 
 			try await host.click("History", region: Self.sidebar)
 			#expect(try await host.waitForText("Changed 3 keys"))
@@ -198,6 +237,7 @@ extension SheetInteractionTests {
 			]
 			for project in projects {
 				keychain.envStorage[project.id] = (name: project.name, path: "", environments: project.environments)
+				keychain.cliAccessPolicies[project.id] = .automatic
 			}
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in "lpm_session" }, platformURLOpener: { _ in },
@@ -208,10 +248,17 @@ extension SheetInteractionTests {
 				avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
 			store.openProject(id: Self.projectID)
 			defer { store.lock() }
+			// Loading reads every project's CLI approval, as unlocking does.
+			#expect(await store.loadProjects())
 			await store.refreshCliAccess()
 			let host = try await host(VaultWorkspaceView(store: store), store: store, dark: dark)
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.workspaceSnapshots[Self.projectID] != nil })
+			try await host.click("Sync status")
+			let sync = try await host.popoverWindow()
+			try await saveWithPopover(host, "15-popover-sync", dark: dark, popover: sync)
+			try await closePopover(sync, in: host)
+
 			try await host.click("New Key")
 			let addKey = try await sheet(of: host)
 			try await save(host, "10-sheet-new-key", dark: dark, window: addKey)
@@ -247,6 +294,7 @@ extension SheetInteractionTests {
 
 			let small = try makeFixture()
 			defer { small.store.lock(); try? FileManager.default.removeItem(atPath: small.folder) }
+			#expect(await small.store.loadProjects())
 			await small.store.refreshCliAccess()
 			let smallHost = try await host(VaultWorkspaceView(store: small.store), store: small.store, dark: dark, size: NSSize(width: 1040, height: 640))
 			defer { smallHost.window.close() }

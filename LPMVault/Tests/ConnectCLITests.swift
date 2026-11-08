@@ -457,13 +457,13 @@ extension SheetInteractionTests {
 			// The sheet's own height, which shows it all.
 			let text = try await renderedText(
 				of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
-				size: NSSize(width: 600, height: 690),
+				size: NSSize(width: 600, height: 600),
 				named: "connect-cli-sheet.png"
 			)
 
 			for expected in [
 				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
-				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
+				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "Show 2 More Commands", "Docs", "Done",
 			] {
 				#expect(text.contains(expected), "missing \(expected)")
 			}
@@ -664,7 +664,7 @@ extension SheetInteractionTests {
 		#expect(try await host.waitForText("Not linked to a project folder yet"))
 		let text = try await host.text()
 		#expect(text.contains("env=staging"))
-		#expect(!text.contains("has not been verified"))
+		#expect(!text.contains("hasn't been verified"))
 	}
 }
 
@@ -684,5 +684,29 @@ extension SheetInteractionTests {
 		#expect(try await host.waitForText("Docs", footer: 70))
 		try await host.click("Copy example")
 		#expect(store.clipboard.pasteboard.string(forType: .string)?.contains("tasks") == true)
+	}
+}
+
+extension SheetInteractionTests {
+	@Test("the CLI sheet shows the first command, and the others on request")
+	@MainActor
+	func moreCommands() async throws {
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+			clipboard: ClipboardManager(pasteboard: .withUniqueName()))
+		store.projects = [VaultProject(id: "commands", name: "Commands", path: "", environments: ["staging": [:]])]
+		store.isUnlocked = true
+		store.selectedProjectId = "commands"
+		store.selectedEnvironment = "staging"
+		defer { store.lock() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "commands").environment(\.colorScheme, .light),
+			size: NSSize(width: 600, height: 780), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await host.waitForText("lpm env list --env=staging"))
+		#expect(try await !host.text().contains("lpm dev"))
+		try await host.click("Show 2 More Commands")
+		#expect(try await host.waitForText("lpm dev --env=staging"))
+		#expect(try await host.text().contains("lpm run --env=staging <script>"))
+		try await host.click("Show Fewer")
+		#expect(try await host.waitForTextToDisappear("lpm dev"))
 	}
 }

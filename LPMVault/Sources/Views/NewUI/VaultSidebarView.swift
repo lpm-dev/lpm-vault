@@ -68,7 +68,7 @@ struct VaultSidebarView: View {
 						projectHeader
 
 						if derivedProjects.isEmpty {
-							Text(searchText.isEmpty ? "No env projects" : "No matching projects or keys")
+							Text(searchText.isEmpty ? "No projects yet" : "No matching projects or keys")
 								.font(.system(size: 12))
 								.foregroundStyle(VaultPalette.textTertiary)
 								.padding(.horizontal, 16)

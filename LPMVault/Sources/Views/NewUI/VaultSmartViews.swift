@@ -22,7 +22,8 @@ enum VaultSmartView: CaseIterable {
 	var symbol: String {
 		switch self {
 		case .drift: "notequal"
-		case .missing: "circle.dashed"
+		// A static mark: a dashed circle reads as something still loading.
+		case .missing: "minus.circle"
 		case .invalid: "xmark.circle.fill"
 		}
 	}
@@ -95,6 +96,8 @@ struct VaultSmartViewLinks: View {
 	var scope: String?
 	/// Shows only the counts, for a narrow status bar.
 	var compact = false
+	/// Views whose count the page already says in its own words, which the links leave out.
+	var omitted: Set<VaultSmartView> = []
 	let open: (VaultSmartView) -> Void
 
 	var body: some View {
@@ -107,7 +110,7 @@ struct VaultSmartViewLinks: View {
 					.accessibilityHidden(true)
 			}
 			ForEach(VaultSmartView.allCases, id: \.self) { view in
-				if let count = counts.count(of: view) {
+				if !omitted.contains(view), let count = counts.count(of: view) {
 					VaultSmartViewLink(view: view, count: count, isCurrent: current == view.filter, compact: compact) { open(view) }
 				}
 			}

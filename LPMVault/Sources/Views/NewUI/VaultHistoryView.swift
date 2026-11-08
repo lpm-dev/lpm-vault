@@ -107,7 +107,7 @@ struct VaultHistoryView: View {
 	}
 
 	private var environmentMenu: some View {
-		VaultBarMenu(accessibilityLabel: "Environment, \(history.filter.environment ?? "All environments")") {
+		VaultBarMenu(accessibilityLabel: "Environment, \(history.filter.environment ?? "All environments")", field: true) {
 			Button("All environments") { setEnvironment(nil) }
 			if let environments = history.timeline?.environments, !environments.isEmpty {
 				Divider()
@@ -128,7 +128,7 @@ struct VaultHistoryView: View {
 		let selected = VaultHistoryText.sources.first { $0.0 == history.filter.source }?.1 ?? "All"
 		let title = history.filter.source == nil ? "All sources" : selected
 		let selectedCount = count(history.filter.source)
-		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")") {
+		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")", field: true) {
 			ForEach(VaultHistoryText.sources, id: \.1) { source, name in
 				Button {
 					history.filter.source = source
@@ -355,7 +355,6 @@ struct VaultHistoryView: View {
 		let badge = VaultHistoryText.badge(entry)
 		let description = text.describe(entry) { id in history.entry(id) }
 		let keys = VaultHistoryText.keys(entry)
-		let shownKeys = Array(keys.prefix(3))
 		let time = text.clock(VaultHistoryText.date(entry.time))
 		let environments = entry.environments.map(\.name)
 		return Button {
@@ -377,31 +376,30 @@ struct VaultHistoryView: View {
 					}
 				}
 				.frame(width: 88, alignment: .leading)
+				// What changed and where on the first line; which keys on the second,
+				// whole names only, then how many more.
 				VStack(alignment: .leading, spacing: 4) {
-					Text(description)
-						.font(.system(size: 13, weight: .medium))
-						.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textPrimary)
-						.lineLimit(1)
-					// Environments stay whole; the key list gives way first.
 					HStack(spacing: 10) {
+						Text(description)
+							.font(.system(size: 13, weight: .medium))
+							.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textPrimary)
+							.lineLimit(1)
+							.layoutPriority(1)
 						ViewThatFits(in: .horizontal) {
 							environmentChips(environments, limit: environments.count)
 							environmentChips(environments, limit: 2)
 							environmentChips(environments, limit: 1)
 						}
-						.layoutPriority(1)
-						HStack(spacing: 6) {
-							Text(shownKeys.joined(separator: " · "))
-								.font(VaultTypography.tabular(11.5))
-								.foregroundStyle(VaultPalette.textSecondary)
-								.lineLimit(1)
-								.truncationMode(.tail)
-							if keys.count > shownKeys.count {
-								Text("+\(keys.count - shownKeys.count) more")
-									.font(.system(size: 11))
-									.foregroundStyle(VaultPalette.textTertiary)
-									.fixedSize()
-							}
+					}
+					if !keys.isEmpty {
+						ViewThatFits(in: .horizontal) {
+							keyLine(keys, showing: 3).fixedSize()
+							keyLine(keys, showing: 2).fixedSize()
+							keyLine(keys, showing: 1).fixedSize()
+							// A key name is never cut; with no room for one, the line counts them.
+							Text(keys.count == 1 ? "1 key" : "\(keys.count) keys")
+								.font(.system(size: 11))
+								.foregroundStyle(VaultPalette.textTertiary)
 						}
 					}
 				}
@@ -415,6 +413,24 @@ struct VaultHistoryView: View {
 		.buttonStyle(.plain)
 		.accessibilityLabel("\(time), \(badge.text), \(description)\(environments.isEmpty ? "" : " in " + environments.joined(separator: ", "))")
 		.accessibilityAddTraits(selected ? .isSelected : [])
+	}
+
+	/// The first `count` of `keys`, then how many more there are.
+	private func keyLine(_ keys: [String], showing count: Int) -> some View {
+		let shown = keys.prefix(count)
+		return HStack(spacing: 6) {
+			Text(shown.joined(separator: " · "))
+				.font(VaultTypography.tabular(11.5))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.lineLimit(1)
+				.truncationMode(.tail)
+			if keys.count > shown.count {
+				Text("+\(keys.count - shown.count) more")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize()
+			}
+		}
 	}
 
 	private func environmentChip(_ name: String) -> some View {

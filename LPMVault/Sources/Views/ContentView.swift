@@ -44,7 +44,7 @@ struct ContentView: View {
 
 				VStack(spacing: 5) {
 					Text("LPM Vault is Locked")
-						.font(.system(size: 19, weight: .bold))
+						.font(.system(size: 20, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
 
 					Text("Authenticate with Touch ID or your Mac password to unlock.")
@@ -69,6 +69,8 @@ struct ContentView: View {
 					VaultLoadErrorView(failure: failure)
 				}
 			}
+			// Sits a little above the middle, where the eye takes the middle to be.
+			.padding(.bottom, 96)
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.background(VaultPalette.titleBar)

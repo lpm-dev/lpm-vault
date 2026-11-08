@@ -17,6 +17,11 @@ struct VaultTitleBarView: View {
 
 	private var project: VaultProject? { store.selectedProject }
 
+	@State private var showsSyncMenu = false
+	@State private var syncHovering = false
+
+	private enum SyncChoice: Hashable { case pull, push, signIn }
+
 	private var syncLabel: String {
 		if store.isSyncing { return "Syncing" }
 		guard let project else { return store.isLoggedIn ? "Select project" : "Local" }
@@ -56,6 +61,10 @@ struct VaultTitleBarView: View {
 				.padding(.leading, 10)
 			breadcrumb.padding(.leading, 6)
 
+			Spacer(minLength: 8)
+
+			// Where the vault's state comes from, and reloading it, before the line;
+			// what to do with the project after it.
 			VaultBarButton(
 				systemImage: "arrow.clockwise",
 				borderless: true,
@@ -64,23 +73,19 @@ struct VaultTitleBarView: View {
 			.help("Reload local changes from the LPM CLI")
 			.accessibilityLabel("Refresh")
 			.accessibilityIdentifier("vault-refresh-local-state")
-			.padding(.leading, 2)
-
-			Spacer(minLength: 8)
-
-			if let project {
-				VaultBarButton(systemImage: "link", title: "Connect CLI", borderless: true, active: isConnectSheetPresented, action: onConnectCLI)
-					.help("Connect \(project.name) to the LPM CLI")
-			}
 
 			syncMenu
 
-			// Status on the left of the line, actions on the right.
 			Rectangle()
 				.fill(VaultPalette.divider)
 				.frame(width: 1, height: 16)
 				.padding(.horizontal, 4)
 				.accessibilityHidden(true)
+
+			if let project {
+				VaultBarButton(systemImage: "link", title: "Connect CLI", borderless: true, active: isConnectSheetPresented, action: onConnectCLI)
+					.help("Connect \(project.name) to the LPM CLI")
+			}
 
 			if let version = updateChecker.availableUpdateVersion {
 				VaultBarButton(
@@ -99,14 +104,15 @@ struct VaultTitleBarView: View {
 			publishControl
 				.padding(.horizontal, 2)
 
+			// The shortcut is in the tooltip and the menu; the bar keeps to words.
 			VaultBarButton(
 				systemImage: "lock",
 				title: lockTitle,
-				shortcut: "⌘L",
 				borderless: true
 			) {
 				store.lock()
 			}
+			.help("Lock LPM Vault (⌘L)")
 			.accessibilityLabel(lockAccessibilityLabel)
 		}
 		.padding(.leading, 14)
@@ -151,35 +157,60 @@ struct VaultTitleBarView: View {
 		.fixedSize(horizontal: false, vertical: true)
 	}
 
+	/// The vault's sync state, which opens what can be done about it. Pull and
+	/// Push keep their shortcuts in the Env Project menu.
 	private var syncMenu: some View {
-		VaultBarMenu(accessibilityLabel: "Sync status: \(syncLabel)", borderless: true) {
-			if store.isLoggedIn, project != nil {
-				Button("Pull…", action: onPull)
-					.keyboardShortcut("l", modifiers: [.command, .shift])
-				Button(isOrganization ? "Share…" : "Push…", action: onPush)
-					.keyboardShortcut("p", modifiers: [.command, .shift])
-			} else if !store.isLoggedIn {
-				Button("Sign in to sync…") { store.showSettings() }
-			} else {
-				Button("Select an env project") {}
-					.disabled(true)
+		Button { showsSyncMenu.toggle() } label: {
+			HStack(spacing: 6) {
+				if store.isSyncing {
+					ProgressView().controlSize(.mini)
+				} else {
+					VaultStatusDot(color: syncColor)
+				}
+				Text(syncLabel).font(.system(size: 12.5, weight: .medium))
+				Image(systemName: "chevron.down")
+					.font(.system(size: 8, weight: .bold))
+					.foregroundStyle(VaultPalette.textTertiary)
 			}
-		} label: {
-			if store.isSyncing {
-				ProgressView().controlSize(.mini)
-			} else {
-				VaultStatusDot(color: syncColor)
-			}
-			Text(syncLabel).font(.system(size: 12.5, weight: .medium))
+			.foregroundStyle(VaultPalette.textSecondary)
+			.padding(.horizontal, 8)
+			.frame(height: 28)
+			.background(RoundedRectangle(cornerRadius: 7).fill(syncHovering || showsSyncMenu ? VaultPalette.controlHover : .clear))
+			.contentShape(Rectangle())
+			.vaultHoverAnimation(syncHovering)
 		}
+		.buttonStyle(VaultPressStyle())
 		.disabled(store.isSyncing || (store.isLoggedIn && project == nil))
+		.onHover { syncHovering = $0 }
+		.accessibilityLabel("Sync status: \(syncLabel)")
+		.accessibilityHint("Shows how to sync this project")
+		.vaultPopover(isPresented: $showsSyncMenu, arrowEdge: .bottom) {
+			VaultMenuList(rows: syncRows, width: 220, label: "Sync") { choice in
+				showsSyncMenu = false
+				switch choice {
+				case .pull: onPull()
+				case .push: onPush()
+				case .signIn: store.showSettings()
+				}
+			}
+		}
+	}
+
+	private var syncRows: [VaultMenuList<SyncChoice>.Row] {
+		guard store.isLoggedIn else {
+			return [.init(id: .signIn, title: "Sign In to Sync…", detail: "Settings")]
+		}
+		return [
+			.init(id: .pull, title: "Pull…", detail: "⇧⌘L", detailIsShortcut: true),
+			.init(id: .push, title: isOrganization ? "Share…" : "Push…", detail: "⇧⌘P", detailIsShortcut: true),
+		]
 	}
 
 	@ViewBuilder
 	private var publishControl: some View {
 		if let project, !store.isShowingAccountPage {
 			let hasSaved = !(store.publishDestinations[project.id] ?? []).isEmpty
-			VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…", active: showsPublishMenu.wrappedValue) {
+			VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…", borderless: true, active: showsPublishMenu.wrappedValue) {
 				if hasSaved {
 					showsPublishMenu.wrappedValue.toggle()
 				} else {

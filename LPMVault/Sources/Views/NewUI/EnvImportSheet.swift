@@ -396,7 +396,6 @@ private struct EnvImportTargetTile: View {
 		}
 		.buttonStyle(.plain)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help(title)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}

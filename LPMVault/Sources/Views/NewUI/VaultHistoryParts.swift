@@ -41,6 +41,8 @@ struct VaultHistoryValueField: View {
 	let content: Content
 	/// What the field holds, as VoiceOver names it: "Value of API_KEY now".
 	let label: String
+	/// Draws only the value, for a box that holds its controls too.
+	var chromeless = false
 
 	private var isValue: Bool {
 		switch content {
@@ -66,12 +68,14 @@ struct VaultHistoryValueField: View {
 		.lineLimit(1)
 		.truncationMode(.tail)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.padding(.horizontal, 8)
+		.padding(.horizontal, chromeless ? 0 : 8)
 		.frame(height: 28)
-		.background(RoundedRectangle(cornerRadius: 5).fill(isValue ? VaultPalette.control : .clear))
+		.background(RoundedRectangle(cornerRadius: 5).fill(isValue && !chromeless ? VaultPalette.control : .clear))
 		.overlay {
-			RoundedRectangle(cornerRadius: 5)
-				.strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: isValue ? [] : [3]))
+			if !chromeless {
+				RoundedRectangle(cornerRadius: 5)
+					.strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: isValue ? [] : [3]))
+			}
 		}
 		.accessibilityElement(children: .ignore)
 		.accessibilityLabel(label)

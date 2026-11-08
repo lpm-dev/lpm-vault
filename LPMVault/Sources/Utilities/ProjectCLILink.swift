@@ -196,7 +196,7 @@ struct ProjectCLICommands: Equatable, Sendable {
 			}
 		}
 		warning = configuration.mayHideAliases
-			? "Check lpm.json aliases before running. The project configuration has not been verified."
+			? "lpm.json hasn't been verified on this Mac yet. Check its environment aliases before running these."
 			: nil
 		let flag = "--env=\(environment)"
 		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
@@ -228,7 +228,7 @@ struct ProjectCLITaskExample: Equatable, Sendable {
 		}
 		"""
 		warning = configuration.mayHideAliases
-			? "Check lpm.json aliases before using the example. The project configuration has not been verified."
+			? "lpm.json hasn't been verified on this Mac yet. Check its environment aliases before using the example."
 			: nil
 	}
 }

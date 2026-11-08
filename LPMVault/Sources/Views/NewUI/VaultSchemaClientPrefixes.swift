@@ -67,7 +67,6 @@ struct VaultSchemaClientPrefixesPopover: View {
 			.padding(.vertical, 10)
 		}
 		.frame(width: 340)
-		.background(VaultPalette.content)
 		// A removal waiting for confirmation ends when its prefix goes some other way, such as an undo.
 		.onChange(of: own) { _, own in if let removing, !own.contains(removing) { self.removing = nil } }
 	}
@@ -83,12 +82,15 @@ struct VaultSchemaClientPrefixesPopover: View {
 					Image(systemName: showsFrameworks ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
 					Text("Framework prefixes — always public").font(.system(size: 11.5))
 					Spacer(minLength: 8)
-					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(.system(size: 11))
+					Text("\(ProjectEnvSchemaRule.frameworkPrefixes.count)").font(VaultTypography.tabular(11))
 				}
 				.foregroundStyle(VaultPalette.textTertiary)
+				.padding(.horizontal, 4)
+				.frame(height: 24)
 				.contentShape(Rectangle())
 			}
-			.buttonStyle(.plain)
+			.buttonStyle(VaultPressStyle(cornerRadius: 5))
+			.padding(.horizontal, -4)
 			.accessibilityLabel(showsFrameworks ? "Hide framework prefixes" : "Show framework prefixes")
 			if showsFrameworks {
 				VaultFlowLayout(spacing: 5, lineSpacing: 5) {
@@ -141,17 +143,9 @@ struct VaultSchemaClientPrefixesPopover: View {
 			if !removable {
 				Image(systemName: "lock").font(.system(size: 9)).foregroundStyle(VaultPalette.textFaint).accessibilityHidden(true)
 			} else if let onRemove {
-				Button(action: onRemove) {
-					Image(systemName: "xmark")
-						.font(.system(size: 9, weight: .bold))
-						.foregroundStyle(VaultPalette.textFaint)
-						.frame(width: 20, height: 20)
-						.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-				.disabled(!canEdit || unavailable != nil)
-				.help(unavailable ?? "Remove \(shown)")
-				.accessibilityLabel("Remove \(shown)")
+				VaultRowIconButton(systemImage: "xmark", help: unavailable ?? "Remove \(shown)", label: "Remove \(shown)",
+					disabled: !canEdit || unavailable != nil, compact: true, action: onRemove)
+					.padding(.trailing, -4)
 			}
 		}
 		.padding(.horizontal, 14)
@@ -269,7 +263,7 @@ private struct VaultSchemaPrefixField: View {
 	let availability: ProjectEnvSchemaClientPrefixes.Availability
 	let onOpenKey: (String) -> Void
 
-	@Environment(\.dismiss) private var dismiss
+	@Environment(\.vaultPopoverDismiss) private var dismiss
 	@State private var entry = ""
 	@FocusState private var entryFocused: Bool
 
@@ -288,12 +282,10 @@ private struct VaultSchemaPrefixField: View {
 					.onSubmit { if let change { add(prefix, shown: change) } }
 					.padding(.horizontal, 8)
 					.frame(height: 28)
-					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-					.overlay {
-						RoundedRectangle(cornerRadius: 7)
-							.strokeBorder(issue != nil ? VaultPalette.red : (entryFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: issue != nil || entryFocused ? 1.5 : 1)
-					}
+					.vaultInputField(focused: entryFocused, invalid: issue != nil)
 					.accessibilityLabel("New client prefix")
+					// The popover opens to add a prefix, so typing starts here.
+					.onAppear { entryFocused = true }
 				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }
 			}
 			if availability != .checking, let reason = availability.reason {

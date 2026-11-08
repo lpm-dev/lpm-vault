@@ -41,9 +41,9 @@ struct VaultProjectSettingsView: View {
 					identity
 					section("PROJECT") {
 						nameRow
-						VaultHairline(color: VaultPalette.rowDivider)
+						VaultHairline()
 						iconRow
-						VaultHairline(color: VaultPalette.rowDivider)
+						VaultHairline()
 						folderRow
 					}
 					section("SECURITY") { cliApprovalRow }
@@ -79,23 +79,33 @@ struct VaultProjectSettingsView: View {
 
 	// MARK: - Header
 
+	/// The way back on a line of its own above the title, so the title starts
+	/// where every page's does.
 	private var header: some View {
-		HStack(spacing: 12) {
+		VStack(alignment: .leading, spacing: 2) {
 			Button(action: onBack) {
-				HStack(spacing: 5) {
-					Image(systemName: "chevron.left").font(.system(size: 10.5, weight: .semibold))
-					Text("All variables").font(.system(size: 12.5))
+				HStack(spacing: 4) {
+					Image(systemName: "chevron.left").font(.system(size: 9.5, weight: .semibold))
+					Text("All variables").font(.system(size: 12))
 				}
 				.foregroundStyle(VaultPalette.accentForeground)
 				.padding(.horizontal, 4)
-				.frame(height: 24)
+				.frame(height: 20)
 				.contentShape(Rectangle())
 			}
-			.buttonStyle(VaultPressStyle(cornerRadius: 6))
+			.buttonStyle(VaultPressStyle(cornerRadius: 5))
 			.padding(.horizontal, -4)
 			.vaultPointingHand()
 			.accessibilityLabel("Back to all variables")
-			.padding(.trailing, 4)
+			titleRow
+		}
+		.padding(.horizontal, 20)
+		.padding(.top, 10)
+		.padding(.bottom, 12)
+	}
+
+	private var titleRow: some View {
+		HStack(spacing: 12) {
 			Text("Project Settings")
 				.vaultPageTitle()
 				.lineLimit(1)
@@ -122,8 +132,7 @@ struct VaultProjectSettingsView: View {
 					.keyboardShortcut("s", modifiers: .command)
 			}
 		}
-		.padding(.horizontal, 20)
-		.frame(height: 60)
+		.frame(minHeight: 28)
 	}
 
 	private var identity: some View {

@@ -46,7 +46,7 @@ struct VaultUpdateSettingsSection: View {
 					updates.checkForUpdates()
 				}
 			}
-			VaultHairline(color: VaultPalette.rowDivider)
+			VaultHairline()
 			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
 				VaultSegmentedPicker(title: "Update channel", options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
 					selection: $updates.channel)
@@ -87,7 +87,12 @@ struct VaultLPMHomeSettingsSection: View {
 
 	var body: some View {
 		VaultSettingsRows {
-			VaultSettingsRow(title: store.lpmHome.displayPath + (store.lpmHome.isDefault ? " (default)" : ""), detail: Self.explanation, detailIsSelectable: false) {
+			// A path in the code font, as a project's folder is, and what it is in the system font.
+			VaultSettingsRow(
+				titleText: Text(store.lpmHome.displayPath).font(VaultTypography.code(12.5, .medium))
+					+ Text(store.lpmHome.isDefault ? "  (default)" : "").font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary),
+				detail: Self.explanation, detailIsSelectable: false
+			) {
 				HStack(spacing: 8) {
 					if !store.lpmHome.isDefault {
 						VaultBarButton(title: "Use Default", disabled: isWorking, height: 28) {
@@ -229,16 +234,28 @@ private struct VaultSettingsRows<Content: View>: View {
 /// A setting's name and explanation, with its control on the trailing side.
 /// A detail that's a value, such as the version, can be selected and copied.
 private struct VaultSettingsRow<Control: View>: View {
-	let title: String
+	let title: Text
 	let detail: String
 	var detailIsSelectable = false
 	@ViewBuilder let control: Control
 
+	init(title: String, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+		self.init(titleText: Text(title).font(.system(size: 13, weight: .semibold)), detail: detail,
+			detailIsSelectable: detailIsSelectable, control: control)
+	}
+
+	/// A title drawn its own way, such as a path in the code font.
+	init(titleText: Text, detail: String, detailIsSelectable: Bool = false, @ViewBuilder control: () -> Control) {
+		title = titleText
+		self.detail = detail
+		self.detailIsSelectable = detailIsSelectable
+		self.control = control()
+	}
+
 	var body: some View {
 		HStack(alignment: .center, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
-				Text(title)
-					.font(.system(size: 13, weight: .semibold))
+				title
 					.foregroundStyle(VaultPalette.textPrimary)
 				if detailIsSelectable {
 					Text(detail)

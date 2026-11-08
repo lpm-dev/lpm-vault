@@ -1402,6 +1402,12 @@ final class VaultStore {
   // Navigation state
   /// The environment opening a project asked for before its values were read.
   @ObservationIgnored private var requestedEnvironment: (projectID: String, environment: String)?
+  /// Whether the selected account is an organization's, whose sync is a share.
+  var selectedAccountIsOrganization: Bool {
+    if case .org = selectedAccount { return true }
+    return false
+  }
+
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }

@@ -32,29 +32,26 @@ struct VaultCliAccessPresentation {
 	}
 }
 
-/// The project's CLI approval as a quiet chip beside its title. It's a setting,
-/// not a view of the table, so the chip only says it and opens Project
-/// Settings, where it changes.
-struct VaultCliApprovalChip: View {
+/// The project's CLI approval, said in the line under its title like its
+/// counts. It's a setting, not a view of the table, so it only says it and
+/// opens Project Settings, where it changes.
+struct VaultCliApprovalLink: View {
 	let presentation: VaultCliAccessPresentation
 	let action: () -> Void
 	@State private var hovering = false
 
 	var body: some View {
 		Button(action: action) {
-			HStack(spacing: 5) {
-				Image(systemName: "terminal")
-					.font(.system(size: 10, weight: .medium))
-				Text(presentation.title)
-					.font(.system(size: 11.5, weight: .medium))
-			}
-			.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textSecondary)
-			.padding(.horizontal, 9)
-			.frame(height: 22)
-			.background(Capsule().fill(hovering ? VaultPalette.controlHover : VaultPalette.neutralTint))
-			.vaultHoverAnimation(hovering)
+			Text(presentation.title)
+				.font(VaultTypography.tabular(12.5))
+				.foregroundStyle(hovering ? VaultPalette.textSecondary : VaultPalette.textTertiary)
+				.underline(hovering)
+				.padding(.horizontal, 3)
+				.frame(height: 22)
+				.contentShape(Rectangle())
+				.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(VaultPressStyle(shape: Capsule()))
+		.buttonStyle(VaultPressStyle(cornerRadius: 4))
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 		.help("\(presentation.help) Change it in Project Settings.")
@@ -65,6 +62,13 @@ struct VaultCliApprovalChip: View {
 }
 
 struct VaultContentView: View {
+	/// Whether rows at rest show their drift mark: under the Drift filter, and
+	/// while at most half the keys drift. A mark on most rows marks nothing, and
+	/// the Drift chip already counts them; a hovered or selected row always shows its own.
+	nonisolated static func showsDriftAtRest(filter: VaultWorkspaceFilter, drifting: Int, keys: Int) -> Bool {
+		filter == .drift || drifting * 2 <= keys
+	}
+
 	let project: VaultProject
 	let snapshot: VaultWorkspaceSnapshot
 	let environments: [String]
@@ -178,12 +182,12 @@ struct VaultContentView: View {
 					Spacer(minLength: 8)
 					projectButtons
 				}
-				// CLI approval stays in Project Settings; a narrow header keeps one row,
-				// giving up the chip, then Settings' title, then the counts.
+				// A narrow header keeps one row, giving up Project Settings' title,
+				// then the CLI approval, which Project Settings still shows, then the counts.
 				HStack(spacing: 10) {
-					headerIdentity(derived, showsApproval: false)
+					headerIdentity(derived, showsApproval: true)
 					Spacer(minLength: 8)
-					projectButtons
+					projectButtons(compact: true)
 				}
 				HStack(spacing: 10) {
 					headerIdentity(derived, showsApproval: false)
@@ -283,6 +287,12 @@ struct VaultContentView: View {
 				Spacer(minLength: 8)
 				valueActions(compact: false, namesTransfers: true, derived: derived)
 			}
+			// Reveal and Copy All keep their names longest; Import and Export go to their icons first.
+			HStack(spacing: 6) {
+				viewControls
+				Spacer(minLength: 8)
+				valueActions(compact: false, derived: derived)
+			}
 			HStack(spacing: 6) {
 				viewControls
 				Spacer(minLength: 8)
@@ -366,10 +376,17 @@ struct VaultContentView: View {
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			}
-			if showsApproval {
-				VaultCliApprovalChip(presentation: VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts),
-					action: onProjectSettings)
-					.padding(.leading, 4)
+			if showsApproval && showsCounts {
+				// Part of the project's line, as a fact about it; it opens Project Settings, where it changes.
+				HStack(spacing: 6) {
+					Text("·")
+						.font(VaultTypography.tabular(12.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.accessibilityHidden(true)
+					VaultCliApprovalLink(presentation: VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts),
+						action: onProjectSettings)
+				}
+				.padding(.leading, -4)
 			}
 		}
 		.lineLimit(1)
@@ -386,7 +403,7 @@ struct VaultContentView: View {
 				active: showsInspector,
 				borderless: true
 			) { showsInspector.toggle() }
-			VaultOutlineButton(systemImage: "gearshape", title: compact ? nil : "Settings", help: "Project Settings (⌘I)", label: "Project Settings",
+			VaultOutlineButton(systemImage: "gearshape", title: compact ? nil : "Project Settings", help: "Project Settings (⌘I)", label: "Project Settings",
 				borderless: true, action: onProjectSettings)
 			VaultBarButton(
 				systemImage: "plus",
@@ -472,7 +489,8 @@ struct VaultContentView: View {
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
 		GeometryReader { geometry in
 			let layout = VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
-				available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.matrix.requested)
+				available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.matrix.requested,
+				keyWidth: VaultTableColumnLayout.keyWidth(for: derived.allKeys, publicKeys: shownPublicKeys, marks: 3))
 			let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 
 			ScrollView([.horizontal, .vertical]) {
@@ -498,7 +516,8 @@ struct VaultContentView: View {
 									isEdited: editedKeys.contains(key),
 									checks: valueChecks,
 									found: foundValues[key] ?? [],
-									showsDrift: filter == .drift,
+									showsDriftAtRest: Self.showsDriftAtRest(filter: filter, drifting: snapshot.driftingKeyCount,
+										keys: snapshot.allSecretKeys.count),
 									onSelect: {
 										if snapshot.summaries[key] == nil {
 											onAddKey(key)
@@ -543,7 +562,8 @@ struct VaultContentView: View {
 		} else {
 			GeometryReader { geometry in
 				let layout = VaultTableColumnLayout(columns: [.key, .value, .actions],
-					available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.environment.requested)
+					available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: columnWidths.environment.requested,
+					keyWidth: VaultTableColumnLayout.keyWidth(for: derived.environmentKeys, publicKeys: shownPublicKeys, marks: 1))
 				let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -1041,8 +1061,7 @@ private struct VaultMatrixHeader: View {
 				HStack(spacing: 7) {
 					VaultEnvSwatch(color: VaultPalette.environment(index))
 					Text(VaultProject.displayName(for: environment))
-						.font(.system(size: 12, weight: .semibold))
-						.foregroundStyle(VaultPalette.textSecondary)
+						.vaultColumnHeader()
 						.lineLimit(1)
 						.truncationMode(.tail)
 					Spacer(minLength: 2)
@@ -1050,7 +1069,7 @@ private struct VaultMatrixHeader: View {
 				.padding(.horizontal, 12)
 				.frame(width: layout[.environment(environment)] - 1)
 				.accessibilityLabel(VaultProject.displayName(for: environment))
-				VaultTableColumnLine(isLast: environment == environments.last)
+				VaultTableColumnLine(hidden: environment == environments.last)
 			}
 		}
 		.frame(width: tableWidth, height: VaultMetrics.tableHeader, alignment: .leading)
@@ -1090,12 +1109,12 @@ final class VaultRowClicks {
 /// The line after a table column, drawn alike in the header and the rows so
 /// each column's edge runs straight down the table.
 private struct VaultTableColumnLine: View {
-	/// The last column's line keeps its point but isn't drawn, so the table
-	/// doesn't end in a sliver of an empty column.
-	var isLast = false
+	/// Keeps the line's point but doesn't draw it: after the last column, so the
+	/// table doesn't end in a sliver of an empty column, and between columns that read as one.
+	var hidden = false
 
 	var body: some View {
-		VaultHairline(color: isLast ? .clear : VaultPalette.rowDivider, axis: .vertical)
+		VaultHairline(color: hidden ? .clear : VaultPalette.rowDivider, axis: .vertical)
 	}
 }
 
@@ -1113,9 +1132,8 @@ private struct VaultMatrixRow: View {
 	var checks: VaultValueCheckPresentation = .none
 	/// The environments where a value search found the key's value.
 	var found: Set<String> = []
-	/// Shows the drift mark at rest, as the Drift view does. Most keys drift
-	/// somewhere, so elsewhere it shows only on the hovered or selected row.
-	var showsDrift = false
+	/// Shows the drift mark on rows at rest, not only on the hovered or selected row.
+	var showsDriftAtRest = true
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 	var onFindValue: (_ environment: String) -> Void = { _ in }
@@ -1144,8 +1162,9 @@ private struct VaultMatrixRow: View {
 					VaultKeyStatusMarks(
 						invalid: checks.invalidKeys.contains(key),
 						missing: snapshot.isMissingSomewhere(key),
-						drifts: snapshot.hasDrift(for: key) && (showsDrift || hovering || isSelected),
-						slotted: true
+						drifts: snapshot.hasDrift(for: key) && (showsDriftAtRest || hovering || isSelected),
+						slotted: true,
+						emphasized: hovering || isSelected
 					)
 				}
 				.padding(.leading, 20)
@@ -1169,7 +1188,7 @@ private struct VaultMatrixRow: View {
 					}
 					.padding(.horizontal, 12)
 					.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.matrixRow)
-					VaultTableColumnLine(isLast: environment == environments.last)
+					VaultTableColumnLine(hidden: environment == environments.last)
 				}
 			}
 			.frame(width: tableWidth, height: VaultMetrics.matrixRow, alignment: .leading)
@@ -1219,10 +1238,14 @@ private struct VaultEnvironmentHeader: View {
 		HStack(spacing: 0) {
 			VaultKeySortHeader(order: $sortOrder).frame(width: layout[.key])
 			VaultTableColumnLine()
-			Text("VALUE").vaultSectionLabel().padding(.horizontal, 12).frame(width: layout[.value] - 1, alignment: .leading)
-			VaultTableColumnLine()
-			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: layout[.actions] - 1, alignment: .trailing)
-			VaultTableColumnLine(isLast: true)
+			Text("Value").vaultColumnHeader().padding(.horizontal, 12).frame(width: layout[.value] - 1, alignment: .leading)
+			// The actions column belongs to the value: no line between them, and no header of its own on screen.
+			VaultTableColumnLine(hidden: true)
+			Color.clear.frame(width: layout[.actions] - 1, height: VaultMetrics.tableHeader)
+				.accessibilityElement()
+				.accessibilityLabel("Actions")
+				.accessibilityAddTraits(.isHeader)
+			VaultTableColumnLine(hidden: true)
 		}
 		.frame(width: tableWidth, height: VaultMetrics.tableHeader, alignment: .leading)
 		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize, onActivity: onResizeActivity) }
@@ -1299,7 +1322,7 @@ private struct VaultEnvironmentRow: View {
 			}
 				.padding(.horizontal, 12)
 				.frame(width: layout[.value] - 1, alignment: .leading)
-			VaultTableColumnLine()
+			VaultTableColumnLine(hidden: true)
 
 			// The actions show on the row under the pointer and the selected row,
 			// and stay in place, pressable and named, on the others.
@@ -1319,7 +1342,7 @@ private struct VaultEnvironmentRow: View {
 			}
 			.padding(.trailing, 14)
 			.frame(width: layout[.actions] - 1, alignment: .trailing)
-			VaultTableColumnLine(isLast: true)
+			VaultTableColumnLine(hidden: true)
 		}
 		.frame(width: tableWidth, height: VaultMetrics.fileRow, alignment: .leading)
 		.background { VaultRowFill(selected: isSelected, hovering: hovering) }
@@ -1392,7 +1415,7 @@ struct VaultKeySortHeader: View {
 	var body: some View {
 		Button { order = order.reversed } label: {
 			HStack(spacing: 6) {
-				Text("KEY").vaultSectionLabel(VaultPalette.textPrimary)
+				Text("Key").vaultColumnHeader()
 				// The arrow says the order; the status bar spells it out.
 				Image(systemName: order == .ascending ? "arrow.up" : "arrow.down")
 					.font(.system(size: 9, weight: .bold))
@@ -1499,7 +1522,7 @@ struct VaultWorkspaceEmptyView: View {
 			if !isSearching {
 				HStack(spacing: 8) {
 					VaultBarButton(title: "Create Project", filled: true, action: onCreate)
-					VaultBarButton(systemImage: "tray.and.arrow.down", title: "Import", action: onImport)
+					VaultBarButton(systemImage: "icloud.and.arrow.down", title: "Import from lpm.dev…", action: onImport)
 				}
 			}
 			if welcomes {

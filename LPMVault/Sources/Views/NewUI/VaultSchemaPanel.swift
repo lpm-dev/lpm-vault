@@ -1295,7 +1295,7 @@ private struct VaultSchemaKeyEditor: View {
 			.disabled(!canEdit || !hasCandidates)
 			.accessibilityLabel("Required when key")
 			.accessibilityValue(condition?.variable ?? "None")
-			.popover(isPresented: $pickingKey, arrowEdge: .leading) {
+			.vaultPopover(isPresented: $pickingKey, arrowEdge: .leading) {
 				VaultKeyPicker(keys: (overview?.rules ?? []).lazy.map(\.key).filter { $0 != key }, secretKeys: context.secretKeys) { picked in
 					pickingKey = false
 					update { $0.requiredWhen = Self.condition($0.requiredWhen, on: picked, secretKeys: context.secretKeys) }
@@ -1390,7 +1390,7 @@ private struct VaultSchemaKeyEditor: View {
 				.padding(.vertical, 3)
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 				.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
-				.popover(item: popoverBinding(field: field, index: index), arrowEdge: .leading) { target in
+				.vaultPopover(item: popoverBinding(field: field, index: index), arrowEdge: .leading) { target in
 					scopeEditor(target, lines: lines)
 				}
 			}
@@ -1408,7 +1408,7 @@ private struct VaultSchemaKeyEditor: View {
 			.buttonStyle(.plain)
 			.disabled(!canEdit)
 			.accessibilityLabel(field == .requiredIn ? "Add a scope where the key is required" : "Add a scoped default")
-			.popover(item: popoverBinding(field: field, index: nil), arrowEdge: .leading) { target in
+			.vaultPopover(item: popoverBinding(field: field, index: nil), arrowEdge: .leading) { target in
 				scopeEditor(target, lines: lines)
 			}
 		}
@@ -1500,17 +1500,17 @@ private struct VaultSchemaKeyEditor: View {
 				Text("Add rule").font(.system(size: 12))
 				Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
 			}
-			.foregroundStyle(VaultPalette.textSecondary)
+			.foregroundStyle(addingRule ? VaultPalette.selectedText : VaultPalette.textSecondary)
 			.padding(.horizontal, 10)
 			.frame(height: 26)
-			.background(RoundedRectangle(cornerRadius: 7).fill(addingRule ? VaultPalette.accentTint : VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(addingRule ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
+			.background(RoundedRectangle(cornerRadius: 7).fill(addingRule ? VaultPalette.selectedFill : VaultPalette.control))
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(addingRule ? VaultPalette.selectedBorder : VaultPalette.border, lineWidth: 1) }
 			.contentShape(Rectangle())
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle())
 		.disabled(!canEdit)
 		.accessibilityLabel("Add rule")
-		.popover(isPresented: $addingRule, arrowEdge: .bottom) {
+		.vaultPopover(isPresented: $addingRule, arrowEdge: .bottom) {
 			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, in: context)) }) { field in
 				addingRule = false
 				add(field)
@@ -1998,6 +1998,7 @@ private struct VaultScopeEditor: View {
 
 	@State private var scope = ProjectEnvSchemaRule.Scope()
 	@State private var value = ""
+	@FocusState private var valueFocused: Bool
 
 	/// Why the scope can't be used as it is.
 	private var issue: String? {
@@ -2033,8 +2034,12 @@ private struct VaultScopeEditor: View {
 				VStack(alignment: .leading, spacing: 5) {
 					Text("Value").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 					TextField("value", text: $value)
-						.textFieldStyle(.roundedBorder)
+						.textFieldStyle(.plain)
 						.font(VaultTypography.tabular(12))
+						.focused($valueFocused)
+						.padding(.horizontal, 8)
+						.frame(height: 28)
+						.vaultInputField(focused: valueFocused)
 						.accessibilityLabel("Scoped default value")
 					if value.hasHiddenCharacters {
 						Text("Has hidden or reordering characters: \(value.escapingDirectionControls)")
@@ -2088,14 +2093,14 @@ private struct VaultScopeEditor: View {
 					Button { toggle(option) } label: {
 						Text(option.escapingDirectionControls)
 							.font(VaultTypography.tabular(11))
-							.foregroundStyle(on ? VaultPalette.accentText : VaultPalette.textSecondary)
+							.foregroundStyle(on ? VaultPalette.selectedText : VaultPalette.textSecondary)
 							.padding(.horizontal, 7)
 							.frame(height: 22)
-							.background(RoundedRectangle(cornerRadius: 5).fill(on ? VaultPalette.accentTint : .clear))
-							.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(on ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1) }
+							.background(RoundedRectangle(cornerRadius: 5).fill(on ? VaultPalette.selectedFill : .clear))
+							.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(on ? VaultPalette.selectedBorder : VaultPalette.border, lineWidth: 1) }
 							.contentShape(Rectangle())
 					}
-					.buttonStyle(.plain)
+					.buttonStyle(VaultPressStyle(cornerRadius: 5))
 					.accessibilityLabel("\(title) \(option)")
 					.accessibilityAddTraits(on ? .isSelected : [])
 				}
@@ -2218,6 +2223,8 @@ struct VaultKeyPicker: View {
 	let onPick: (String) -> Void
 
 	@State private var query = ""
+	@State private var highlighted: String?
+	@FocusState private var searchFocused: Bool
 	private static let shownLimit = 50
 
 	nonisolated static func matches(_ query: String, in keys: [String]) -> [String] {
@@ -2235,11 +2242,23 @@ struct VaultKeyPicker: View {
 	var body: some View {
 		let matches = Self.matches(query, in: keys)
 		VStack(alignment: .leading, spacing: 6) {
-			TextField("Search keys", text: $query)
-				.textFieldStyle(.roundedBorder)
-				.font(VaultTypography.tabular(12))
-				.onSubmit { if let first = matches.first { onPick(first) } }
-				.accessibilityLabel("Search keys")
+			HStack(spacing: 6) {
+				Image(systemName: "magnifyingglass")
+					.font(.system(size: 10.5, weight: .medium))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.accessibilityHidden(true)
+				TextField("Search keys", text: $query)
+					.textFieldStyle(.plain)
+					.font(VaultTypography.tabular(12))
+					.focused($searchFocused)
+					.onSubmit { if let first = matches.first { onPick(first) } }
+					.accessibilityLabel("Search keys")
+			}
+			.padding(.horizontal, 8)
+			.frame(height: 28)
+			.vaultInputField(focused: searchFocused)
+			// The picker opens to find a key, so typing starts here.
+			.onAppear { searchFocused = true }
 			ScrollView {
 				LazyVStack(alignment: .leading, spacing: 0) {
 					ForEach(matches.prefix(Self.shownLimit), id: \.self) { key in
@@ -2252,10 +2271,15 @@ struct VaultKeyPicker: View {
 								}
 							}
 							.padding(.horizontal, 8)
-							.frame(height: 24)
+							.frame(height: 26)
+							.background(RoundedRectangle(cornerRadius: 6).fill(highlighted == key ? VaultPalette.sidebarHover : .clear))
 							.contentShape(Rectangle())
 						}
 						.buttonStyle(.plain)
+						.focusEffectDisabled()
+						.onHover { inside in
+							if inside { highlighted = key } else if highlighted == key { highlighted = nil }
+						}
 					}
 				}
 			}
@@ -2279,35 +2303,19 @@ private struct VaultAddRuleMenu: View {
 	let onAdd: (ProjectEnvSchemaRule.Field) -> Void
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 1) {
-			ForEach(ProjectEnvSchemaRule.Section.allCases, id: \.self) { section in
-				let rows = fields.filter { $0.field.section == section }
-				if !rows.isEmpty {
-					Text(section.title).vaultSectionLabel()
-						.padding(.horizontal, 8)
-						.padding(.top, 6)
-						.padding(.bottom, 2)
-					ForEach(rows, id: \.field) { row in
-						Button { onAdd(row.field) } label: {
-							HStack(spacing: 10) {
-								Text(row.field.title).font(.system(size: 12)).foregroundStyle(VaultPalette.textPrimary)
-								Spacer(minLength: 8)
-								Text(row.availability.hint).font(.system(size: 10.5)).foregroundStyle(VaultPalette.textFaint)
-							}
-							.padding(.horizontal, 8)
-							.frame(height: 24)
-							.contentShape(Rectangle())
-						}
-						.buttonStyle(.plain)
-						.disabled(!row.availability.isAvailable)
-						.opacity(row.availability.isAvailable ? 1 : 0.45)
-						.accessibilityLabel(row.field.title)
-						.accessibilityHint(row.availability.hint)
-					}
-				}
+		// Side by side, every rule shows at once instead of scrolling.
+		VaultMenuList(rows: rows, width: 540, columns: 2, label: "Add rule", onChoose: onAdd)
+	}
+
+	/// Each section's rules, the first carrying its section's label; a rule
+	/// that can't be added yet says what it needs.
+	private var rows: [VaultMenuList<ProjectEnvSchemaRule.Field>.Row] {
+		ProjectEnvSchemaRule.Section.allCases.flatMap { section in
+			fields.filter { $0.field.section == section }.enumerated().map { index, row in
+				VaultMenuList<ProjectEnvSchemaRule.Field>.Row(
+					id: row.field, title: row.field.title, detail: row.availability.hint,
+					isEnabled: row.availability.isAvailable, section: index == 0 ? section.title : nil)
 			}
 		}
-		.padding(6)
-		.frame(width: 260)
 	}
 }

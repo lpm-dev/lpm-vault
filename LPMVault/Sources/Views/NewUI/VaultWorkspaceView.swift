@@ -213,6 +213,8 @@ struct VaultWorkspaceView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
 			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
 		}
+		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
+			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
@@ -1607,4 +1609,18 @@ struct VaultWorkspaceView: View {
 private struct SchemaReviewTarget: Identifiable {
 	let projectID: String
 	var id: String { projectID }
+}
+
+/// Pull and Push from the Env Project menu, whose shortcuts they carry.
+private struct VaultSyncCommands: ViewModifier {
+	/// Read as a command arrives, since a sheet can open between renders.
+	let isAvailable: () -> Bool
+	let onPull: () -> Void
+	let onPush: () -> Void
+
+	func body(content: Content) -> some View {
+		content
+			.onReceive(NotificationCenter.default.publisher(for: .pullProject)) { _ in if isAvailable() { onPull() } }
+			.onReceive(NotificationCenter.default.publisher(for: .pushProject)) { _ in if isAvailable() { onPush() } }
+	}
 }

@@ -89,12 +89,13 @@ struct VaultKeyHistorySection: View {
 		case .read(let groups):
 			let ordered = store.orderedEnvironmentNames(for: project)
 			ForEach(groups, id: \.environment) { group in
-				VStack(alignment: .leading, spacing: 6) {
+				// The environment labels the group; each change reads as a plain line under it.
+				VStack(alignment: .leading, spacing: 8) {
 					HStack(spacing: 7) {
 						VaultEnvSwatch(color: VaultHistoryEnvironmentChip(group.environment, in: ordered).color, size: 7)
 						Text(VaultProject.displayName(for: group.environment))
-							.font(.system(size: 12, weight: .semibold))
-							.foregroundStyle(VaultPalette.textPrimary)
+							.font(.system(size: 11.5, weight: .semibold))
+							.foregroundStyle(VaultPalette.textSecondary)
 					}
 					.accessibilityElement(children: .combine)
 					ForEach(group.changes, id: \.entry.id) { change in
@@ -145,7 +146,7 @@ struct VaultKeyHistorySection: View {
 		return HStack(spacing: 8) {
 			VStack(alignment: .leading, spacing: 2) {
 				Text(Self.kind(change.keyChange))
-					.font(.system(size: 12, weight: .medium))
+					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)

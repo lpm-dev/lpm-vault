@@ -29,7 +29,9 @@ struct VaultHistoryInspector: View {
 								.padding(16)
 						}
 					}
+					.padding(.bottom, VaultMetrics.scrollEndPadding)
 				}
+				.vaultScrollEndFade()
 				VaultHairline()
 				footer(entry)
 			}
@@ -193,38 +195,53 @@ struct VaultHistoryInspector: View {
 		let content: VaultHistoryValueField.Content =
 			if let unknown { .unknown(unknown) } else if absent { .absent } else if shown, let value { .shown(value) } else { .hidden }
 		let side = title.lowercased()
-		return HStack(spacing: 4) {
-			Text(title)
-				.font(.system(size: 12))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.frame(width: 44, alignment: .leading)
-				.accessibilityHidden(true)
-			VaultHistoryValueField(content: content, label: "\(title) value of \(key)")
-			if unknown == nil && !absent {
-				VaultRowIconButton(
-					systemImage: shown ? "eye.slash" : "eye",
-					help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
-					disabled: obscured, compact: true
-				) {
-					if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
-				}
-				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true) {
-					Task { await copy(valueSide) }
-				}
-				Menu {
-					Button("Remove from History…") {
-						Task { await reviewRemoval(entry: entry, environment: environment, key: key, side: sideName) }
+		let hasValue = unknown == nil && !absent
+		return VaultHoverRow { hovering in
+			HStack(spacing: 8) {
+				Text(title)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.frame(width: 44, alignment: .leading)
+					.accessibilityHidden(true)
+				// The controls sit inside the value's box, as in the key inspector.
+				HStack(spacing: 0) {
+					VaultHistoryValueField(content: content, label: "\(title) value of \(key)", chromeless: hasValue)
+					if hasValue {
+						VaultRowIconButton(
+							systemImage: shown ? "eye.slash" : "eye",
+							help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
+							disabled: obscured, compact: true
+						) {
+							if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
+						}
+						// Copy and More rest until the row is hovered or they have focus; Reveal stays.
+						VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true,
+							resting: !hovering) {
+							Task { await copy(valueSide) }
+						}
+						Menu {
+							Button("Remove from History…") {
+								Task { await reviewRemoval(entry: entry, environment: environment, key: key, side: sideName) }
+							}
+						} label: {
+							VaultMoreGlyph(resting: !hovering, size: 24)
+						}
+						.menuStyle(.button)
+						.buttonStyle(VaultPressStyle(cornerRadius: 6))
+						.menuIndicator(.hidden)
+						.fixedSize()
+						.help("More for the \(side) value of \(key)")
+						.accessibilityLabel("More for the \(side) value of \(key)")
 					}
-				} label: {
-					Image(systemName: "ellipsis")
-						.font(.system(size: 11, weight: .semibold))
-						.foregroundStyle(VaultPalette.textTertiary)
 				}
-				.menuStyle(.borderlessButton)
-				.menuIndicator(.hidden)
-				.fixedSize()
-				.help("More for the \(side) value of \(key)")
-				.accessibilityLabel("More for the \(side) value of \(key)")
+				.padding(.leading, hasValue ? 8 : 0)
+				.padding(.trailing, hasValue ? 2 : 0)
+				.background {
+					if hasValue {
+						RoundedRectangle(cornerRadius: 6).fill(VaultPalette.control)
+							.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
+					}
+				}
 			}
 		}
 		.contextMenu {

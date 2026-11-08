@@ -24,13 +24,15 @@ struct ConnectCLISheet: View {
 	@State private var statusGeneration = 0
 	@State private var configuration = ProjectCLIConfiguration.pending
 	@State var showsTaskExample = false
+	/// Shows every terminal command, not just the first.
+	@State private var showsAllCommands = false
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
 
 		var title: String {
 			switch self {
-			case .copyJSON: "JSON"
+			case .copyJSON: "Manual Setup"
 			case .writeFile: "Write File"
 			}
 		}
@@ -52,7 +54,10 @@ struct ConnectCLISheet: View {
 		max(1, ((NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 80)
 	}
 
-	private var preferredHeight: CGFloat { min(showsTaskExample ? 810 : 690, availableHeight) }
+	/// Tall enough for what's open, so nothing needs scrolling: the task example and the other commands add their own room.
+	private var preferredHeight: CGFloat {
+		min(600 + (showsTaskExample ? 120 : 0) + (showsAllCommands ? 68 : 0), availableHeight)
+	}
 
 	private var configJSON: String {
 		"{\n  \"vault\": \"\(projectId)\"\n}"
@@ -136,30 +141,26 @@ struct ConnectCLISheet: View {
 	}
 
 	private var vaultIDSection: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			HStack(alignment: .firstTextBaseline, spacing: 8) {
-				sectionTitle("Vault ID")
-				Text("Identifies this project. Safe to commit.")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
+		// One line: the ID is in the JSON below too, so it needs no box of its own.
+		HStack(alignment: .firstTextBaseline, spacing: 8) {
+			sectionTitle("Vault ID")
+			Text(projectId)
+				.font(VaultTypography.tabular(12.5, .medium))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.lineLimit(1)
+				.truncationMode(.middle)
+				.textSelection(.enabled)
+				.layoutPriority(1)
+			Text("Identifies this project. Safe to commit.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.lineLimit(1)
+			Spacer(minLength: 4)
+			CopyButton(isCopied: copiedItem == "vault-id") {
+				copy(projectId, as: "vault-id")
 			}
-			HStack(spacing: 8) {
-				Text(projectId)
-					.font(VaultTypography.tabular(12.5))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-					.truncationMode(.middle)
-					.textSelection(.enabled)
-					.frame(maxWidth: .infinity, alignment: .leading)
-				CopyButton(isCopied: copiedItem == "vault-id") {
-					copy(projectId, as: "vault-id")
-				}
-				.accessibilityLabel("Copy vault ID")
-			}
-			.padding(.leading, 12)
-			.padding(.trailing, 4)
-			.frame(height: 36)
-			.vaultInputField(focused: false, background: VaultPalette.headerRow)
+			.accessibilityLabel("Copy vault ID")
+			.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
 		}
 	}
 
@@ -180,10 +181,9 @@ struct ConnectCLISheet: View {
 					Spacer(minLength: 8)
 					switch setupMode {
 					case .copyJSON:
-						TerminalBarButton(
-							title: copiedItem == "json" ? "Copied" : "Copy JSON",
-							systemImage: copiedItem == "json" ? "checkmark" : "doc.on.doc"
-						) { copy(configJSON, as: "json") }
+						// One copy control throughout the sheet: its name says what it copies.
+						CopyButton(isCopied: copiedItem == "json") { copy(configJSON, as: "json") }
+							.accessibilityLabel(copiedItem == "json" ? "Copied JSON" : "Copy JSON")
 					case .writeFile:
 						writeFileAction
 					}
@@ -239,9 +239,8 @@ struct ConnectCLISheet: View {
 							HStack {
 								Text("Example · lpm.json").font(VaultTypography.tabular(11))
 								Spacer()
-								TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
-									copy(example.json, as: "task-example")
-								}
+								CopyButton(isCopied: copiedItem == "task-example") { copy(example.json, as: "task-example") }
+									.accessibilityLabel(copiedItem == "task-example" ? "Copied example" : "Copy example")
 							}
 							Text(example.json).font(VaultTypography.code(12)).textSelection(.enabled)
 						}
@@ -343,8 +342,9 @@ struct ConnectCLISheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
 			}
+			let commands = showsAllCommands ? guidance.commands : Array(guidance.commands.prefix(1))
 			VStack(spacing: 0) {
-				ForEach(Array(guidance.commands.enumerated()), id: \.element) { index, command in
+				ForEach(Array(commands.enumerated()), id: \.element) { index, command in
 					if index > 0 { VaultHairline() }
 					CommandRow(command: command, isCopied: copiedItem == command) { copy(command, as: command) }
 				}
@@ -356,9 +356,23 @@ struct ConnectCLISheet: View {
 				VaultInlineWarning(text: warning)
 					.padding(.top, 4)
 			}
-			Text("An explicit --env overrides a script's own environment. Linking doesn't install the CLI.")
-				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-				.fixedSize(horizontal: false, vertical: true)
+			HStack(alignment: .firstTextBaseline, spacing: 8) {
+				Text("An explicit --env overrides a script's own environment.")
+					.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+				Spacer(minLength: 8)
+				let more = guidance.commands.count - 1
+				if more > 0 {
+					Button(showsAllCommands ? "Show Fewer" : "Show \(more) More \(more == 1 ? "Command" : "Commands")") {
+						showsAllCommands.toggle()
+					}
+					.buttonStyle(.plain)
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.vaultPointingHand()
+					.fixedSize()
+				}
+			}
 		}
 	}
 
@@ -379,6 +393,7 @@ struct ConnectCLISheet: View {
 				}
 				if status == .notLinked || status == .noFolder {
 					Button("Install LPM CLI") { openURL(Self.installURL) }
+						.help("Linking doesn't install the LPM CLI. This opens how to install it.")
 						.buttonStyle(.plain)
 						.font(.system(size: 11.5, weight: .semibold))
 						.foregroundStyle(VaultPalette.accentForeground)
@@ -542,7 +557,6 @@ private struct CopyButton: View {
 		}
 		.buttonStyle(VaultPressStyle())
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 	}
 }
 
@@ -569,7 +583,6 @@ private struct TerminalBarButton: View {
 		}
 		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 	}
 }
 
@@ -594,13 +607,12 @@ private struct CommandRow: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 				Spacer(minLength: 8)
-				// The whole row copies, so its copy mark is only a mark; it says so once copied.
-				HStack(spacing: 5) {
-					if isCopied {
-						Text("Copied").font(.system(size: 11.5, weight: .medium))
-					}
+				// Said the way every copy control in the sheet says it.
+				HStack(spacing: 6) {
 					Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
 						.font(.system(size: 11, weight: .medium))
+					Text(isCopied ? "Copied" : "Copy")
+						.font(.system(size: 12, weight: .semibold))
 				}
 				.foregroundStyle(isCopied ? VaultPalette.greenTintText : (hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary))
 			}
@@ -612,7 +624,6 @@ private struct CommandRow: View {
 		}
 		.buttonStyle(VaultPressStyle(shape: Rectangle()))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help("Copy \(command)")
 		.accessibilityLabel("Copy \(command)")
 	}

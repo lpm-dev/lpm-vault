@@ -262,7 +262,7 @@ struct VaultPublishMenu: View {
 
 /// As tall as its content up to `maximum`, which its content is offered, however
 /// much room there is: a `maxHeight` frame would grow to the maximum instead.
-private struct CappedHeight: Layout {
+struct CappedHeight: Layout {
 	let maximum: CGFloat
 
 	func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

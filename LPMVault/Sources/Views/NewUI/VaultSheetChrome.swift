@@ -17,7 +17,6 @@ struct VaultSheetCloseButton: View {
 		}
 		.buttonStyle(VaultPressStyle(shape: Circle()))
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 		.help(label)
 		.accessibilityLabel(label)
 	}

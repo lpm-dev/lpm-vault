@@ -166,7 +166,7 @@ struct PlatformsView: View {
 					}
 				}
 				ForEach(Array(connections.enumerated()), id: \.element.id) { index, connection in
-					if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
+					if index > 0 { VaultHairline() }
 					connectionRow(connection)
 				}
 			}
@@ -522,7 +522,6 @@ struct PlatformsView: View {
 			}
 			.buttonStyle(VaultPressStyle(cornerRadius: 6))
 			.padding(.horizontal, -4)
-			.vaultPointingHand()
 			.accessibilityValue(showsRevocationSteps ? "Expanded" : "Collapsed")
 			if showsRevocationSteps {
 				Text(Self.revocationIntro)
@@ -530,7 +529,7 @@ struct PlatformsView: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 				VStack(alignment: .leading, spacing: 0) {
 					ForEach(Array(Self.revocationSteps.enumerated()), id: \.offset) { index, step in
-						if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
+						if index > 0 { VaultHairline() }
 						HStack(alignment: .firstTextBaseline, spacing: 10) {
 							PlatformLogo(platform: step.platform, size: 16)
 								.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }

@@ -463,6 +463,25 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-prefixes")?.rejection == nil && store.currentSchemaDraftEvaluation(for: "schema-prefixes") != nil })
 		}
 
+		/// A text field takes Esc for completion, so it never reached the popover.
+		@Test("Esc closes the popover while its prefix field has the keyboard, and nothing else happens")
+		func escapeFromField() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Client prefixes")
+			let popover = try await host.popoverWindow()
+			try await host.settle()
+			try host.key("\u{1b}", code: 53, in: popover)
+			#expect(try await host.waitUntil { !popover.isVisible }, "Esc closes the popover as it opens")
+			try await host.click("Client prefixes")
+			let reopened = try await host.popoverWindow()
+			try host.typeText("ACME_", placeholder: "NEW_PREFIX_", in: reopened)
+			try host.key("\u{1b}", code: 53, in: reopened)
+			#expect(try await host.waitUntil { !reopened.isVisible }, "Esc closes the popover while its field is being edited")
+			#expect(store.isUnlocked)
+			#expect(store.schemaDraft(for: "schema-prefixes") == nil, "Closing adds nothing")
+		}
+
 		@Test("Return adds only the prefix whose change was shown, not text typed since")
 		func staleReturn() async throws {
 			let (store, host, folder) = try await workspace()

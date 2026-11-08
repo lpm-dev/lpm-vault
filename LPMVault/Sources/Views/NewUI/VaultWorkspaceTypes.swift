@@ -82,8 +82,14 @@ struct VaultTableColumnLayout {
   let boundaries: [Boundary]
   let totalWidth: CGFloat
 
-  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:]) {
-    let defaultTotal = columns.reduce(CGFloat.zero) { $0 + $1.defaultWidth }
+  /// `keyWidth` is the width the keys shown need, which the key column takes
+  /// instead of its default when narrower, so the value columns get the rest.
+  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:], keyWidth: CGFloat? = nil) {
+    let fittedKey = keyWidth.map { min(VaultTableColumn.key.defaultWidth, max(Self.fittedKeyMinimum, $0)) }
+    func defaultWidth(_ column: VaultTableColumn) -> CGFloat {
+      column == .key ? (fittedKey ?? column.defaultWidth) : column.defaultWidth
+    }
+    let defaultTotal = columns.reduce(CGFloat.zero) { $0 + defaultWidth($1) }
     let environmentCount = columns.reduce(0) { count, column in
       if case .environment = column { count + 1 } else { count }
     }
@@ -94,7 +100,7 @@ struct VaultTableColumnLayout {
     // before any of them scrolls.
     let deficit = requested.isEmpty ? max(0, defaultTotal - available) : 0
     func slack(_ column: VaultTableColumn) -> CGFloat {
-      max(0, column.defaultWidth - (column == .key ? Self.fittedKeyMinimum : column.minimumWidth))
+      max(0, defaultWidth(column) - (column == .key ? Self.fittedKeyMinimum : column.minimumWidth))
     }
     let valueSlack = columns.filter { $0 != .key }.reduce(CGFloat.zero) { $0 + slack($1) }
     let valueShrink = valueSlack > 0 ? min(1, deficit / valueSlack) : 0
@@ -109,7 +115,7 @@ struct VaultTableColumnLayout {
       } else {
         share = environmentCount == 0 && column == .value ? extra : 0
       }
-      let fitted = column.defaultWidth - slack(column) * (column == .key ? keyShrink : valueShrink)
+      let fitted = defaultWidth(column) - slack(column) * (column == .key ? keyShrink : valueShrink)
       let width = max(column.minimumWidth, requested[column] ?? (fitted + share))
       widths[column] = width
       position += width
@@ -125,7 +131,35 @@ struct VaultTableColumnLayout {
   /// The narrowest a fitted key column gets, wide enough for a typical key and
   /// its status glyphs; the table scrolls rather than cut keys shorter. A
   /// person can still drag it down to the key column's minimum.
-  static let fittedKeyMinimum: CGFloat = 220
+  static let fittedKeyMinimum: CGFloat = 200
+
+  /// The width a key cell needs for the longest of `keys`: its name in the
+  /// selected row's weight, a public key's globe, the status marks and the
+  /// cell's insets. `marks` is how many mark slots the table keeps.
+  @MainActor
+  static func keyWidth(for keys: some Sequence<String>, publicKeys: Set<String>, marks: Int) -> CGFloat {
+    var widest: CGFloat = 0
+    for key in keys {
+      widest = max(widest, VaultKeyNameWidths.width(of: key) + (publicKeys.contains(key) ? 22 : 0))
+    }
+    let markSlots = marks > 0 ? CGFloat(marks) * 14 + CGFloat(marks - 1) * 4 + 8 : 0
+    // The cell's 20-point leading and 14-point trailing insets, and room to breathe before the marks.
+    return ceil(20 + widest + 12 + markSlots + 14)
+  }
+}
+
+/// Key names' widths in the table's key font, measured once each.
+@MainActor
+enum VaultKeyNameWidths {
+  private static var widths: [String: CGFloat] = [:]
+  private static let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+
+  static func width(of key: String) -> CGFloat {
+    if let width = widths[key] { return width }
+    let width = ceil((key as NSString).size(withAttributes: [.font: font]).width)
+    widths[key] = width
+    return width
+  }
 }
 
 struct VaultTableColumnWidths {

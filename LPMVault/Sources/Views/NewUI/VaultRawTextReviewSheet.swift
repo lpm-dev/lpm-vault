@@ -133,7 +133,6 @@ struct VaultRawTextReviewSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.disabled(isObscured || review.changes.count == 0)
 			.help(revealed ? "Hide the values" : "Show the values to compare them")
 		}
@@ -254,7 +253,6 @@ struct VaultRawTextReviewSheet: View {
 				.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.help(showsUnchanged ? "Hide the unchanged keys" : "List the unchanged keys")
 			if showsUnchanged {
 				VaultHairline()

@@ -198,7 +198,6 @@ struct EnvFileImportReviewSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
 			.buttonStyle(.plain)
-			.vaultPointingHand()
 			.disabled(failure != nil || isObscured || !isCurrent || isWorking)
 			.help(revealed ? "Hide the values" : "Show the values to compare them")
 		}
@@ -638,7 +637,6 @@ private struct AddToggleStyle: ToggleStyle {
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.vaultPointingHand()
 		.accessibilityAddTraits(on ? .isSelected : [])
 		.help(on ? "Leave this key out of the import" : "Add this key")
 	}
@@ -673,7 +671,6 @@ private struct KeepReplaceControl: View {
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.vaultPointingHand()
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 }

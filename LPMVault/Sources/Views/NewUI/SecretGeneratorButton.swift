@@ -50,10 +50,11 @@ struct SecretGeneratorButton: View {
 		.disabled(disabled)
 		.opacity((compact || linkTitle != nil) && disabled ? 0.45 : 1)
 		.onHover { hovering = $0 }
-		.vaultPointingHand(enabled: !disabled)
+		// Only the link form points; the icon and labeled forms are buttons.
+		.vaultPointingHand(enabled: linkTitle != nil && !disabled)
 		.help(label)
 		.accessibilityLabel(label)
-		.popover(isPresented: $showsGenerator, arrowEdge: .trailing) {
+		.vaultPopover(isPresented: $showsGenerator, arrowEdge: .trailing) {
 			SecretGeneratorPanel(kind: $kind, length: $length) {
 				guard !disabled else { return }
 				onGenerate(SecretValueGenerator.generate(kind, length: length))

@@ -54,7 +54,7 @@ struct VaultAppearanceTests {
 			(VaultPalette.border, 0xDCDBE2, 0x3A3A3F, 1),
 			(VaultPalette.titleBarBorder, 0xE2E1E7, 0x2C2C30, 1),
 			(VaultPalette.sidebarBorder, 0xE2E1E7, 0x2C2C30, 1),
-			(VaultPalette.divider, 0xEAE9EF, 0x2C2C30, 1),
+			(VaultPalette.divider, 0xEAE9EF, 0x343439, 1),
 			(VaultPalette.rowDivider, 0xF0EFF4, 0x252528, 1),
 			(VaultPalette.rowHover, 0xF8F8FA, 0x212124, 1),
 			(VaultPalette.headerHover, 0xF0EFF4, 0x26262A, 1),
@@ -127,6 +127,18 @@ struct VaultAppearanceTests {
 	func inputBorderContrast(scheme: ColorScheme) {
 		for surface in [VaultPalette.control, VaultPalette.content, VaultPalette.inspector, VaultPalette.card, VaultPalette.headerRow] {
 			#expect(Self.contrast(VaultPalette.inputBorder, on: surface, in: scheme) >= 3, "The field edge on \(surface) in \(scheme)")
+		}
+	}
+
+	/// A filled button's focus ring was the accent on the accent, so keyboard focus didn't show on it.
+	@Test("keyboard focus keeps 3:1 against a filled button and against a plain control's surroundings, in both appearances",
+		arguments: [ColorScheme.light, .dark])
+	func focusRingContrast(scheme: ColorScheme) {
+		for fill in [VaultPalette.accent, VaultPalette.accentHover] {
+			#expect(Self.contrast(VaultFocusRing.color(onFill: true), on: fill, in: scheme) >= 3, "Focus on \(fill) in \(scheme)")
+		}
+		for surface in [VaultPalette.content, VaultPalette.control, VaultPalette.inspector, VaultPalette.titleBar] {
+			#expect(Self.contrast(VaultFocusRing.color(onFill: false), on: surface, in: scheme) >= 3, "Focus on \(surface) in \(scheme)")
 		}
 	}
 
@@ -371,5 +383,19 @@ struct VaultPointingHandTests {
 		#expect(state.update(hovering: false, enabled: false) == nil, "Leaving after that pops nothing more")
 		#expect(state.update(hovering: true, enabled: true) == .push)
 		#expect(state.update(hovering: false, enabled: true) == .pop)
+	}
+}
+
+@Suite("Value text")
+struct VaultValueTextTests {
+	@Test("a URL can drop its scheme to keep its host, and other values are left as they are")
+	func urlWithoutScheme() {
+		#expect(VaultValueText.withoutScheme("https://api.acme.io/v1") == "api.acme.io/v1")
+		#expect(VaultValueText.withoutScheme("http://localhost:3000") == "localhost:3000")
+		#expect(VaultValueText.withoutScheme("postgres+ssl://db.example.com/app") == "db.example.com/app")
+		#expect(VaultValueText.withoutScheme("k3J9x2Lq8vR4mP7wZ1nB5cT6") == nil)
+		#expect(VaultValueText.withoutScheme("://nothing-before") == nil)
+		#expect(VaultValueText.withoutScheme("https://") == nil)
+		#expect(VaultValueText.withoutScheme("not a url: https://example.com") == nil, "Only a value that begins with a scheme is a URL")
 	}
 }

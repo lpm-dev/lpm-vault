@@ -247,7 +247,7 @@ struct VaultPaneLayoutTests {
 	/// can't find the toggle by its name; the buttons' widths are measured as drawn.
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
 		let newKey = NSHostingView(rootView: VaultBarButton(systemImage: "plus", title: "New Key", filled: true, height: 27) {}).fittingSize.width
-		let settings = NSHostingView(rootView: VaultOutlineButton(systemImage: "gearshape", title: "Settings") {}).fittingSize.width
+		let settings = NSHostingView(rootView: VaultOutlineButton(systemImage: "gearshape", title: "Project Settings") {}).fittingSize.width
 		try NativeTestClick.send(to: window, at: NSPoint(x: contentRightEdge - 20 - newKey - 6 - settings - 6 - 13.5, y: 723.5))
 	}
 
@@ -261,6 +261,26 @@ struct VaultPaneLayoutTests {
 @Suite("Workspace table column layout")
 @MainActor
 struct VaultTableColumnLayoutTests {
+	@Test("the key column fits the longest key shown, up to its default, and gives what it doesn't need to the values")
+	func keyColumnFitsKeys() {
+		let columns: [VaultTableColumn] = [.key, .environment("default"), .environment("production")]
+		let short = VaultTableColumnLayout.keyWidth(for: ["PORT", "HOST"], publicKeys: [], marks: 3)
+		#expect(short < VaultMetrics.keyColumn)
+		let plain = VaultTableColumnLayout(columns: columns, available: 700)
+		let fitted = VaultTableColumnLayout(columns: columns, available: 700, keyWidth: short)
+		#expect(fitted[.key] == max(VaultTableColumnLayout.fittedKeyMinimum, short))
+		#expect(fitted[.environment("default")] > plain[.environment("default")])
+		#expect(abs(fitted.totalWidth - plain.totalWidth) < 0.5, "The same width, shared differently")
+
+		let long = VaultTableColumnLayout.keyWidth(for: ["PORT", String(repeating: "W", count: 60)], publicKeys: [], marks: 3)
+		#expect(VaultTableColumnLayout(columns: columns, available: 700, keyWidth: long)[.key] == VaultMetrics.keyColumn,
+			"The longest key sets the width, up to the default")
+		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: ["PORT"], marks: 3)
+			> VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 3), "A public key's globe takes room")
+		#expect(VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 1)
+			< VaultTableColumnLayout.keyWidth(for: ["PORT"], publicKeys: [], marks: 3), "One table keeps fewer mark slots")
+	}
+
 	@Test("initial columns fill wide viewports, give up their slack to fit narrow ones, values before keys, and scroll below that",
 		arguments: [CGFloat(380), 420, 500, 560, 1200])
 	func initialLayout(available: CGFloat) {

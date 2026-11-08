@@ -7,7 +7,8 @@ struct VaultTypographyTests {
 	/// revealed secret values and the fields that edit them, such as the box
 	/// pasted variables are edited in or a revealed value with its hidden
 	/// characters shown, Raw text's lines, Connect CLI's commands and
-	/// lpm.json, and a project's folder path. Everything else uses the system font.
+	/// lpm.json, and paths: a project's folder and the LPM home. Everything else
+	/// uses the system font.
 	private static let codeFontUses: [String: Int] = [
 		"VaultDesignSystem.swift": 1,
 		"VaultRawTextView.swift": 2,
@@ -19,6 +20,7 @@ struct VaultTypographyTests {
 		"ConnectCLISheet.swift": 4,
 		"VaultValueCharacterWarning.swift": 1,
 		"VaultProjectSettingsView.swift": 1,
+		"VaultSettingsSections.swift": 1,
 	]
 
 	@Test("monospaced type appears only for revealed secret values, Raw text and Connect CLI's code")

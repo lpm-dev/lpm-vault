@@ -28,7 +28,7 @@ enum VaultPalette {
 	/// A text field's edge: 3:1 against the field and what's around it, as a
 	/// control's boundary needs, where cards and tables keep the quieter `border`.
 	static let inputBorder = adaptive(light: 0x8E8E99, dark: 0x73737D)
-	static let divider = adaptive(light: 0xEAE9EF, dark: 0x2C2C30)
+	static let divider = adaptive(light: 0xEAE9EF, dark: 0x343439)
 	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x252528)
 
 	static let accent = Color(hex: 0x5E5CE6)
@@ -65,6 +65,8 @@ enum VaultPalette {
 	static let rowHover = adaptive(light: 0xF8F8FA, dark: 0x212124)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
+	/// A menu row under the pointer or the arrow keys: a step up from the popover's card in both appearances.
+	static let menuHighlight = adaptive(light: 0xE9E9EE, dark: 0x37373D)
 	static let sidebarHover = adaptive(light: 0xEDEDF1, dark: 0x202023)
 	static let sidebarSelection = adaptive(light: 0xE7E7EA, dark: 0x2A2A2D)
 	static let schemaRowSelected = adaptive(light: 0xF5F4FE, dark: 0x252439)
@@ -135,6 +137,10 @@ enum VaultMetrics {
 	static let fileRow: CGFloat = 44
 	static let statusBar: CGFloat = 30
 	static let keyColumn: CGFloat = 270
+	/// How far a scroll view's content fades before a pinned footer.
+	static let scrollEndFade: CGFloat = 24
+	/// The padding after a scroll view's content that keeps its end clear of the fade.
+	static let scrollEndPadding: CGFloat = 32
 	static let environmentColumn: CGFloat = 190
 	static let environmentValueColumn: CGFloat = 280
 	static let environmentActionsColumn: CGFloat = 132
@@ -193,6 +199,13 @@ extension View {
 			.foregroundStyle(VaultPalette.textPrimary)
 	}
 
+	/// A table column's header, as Mac tables set them: title case, the same for a
+	/// key, a value or an environment's file name.
+	func vaultColumnHeader() -> some View {
+		font(.system(size: 12, weight: .semibold))
+			.foregroundStyle(VaultPalette.textSecondary)
+	}
+
 	func vaultSectionLabel(_ color: Color = VaultPalette.textQuaternary) -> some View {
 		font(VaultTypography.sectionLabel)
 			.tracking(0.5)
@@ -200,9 +213,9 @@ extension View {
 	}
 
 	/// Shows the pointing hand while the pointer is over the view and it's
-	/// enabled. `enabled` is for a control that disables itself inside this
-	/// modifier, which the environment here can't see; a disabled parent is
-	/// read from the environment.
+	/// enabled, as macOS does for links; buttons keep the arrow. `enabled` is
+	/// for a link that disables itself inside this modifier, which the
+	/// environment here can't see; a disabled parent is read from the environment.
 	func vaultPointingHand(enabled: Bool = true) -> some View {
 		modifier(VaultPointingHand(enabled: enabled))
 	}
@@ -252,6 +265,20 @@ private struct VaultPointingHand: ViewModifier {
 }
 
 extension View {
+	/// Fades a scroll view's content out over its last points, so content that
+	/// runs on under a pinned footer reads as continuing rather than cut off.
+	/// It needs `VaultMetrics.scrollEndPadding` inside the scroll view, so
+	/// nothing but space is faded once the content's end is in view.
+	func vaultScrollEndFade(_ height: CGFloat = VaultMetrics.scrollEndFade) -> some View {
+		mask {
+			VStack(spacing: 0) {
+				Color.black
+				LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+					.frame(height: height)
+			}
+		}
+	}
+
 	/// Hides the view but keeps its space, so neighboring controls don't move.
 	func hidden(_ isHidden: Bool) -> some View {
 		opacity(isHidden ? 0 : 1)
@@ -412,17 +439,29 @@ struct VaultCountPill: View {
 /// How the app's buttons respond to a press and to keyboard focus: a press
 /// darkens whatever the button draws, and keyboard focus draws a crisp ring
 /// inside its edge. Hover belongs to each button, which knows its own colors.
+/// How keyboard focus is drawn: the accent ring at a control's edge, or on an
+/// accent-filled control, which the accent can't show on, a white ring inside it.
+enum VaultFocusRing {
+	static func color(onFill: Bool) -> Color { onFill ? .white : VaultPalette.focusRing }
+	static func width(onFill: Bool) -> CGFloat { onFill ? 1.5 : 2 }
+	/// How far inside the control's edge the ring sits.
+	static func inset(onFill: Bool) -> CGFloat { onFill ? 3 : 0 }
+}
+
 struct VaultPressStyle<S: InsettableShape>: ButtonStyle {
 	let shape: S
+	/// The control is filled with the accent, so its focus ring is drawn in white, inside it.
+	var filled = false
 
 	func makeBody(configuration: Configuration) -> some View {
-		VaultPressBody(configuration: configuration, shape: shape)
+		VaultPressBody(configuration: configuration, shape: shape, filled: filled)
 	}
 }
 
 extension VaultPressStyle where S == RoundedRectangle {
-	init(cornerRadius: CGFloat = 7) {
+	init(cornerRadius: CGFloat = 7, filled: Bool = false) {
 		shape = RoundedRectangle(cornerRadius: cornerRadius)
+		self.filled = filled
 	}
 }
 
@@ -451,6 +490,7 @@ extension InsettableShape {
 private struct VaultPressBody<S: InsettableShape>: View {
 	let configuration: ButtonStyleConfiguration
 	let shape: S
+	let filled: Bool
 	@Environment(\.isFocused) private var isFocused
 	@Environment(\.isEnabled) private var isEnabled
 
@@ -458,7 +498,12 @@ private struct VaultPressBody<S: InsettableShape>: View {
 		configuration.label
 			.environment(\.vaultControlFocused, isFocused)
 			.overlay { shape.fill(VaultPalette.pressedOverlay).opacity(configuration.isPressed && isEnabled ? 1 : 0) }
-			.overlay { if isFocused { shape.vaultBorder(VaultPalette.focusRing, lineWidth: 2) } }
+			.overlay {
+				if isFocused {
+					shape.inset(by: VaultFocusRing.inset(onFill: filled))
+						.vaultBorder(VaultFocusRing.color(onFill: filled), lineWidth: VaultFocusRing.width(onFill: filled))
+				}
+			}
 			.contentShape(shape)
 	}
 }
@@ -563,10 +608,9 @@ struct VaultBarButton: View {
 			.vaultHoverAnimation(hovering)
 			.fixedSize(horizontal: !fillsWidth, vertical: true)
 		}
-		.buttonStyle(VaultPressStyle())
+		.buttonStyle(VaultPressStyle(filled: filled && !disabled))
 		.disabled(disabled)
 		.onHover { hovering = $0 }
-		.vaultPointingHand(enabled: !disabled)
 	}
 }
 
@@ -575,16 +619,19 @@ struct VaultBarMenu<Items: View, Label: View>: View {
 	let accessibilityLabel: String
 	/// Drawn without a border or fill until the pointer is over it, as in the title bar.
 	var borderless = false
+	/// Edged like a text field, for a row of filters it shares with one.
+	var field = false
 	var height: CGFloat = 28
 	let items: Items
 	let label: Label
 
 	@State private var hovering = false
 
-	init(accessibilityLabel: String, borderless: Bool = false, height: CGFloat = 28,
+	init(accessibilityLabel: String, borderless: Bool = false, field: Bool = false, height: CGFloat = 28,
 		@ViewBuilder items: () -> Items, @ViewBuilder label: () -> Label) {
 		self.accessibilityLabel = accessibilityLabel
 		self.borderless = borderless
+		self.field = field
 		self.height = height
 		self.items = items()
 		self.label = label()
@@ -604,7 +651,7 @@ struct VaultBarMenu<Items: View, Label: View>: View {
 			.padding(.horizontal, borderless ? 8 : 11)
 			.frame(height: height)
 			.background(RoundedRectangle(cornerRadius: 7).fill(hovering ? VaultPalette.controlHover : (borderless ? .clear : VaultPalette.control)))
-			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(borderless ? .clear : VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(borderless ? .clear : (field ? VaultPalette.inputBorder : VaultPalette.border), lineWidth: 1) }
 			.vaultHoverAnimation(hovering)
 			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
 			.accessibilityElement(children: .combine)
@@ -676,7 +723,6 @@ struct VaultOutlineButton: View {
 		.accessibilityLabel(label ?? title ?? help ?? "")
 		.accessibilityAddTraits(toggles ? (active ? [.isToggle, .isSelected] : .isToggle) : [])
 		.onHover { hovering = $0 }
-		.vaultPointingHand(enabled: !disabled)
 	}
 }
 
@@ -718,11 +764,39 @@ struct VaultRowIconButton: View {
 		.help(help)
 		.accessibilityLabel(label ?? help)
 		.onHover { hovering = $0 }
-		.vaultPointingHand(enabled: !disabled)
 	}
 }
 
 /// A row icon's glyph, hidden while it rests until the pointer or keyboard focus reaches it.
+/// A More menu's glyph that rests like a row icon: drawn while `resting` is
+/// false, as when its row is hovered, or while the menu has keyboard focus.
+struct VaultMoreGlyph: View {
+	var resting = false
+	var size: CGFloat = 28
+	@Environment(\.vaultControlFocused) private var focused
+
+	var body: some View {
+		// Hidden by color, not opacity: a fully transparent view leaves the accessibility tree.
+		Image(systemName: "ellipsis")
+			.font(.system(size: 11.5, weight: .semibold))
+			.foregroundStyle(resting && !focused ? Color.clear : VaultPalette.textTertiary)
+			.frame(width: size, height: size)
+			.contentShape(Rectangle())
+	}
+}
+
+/// A row that tells its content whether the pointer is over it, for controls
+/// that rest until then.
+struct VaultHoverRow<Content: View>: View {
+	@ViewBuilder let content: (_ hovering: Bool) -> Content
+	@State private var hovering = false
+
+	var body: some View {
+		content(hovering)
+			.onHover { hovering = $0 }
+	}
+}
+
 private struct VaultRowIconGlyph: View {
 	let systemImage: String
 	let compact: Bool
@@ -800,7 +874,6 @@ struct VaultFilterChip: View {
 		.accessibilityLabel(trailing.map { "\(title), \($0)" } ?? title)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
 	}
 }
 
@@ -854,6 +927,9 @@ struct VaultKeyStatusMarks: View {
 	/// Keeps every mark's place when it isn't shown, so down a table each kind
 	/// of mark stays in its own column.
 	var slotted = false
+	/// Draws the drift mark in the secondary text color, as on a hovered or
+	/// selected row; at rest it's faint, since most keys drift somewhere.
+	var emphasized = false
 
 	var body: some View {
 		HStack(spacing: 4) {
@@ -875,8 +951,8 @@ struct VaultKeyStatusMarks: View {
 
 	private func mark(_ view: VaultSmartView) -> some View {
 		Image(systemName: view.symbol)
-			.font(.system(size: 11.5, weight: view == .drift ? .regular : .semibold))
-			.foregroundStyle(view.tint)
+			.font(.system(size: 11.5, weight: view == .drift ? .medium : .semibold))
+			.foregroundStyle(view == .drift && emphasized ? VaultPalette.textSecondary : view.tint)
 			.frame(width: 14, height: 14)
 			.help(view.meaning)
 			.accessibilityLabel(view.meaning)
@@ -1028,12 +1104,35 @@ struct VaultValueText: View {
 	var fails = false
 
 	var body: some View {
-		Text(text)
+		// A URL too long for its cell gives up its scheme before its host, so
+		// environments that differ by host still read differently side by side.
+		if !masked, let compact = Self.withoutScheme(text) {
+			ViewThatFits(in: .horizontal) {
+				styled(text).fixedSize()
+				styled(compact)
+			}
+		} else {
+			styled(text)
+		}
+	}
+
+	private func styled(_ shown: String) -> some View {
+		Text(shown)
 			.font(masked ? VaultTypography.tabular(size) : VaultTypography.code(size))
 			.tracking(masked ? 1.2 : 0)
 			.foregroundStyle(fails ? VaultPalette.redText : (masked ? VaultPalette.masked : VaultPalette.textSecondary))
 			.lineLimit(1)
 			.truncationMode(.tail)
 			.accessibilityHidden(true)
+	}
+
+	/// A URL without its scheme, such as "api.acme.io/v1" for "https://api.acme.io/v1";
+	/// nil for a value that isn't a URL.
+	nonisolated static func withoutScheme(_ value: String) -> String? {
+		guard let separator = value.range(of: "://"), separator.lowerBound > value.startIndex,
+			value[..<separator.lowerBound].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }),
+			value[separator.upperBound...].contains(where: { !$0.isWhitespace })
+		else { return nil }
+		return String(value[separator.upperBound...])
 	}
 }

@@ -616,7 +616,7 @@ struct VaultSchemaGroupEditor: View {
 		.vaultPointingHand(enabled: !full)
 		.help(full ? "The LPM CLI accepts at most \(SchemaGroup.maximumMembers) group members in all" : "Add a declared key to the group")
 		.accessibilityLabel("Add a key to the group")
-		.popover(isPresented: $pickingMember, arrowEdge: .leading) {
+		.vaultPopover(isPresented: $pickingMember, arrowEdge: .leading) {
 			VaultKeyPicker(keys: Self.pickableKeys(evaluated: currentOverview?.rules ?? [], draft: draft, excluding: Set(group.members)), secretKeys: currentOverview?.secretKeys ?? []) { picked in
 				pickingMember = false
 				update { if !$0.members.contains(picked) { $0.members.append(picked) } }

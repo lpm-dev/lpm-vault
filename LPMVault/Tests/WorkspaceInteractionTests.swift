@@ -97,7 +97,8 @@ extension SheetInteractionTests {
 				store.openProject(id: "other")
 				#expect(try await host.waitForText("SECOND"))
 				let other = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(other.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn)) points")
+				// Its own default: fitted to its short keys, not the other project's 160 points.
+				#expect(other.accessibilityValue() as? String == "\(Int(VaultTableColumnLayout.fittedKeyMinimum)) points")
 				other.onDragEnded?(80)
 				try await host.settle()
 				store.openProject(id: "workspace")
@@ -107,7 +108,7 @@ extension SheetInteractionTests {
 				store.openProject(id: "other")
 				#expect(try await host.waitForText("SECOND"))
 				let otherRestored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn) + 80) points")
+				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultTableColumnLayout.fittedKeyMinimum) + 80) points")
 			}
 
 			@Test("a narrow key column keeps an edited drifting key visible, its unsaved dot the last mark in one environment's table")
@@ -144,10 +145,11 @@ extension SheetInteractionTests {
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
-			@Test("drift marks a key in All variables under Drift, at the key cell's trailing edge apart from the key, and not at rest or in one environment's table",
+			@Test("drift marks a drifting key in All variables at rest, at the key cell's trailing edge apart from the key, and not in one environment's table",
 				arguments: [VaultAppearance.light, .dark])
 			func driftMarkShowsWhereItHelps(appearance: VaultAppearance) async throws {
-				let (store, _) = makeStore(environments: ["default": ["PORT": "1"], "production": ["PORT": "2"]])
+				// One of two keys drifts, so the mark is news at rest.
+				let (store, _) = makeStore(environments: ["default": ["A_PORT": "1", "Z_HOST": "x"], "production": ["A_PORT": "2", "Z_HOST": "x"]])
 				defer { store.lock() }
 				let suite = "drift-mark-\(UUID().uuidString)"
 				let defaults = try #require(UserDefaults(suiteName: suite))
@@ -169,12 +171,7 @@ extension SheetInteractionTests {
 					return (try inkRuns(in: image, size: host.view.bounds.size, region: row), windowFrame.midX)
 				}
 
-				let rest = try keyCellRuns(rowHeight: VaultMetrics.matrixRow, named: "drift-at-rest")
-				#expect(rest.runs.count == 1, "Only the key shows at rest: \(rest.runs)")
-
-				try await host.click("Drift, 1")
-				try await host.settle()
-				let drift = try keyCellRuns(rowHeight: VaultMetrics.matrixRow, named: "drift-view")
+				let drift = try keyCellRuns(rowHeight: VaultMetrics.matrixRow, named: "drift-at-rest")
 				let key = try #require(drift.runs.first, "No visible key")
 				let glyph = try #require(drift.runs.last, "No visible drift mark")
 				#expect(drift.runs.count == 2, "The key and its mark are apart: \(drift.runs)")
@@ -186,6 +183,15 @@ extension SheetInteractionTests {
 				try await host.settle()
 				let single = try keyCellRuns(rowHeight: VaultMetrics.fileRow, named: "drift-one-environment")
 				#expect(single.runs.count == 1, "One environment's table doesn't mark drift: \(single.runs)")
+			}
+
+			@Test("rows show drift at rest while at most half the keys drift, and always under the Drift filter")
+			func driftAtRestRule() {
+				#expect(VaultContentView.showsDriftAtRest(filter: .all, drifting: 1, keys: 2))
+				#expect(VaultContentView.showsDriftAtRest(filter: .all, drifting: 0, keys: 0))
+				#expect(!VaultContentView.showsDriftAtRest(filter: .all, drifting: 9, keys: 10), "A mark on most rows marks nothing")
+				#expect(!VaultContentView.showsDriftAtRest(filter: .missing, drifting: 3, keys: 5))
+				#expect(VaultContentView.showsDriftAtRest(filter: .drift, drifting: 9, keys: 10), "The Drift view shows what it lists")
 			}
 
 			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
@@ -242,7 +248,7 @@ extension SheetInteractionTests {
 				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
 			}
 
-			@Test("the header's column lines continue the rows' lines, in the same place and color, and the last column ends without one",
+			@Test("the header's column lines continue the rows' lines, in the same place and color; the last column, and one environment's actions, have none",
 				arguments: [false, true], [VaultAppearance.light, .dark])
 			func columnLinesMatchRows(singleEnvironment: Bool, appearance: VaultAppearance) async throws {
 				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "BETA": "b"], "production": ["ALPHA": "z"]])
@@ -268,8 +274,9 @@ extension SheetInteractionTests {
 					let row = try horizontalPixels(in: image, size: host.view.bounds.size, y: frame.minY - rowHeight / 2, from: frame.midX - 4, width: 8)
 					let name = boundary.accessibilityLabel() ?? ""
 					let headerLine = lineColumns(header), rowLine = lineColumns(row)
-					if boundary === last {
-						#expect(headerLine.isEmpty && rowLine.isEmpty, "The table ends at \(name) without a line: \(headerLine), \(rowLine)")
+					// A row's actions belong to its value, so nothing divides them.
+					if boundary === last || (singleEnvironment && name == "Resize Value column") {
+						#expect(headerLine.isEmpty && rowLine.isEmpty, "No line at \(name): \(headerLine), \(rowLine)")
 						continue
 					}
 					#expect(!rowLine.isEmpty, "The rows draw a line at \(name)")
@@ -401,6 +408,8 @@ extension SheetInteractionTests {
 			// Too narrow for the sidebar beside the inspector, so it hid; it comes back to move between pages.
 			try await host.click("Show sidebar")
 			#expect(try await host.waitForText("Hide sidebar", exactly: true))
+			// The toggle's name changes at once; the sidebar's rows arrive a moment later.
+			#expect(try await host.waitForText("PROJECTS", exactly: true))
 			if singleEnvironment {
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
@@ -588,6 +597,8 @@ extension SheetInteractionTests {
 			// A window this narrow hides the sidebar for the inspector; the narrowest table has both.
 			try await host.click("Show sidebar")
 			#expect(try await host.waitForText("Hide sidebar", exactly: true))
+			// The toggle's name changes at once; the sidebar's rows arrive a moment later.
+			#expect(try await host.waitForText("PROJECTS", exactly: true))
 			if minimumContentWidth {
 				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
 				let widest = Int(VaultPaneBudget(available: 1040, requestedSidebar: VaultMetrics.sidebar,

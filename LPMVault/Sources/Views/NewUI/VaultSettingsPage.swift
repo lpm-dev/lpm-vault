@@ -137,7 +137,6 @@ struct VaultSettingsPage: View {
 	private var serverSettings: some View {
 		settingsSection("SERVER") {
 			HStack(spacing: 12) {
-				VaultCardIcon(systemImage: store.appEnvironment == .production ? "globe" : "laptopcomputer")
 				VStack(alignment: .leading, spacing: 2) {
 					Text(store.appEnvironment == .production ? "Production" : "Local development")
 						.font(.system(size: 13, weight: .semibold))

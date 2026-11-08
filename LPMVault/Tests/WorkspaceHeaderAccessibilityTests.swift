@@ -33,7 +33,7 @@ extension SheetInteractionTests {
 			#expect(elements.first { $0.role == .button && ($0.label ?? $0.title) == "CLI approval off" }?.value == "Automatic")
 		}
 
-		@Test("Refresh sits beside the project's name, and Connect CLI leads the actions on the right, before Publish and Lock")
+		@Test("Refresh sits with the sync status on the right, and Connect CLI leads the actions after them, before Publish and Lock")
 		func titleBarOrder() async throws {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
@@ -41,12 +41,13 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let name = try await host.drawnFrame(saying: "— billing-app")
 			let refresh = try await host.drawnFrame(saying: "Refresh")
+			let sync = try await host.drawnFrame(saying: "Sync status: Local")
 			let connect = try await host.drawnFrame(saying: "Connect CLI")
 			let publish = try await host.drawnFrame(saying: "Publish…")
 			let lock = try await host.drawnFrame(saying: "Lock LPM Vault")
-			#expect(name.maxX < refresh.minX && refresh.minX - name.maxX < 40, "Refresh follows the name: \(name) \(refresh)")
-			#expect(connect.minX > host.view.bounds.width / 2, "Connect CLI is with the actions on the right: \(connect)")
-			#expect(refresh.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
+			#expect(refresh.minX > host.view.bounds.width / 2 && name.maxX < refresh.minX, "Refresh isn't read as part of the title: \(name) \(refresh)")
+			#expect(refresh.maxX < sync.minX && sync.minX - refresh.maxX < 32, "Refresh sits beside the sync status: \(refresh) \(sync)")
+			#expect(sync.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
 		}
 
 		@Test("the header's CLI approval chip says the setting and opens Project Settings, where it changes")
@@ -160,7 +161,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { selected(in: host) == ["Raw text"] })
 		}
 
-		@Test("the sync menu is one control, the size it's drawn")
+		@Test("the sync status is one control, the size it's drawn, and opens its menu in the app's popover")
 		func syncMenuIsOneControl() async throws {
 			let fixture = try makeFixture()
 			defer { fixture.tearDown() }
@@ -168,7 +169,12 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let menus = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Sync status: Local") }
 			#expect(menus.count == 1)
-			#expect(menus.allSatisfy { $0.role == .menuButton && $0.frame.height >= 26 })
+			#expect(menus.allSatisfy { $0.role == .button && $0.frame.height >= 26 })
+			try await host.click("Sync status: Local")
+			let popover = try await host.popoverWindow()
+			#expect(try await host.waitForText("Sign In to Sync…", in: popover))
+			try host.key("\u{1b}", code: 53, in: popover)
+			#expect(try await host.waitUntil { !popover.isVisible }, "Esc closes it")
 		}
 
 		@Test("a title bar menu is one control however many parts its label has")

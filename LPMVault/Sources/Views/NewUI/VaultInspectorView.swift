@@ -175,9 +175,10 @@ private struct VaultKeyEditor: View {
 					VaultHairline()
 					VaultKeyHistorySection(store: store, project: project, key: key)
 				}
-				.padding(.bottom, 16)
+				.padding(.bottom, VaultMetrics.scrollEndPadding)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
+			.vaultScrollEndFade()
 			VaultHairline()
 			footer(draft, issue: issue)
 		}
@@ -462,7 +463,7 @@ private struct VaultKeyEditor: View {
 		} label: {
 			Text("Use One Value for All")
 				.font(.system(size: 12, weight: .medium))
-				.foregroundStyle(sources.isEmpty ? VaultPalette.textFaint : VaultPalette.accentForeground)
+				.foregroundStyle(sources.isEmpty ? VaultPalette.textFaint : VaultPalette.textSecondary)
 		}
 		.disabled(sources.isEmpty || draft?.isSaveInFlight == true)
 		.help("Give every environment the value of one of them")
@@ -518,26 +519,30 @@ private struct VaultKeyEditor: View {
 			}
 			.frame(height: 18)
 
-			HStack(spacing: 0) {
-				valueField(environment, revealed: revealed, disabled: isSaving)
-				VaultRowIconButton(systemImage: revealed ? "eye.slash" : "eye", help: "\(revealed ? "Hide" : "Show") \(displayName) value") {
-					toggleReveal(environment, cards: cards)
+			VaultHoverRow { hovering in
+				HStack(spacing: 0) {
+					valueField(environment, revealed: revealed, disabled: isSaving)
+					VaultRowIconButton(systemImage: revealed ? "eye.slash" : "eye", help: "\(revealed ? "Hide" : "Show") \(displayName) value") {
+						toggleReveal(environment, cards: cards)
+					}
+					.disabled(!store.canUseLocalSecrets)
+					.opacity(store.canUseLocalSecrets ? 1 : 0.45)
+					.hidden(isPublic)
+					valueControls(
+						environment,
+						canGenerate: store.canUseLocalSecrets && !isSaving && !hasConflict && !isOrphan,
+						search: project.value(for: key, in: environment)?.isEmpty == false
+							? (store.canUseLocalSecrets && isStored(currentValue(in: environment, draft: draft), in: environment)) : nil,
+						// Copy and More rest until the field is hovered or edited; Reveal stays.
+						resting: !hovering && focusedValue != environment && generatingEnvironment != environment
+					)
 				}
-				.disabled(!store.canUseLocalSecrets)
-				.opacity(store.canUseLocalSecrets ? 1 : 0.45)
-				.hidden(isPublic)
-				valueControls(
-					environment,
-					canGenerate: store.canUseLocalSecrets && !isSaving && !hasConflict && !isOrphan,
-					search: project.value(for: key, in: environment)?.isEmpty == false
-						? (store.canUseLocalSecrets && isStored(currentValue(in: environment, draft: draft), in: environment)) : nil
-				)
+				.padding(.leading, 10)
+				.padding(.trailing, 3)
+				.frame(minHeight: 34)
+				.vaultInputField(focused: focusedValue == environment, invalid: hasConflict || isOrphan || problem != nil)
+				.help(problem ?? "")
 			}
-			.padding(.leading, 10)
-			.padding(.trailing, 3)
-			.frame(minHeight: 34)
-			.vaultInputField(focused: focusedValue == environment, invalid: hasConflict || isOrphan || problem != nil)
-			.help(problem ?? "")
 
 			if let characters = characters(in: environment, draft: draft) {
 				VaultValueCharacterWarning(
@@ -609,11 +614,11 @@ private struct VaultKeyEditor: View {
 	/// search can run, or is nil when there's no stored value to look for.
 	/// Each of the menu's actions is also the More button's own accessibility
 	/// action, which VoiceOver's Actions rotor runs without opening the menu.
-	private func valueControls(_ environment: String, canGenerate: Bool, search: Bool?) -> some View {
+	private func valueControls(_ environment: String, canGenerate: Bool, search: Bool?, resting: Bool) -> some View {
 		let displayName = VaultProject.displayName(for: environment)
 		let canCopy = store.canUseLocalSecrets
 		return HStack(spacing: 0) {
-			VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy \(displayName) value") {
+			VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy \(displayName) value", resting: resting) {
 				copy(environment, as: .value)
 			}
 			.disabled(!canCopy)
@@ -633,11 +638,7 @@ private struct VaultKeyEditor: View {
 						.disabled(!search)
 				}
 			} label: {
-				Image(systemName: "ellipsis")
-					.font(.system(size: 11.5, weight: .semibold))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.frame(width: 28, height: 28)
-					.contentShape(Rectangle())
+				VaultMoreGlyph(resting: resting)
 			}
 			.menuStyle(.button)
 			.buttonStyle(VaultPressStyle(cornerRadius: 6))
@@ -660,7 +661,7 @@ private struct VaultKeyEditor: View {
 					Button("Find where the \(displayName) value is used") { onFindValue(key, environment) }
 				}
 			}
-			.popover(isPresented: Binding(
+			.vaultPopover(isPresented: Binding(
 				get: { generatingEnvironment == environment },
 				set: { if !$0, generatingEnvironment == environment { generatingEnvironment = nil } }
 			), arrowEdge: .trailing) {
@@ -900,10 +901,18 @@ private struct VaultKeyEditor: View {
 					.fixedSize(horizontal: false, vertical: true)
 			case .success(let rules)?:
 				if EnvValidation.isValidVariableName(draft?.name ?? key) {
+					// Said before the field, where it's read before anything is typed.
+					if !hasConflict {
+						Text("Stored in lpm.json, not encrypted")
+							.font(.system(size: 11.5))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.help(descriptions.map { "\($0.folder)/lpm.json, which the LPM CLI reads" } ?? "")
+							.padding(.top, -2)
+					}
 					TextField(
 						"Description",
 						text: descriptionBinding(saved: rules.descriptions[key] ?? ""),
-						prompt: Text("Purpose, owner, when to rotate"),
+						prompt: Text("Purpose, owner, when to rotate").foregroundStyle(VaultPalette.textFaint),
 						axis: .vertical
 					)
 					.lineLimit(2...6)
@@ -920,11 +929,6 @@ private struct VaultKeyEditor: View {
 							cardAction("Use latest") { edit { $0.revertKeyDescription() } }
 							cardAction("Keep mine") { edit { $0.keepKeyDescription() } }
 						}
-					} else {
-						Text("Stored in lpm.json, not encrypted")
-							.font(.system(size: 10.5))
-							.foregroundStyle(VaultPalette.textFaint)
-							.help(descriptions.map { "\($0.folder)/lpm.json, which the LPM CLI reads" } ?? "")
 					}
 				} else {
 					Text("Descriptions need a key name of letters, numbers, and underscores.")

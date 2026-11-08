@@ -156,10 +156,12 @@ struct VaultSchemaView: View {
 			if state != nil {
 				// Shown in every state, and off while they can't be used, so the page keeps its shape.
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
-				VaultOutlineButton(systemImage: "globe", title: "Client prefixes \(clientPrefixCount)", help: "Prefixes that make keys public",
+				// A count of none reads as a stray number, so the title only counts what there is.
+				VaultOutlineButton(systemImage: "globe", title: clientPrefixCount == 0 ? "Client prefixes" : "Client prefixes · \(clientPrefixCount)",
+					help: "Prefixes that make keys public",
 					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
 					.fixedSize()
-					.popover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
+					.vaultPopover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
 				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil,
 					borderless: true) {
 					if let configFile { ProjectConfigOpener.open(configFile) }
@@ -403,11 +405,11 @@ struct VaultSchemaView: View {
 		// scrolling a row into view never leaves it under the header.
 		return VStack(spacing: 0) {
 			HStack(spacing: 0) {
+				// No line between the columns: the rows below have none.
 				VaultKeySortHeader(order: $sortOrder)
 					.frame(width: Self.keyWidth, height: VaultMetrics.tableHeader)
-				VaultHairline(axis: .vertical)
 				HStack(spacing: 8) {
-					Text("RULES").vaultSectionLabel()
+					Text("Rules").vaultColumnHeader()
 					Text("only what differs from the default")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textFaint)
@@ -720,10 +722,10 @@ struct VaultSchemaView: View {
 				}
 				Spacer(minLength: 8)
 				if let conflict = stored.conflict, !stored.isIgnored {
-					VaultBarButton(title: "Open \(conflict)", height: 26) { onSelect(.key(conflict)) }
+					VaultBarButton(title: "Open \(conflict)", borderless: true, height: 26) { onSelect(.key(conflict)) }
 						.accessibilityLabel("Open \(conflict.escapingDirectionControls)")
 				} else if canEdit, storedKeysChecked, !stored.isIgnored {
-					VaultBarButton(systemImage: "plus", title: "Declare", height: 26) { onDeclare(stored.key) }
+					VaultBarButton(systemImage: "plus", title: "Declare", borderless: true, height: 26) { onDeclare(stored.key) }
 						.accessibilityLabel("Declare \(stored.key.escapingDirectionControls)")
 				}
 			}
@@ -746,18 +748,9 @@ struct VaultSchemaView: View {
 			Spacer(minLength: 8)
 			if canEdit {
 				let full = count >= ProjectEnvSchemaGroup.maximumGroups
-				Button(action: onAddGroup) {
-					HStack(spacing: 4) {
-						Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
-						Text("Add Group").font(.system(size: 11.5, weight: .semibold))
-					}
-					.foregroundStyle(VaultPalette.accentForeground)
-				}
-				.buttonStyle(.plain)
-				.disabled(full)
-				.opacity(full ? 0.4 : 1)
-				.vaultPointingHand(enabled: !full)
-				.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
+				// The same borderless button as Declare on the stored keys below.
+				VaultBarButton(systemImage: "plus", title: "Add Group", borderless: true, disabled: full, height: 26, action: onAddGroup)
+					.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -862,7 +855,9 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 0)
 			if let smartViews {
-				VaultSmartViewLinks(counts: smartViews, scope: "Project", compact: compactLinks, open: onOpenSmartView)
+				// The left side already counts the keys that fail, in the Schema's own words.
+				VaultSmartViewLinks(counts: smartViews, scope: "Project", compact: compactLinks,
+					omitted: failureSummary == nil ? [] : [.invalid], open: onOpenSmartView)
 			}
 			draftActions
 		}
