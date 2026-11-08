@@ -779,6 +779,7 @@ struct VaultContentView: View {
 							onCopy: editing.onCopy
 						)
 						.id("\(project.id)/\(selectedEnvironment)")
+						.accessibilityHidden(!editing.isShown)
 						.overlay {
 							if !editing.isShown { rawEditHidden(editing) }
 						}
