@@ -135,7 +135,7 @@ struct VaultTitleBarView: View {
 			.help("Lock LPM Vault (⌘L)")
 			.accessibilityLabel(lockAccessibilityLabel)
 		}
-		.padding(.leading, 14)
+		.padding(.leading, VaultMetrics.windowButtonsInset)
 		.padding(.trailing, 10)
 		.frame(height: VaultMetrics.titleBar)
 		.background {

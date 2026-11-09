@@ -739,6 +739,23 @@ final class SheetTestHost<V: View> {
 		return try #require(bitmap.cgImage)
 	}
 
+	/// The colors drawn at `points` of the host's view, from its bottom-left,
+	/// as red, green and blue, read from one rendering of it.
+	func colors(at points: [NSPoint]) throws -> [(Int, Int, Int)] {
+		let image = try snapshot(view)
+		let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+			bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		let scale = CGFloat(image.width) / view.bounds.width
+		return try points.map { point in
+			let row = Int((view.bounds.height - point.y) * scale), column = Int(point.x * scale)
+			try #require((0..<image.height).contains(row) && (0..<image.width).contains(column), "\(point) is outside the view")
+			let offset = (row * image.width + column) * 4
+			return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+		}
+	}
+
 	/// Where the element saying `label` is once it appears, in the coordinates of
 	/// the host's view or of `targetWindow`'s content, from the bottom-left.
 	func labelFrame(_ label: String, region: CGRect? = nil, in targetWindow: NSWindow? = nil) async throws -> CGRect {

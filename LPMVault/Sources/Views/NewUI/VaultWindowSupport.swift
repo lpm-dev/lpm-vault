@@ -97,6 +97,12 @@ struct VaultWindowConfigurator: NSViewRepresentable {
 	private func configure(_ window: NSWindow?) {
 		guard let window else { return }
 		VaultMainWindow.current = window
+		Self.style(window)
+	}
+
+	/// Draws `window` as LPM Vault's: its content runs under the title bar,
+	/// which the app draws itself, with its own window buttons.
+	static func style(_ window: NSWindow) {
 		window.titlebarAppearsTransparent = true
 		window.titleVisibility = .hidden
 		window.backgroundColor = NSColor(VaultPalette.content)
@@ -143,16 +149,17 @@ struct VaultHostWindowReader: NSViewRepresentable {
 }
 
 struct VaultWindowDragArea: NSViewRepresentable {
-	func makeNSView(context: Context) -> NSView { DragView() }
-	func updateNSView(_ nsView: NSView, context: Context) {}
+	func makeNSView(context: Context) -> VaultWindowDragView { VaultWindowDragView() }
+	func updateNSView(_ nsView: VaultWindowDragView, context: Context) {}
+}
 
-	private final class DragView: NSView {
-		override func mouseDown(with event: NSEvent) {
-			window?.performDrag(with: event)
-		}
-
-		override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+/// Moves the window when it's pressed and dragged, as a title bar does.
+final class VaultWindowDragView: NSView {
+	override func mouseDown(with event: NSEvent) {
+		window?.performDrag(with: event)
 	}
+
+	override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 struct VaultTrafficLights: View {

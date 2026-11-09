@@ -32,7 +32,7 @@ struct ContentView: View {
 				VaultTrafficLights()
 				Spacer()
 			}
-			.padding(.horizontal, 14)
+			.padding(.horizontal, VaultMetrics.windowButtonsInset)
 			.frame(height: VaultMetrics.titleBar)
 			.background {
 				VaultPalette.titleBar

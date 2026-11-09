@@ -111,6 +111,44 @@ extension SheetInteractionTests {
 			#expect(panel.width < size.width - 2 * VaultSettingsOverlay.margin, "Narrower than the window allows, as the cards are")
 		}
 
+		@Test("in the app's window, Settings dims all of it, title bar too, sits its margin below the title bar, and keeps the window's buttons and drag")
+		func overlayFillsTheWindow() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			host.window.appearance = NSAppearance(named: .aqua)
+			VaultWindowConfigurator.style(host.window)
+			try await host.settle()
+			let bounds = host.view.bounds
+			// The title bar above its controls, the window beside the panel, and a window button's middle.
+			let titleBar = NSPoint(x: bounds.midX, y: bounds.maxY - 4)
+			let beside = NSPoint(x: 12, y: bounds.midY)
+			let minimize = try await host.labelFrame("Minimize")
+			let points = [titleBar, beside, NSPoint(x: minimize.midX, y: minimize.midY)]
+			let before = try host.colors(at: points)
+
+			fixture.store.showSettings(.security)
+			let close = try await host.labelFrame("Close Settings")
+			try await host.settle()
+			let after = try host.colors(at: points)
+			func darkening(_ index: Int) -> Int {
+				(before[index].0 - after[index].0) + (before[index].1 - after[index].1) + (before[index].2 - after[index].2)
+			}
+			#expect(darkening(0) > 60, "The title bar reads \(after[0]) under Settings, \(before[0]) without it")
+			#expect(darkening(1) > 60, "Beside the panel the window reads \(after[1]) under Settings, \(before[1]) without it")
+			#expect(abs(darkening(2)) < 8, "The window's buttons stay above the backdrop, read \(after[2]), \(before[2]) without it")
+			let headerMiddle = VaultMetrics.titleBar + VaultSettingsOverlay.margin + VaultSettingsOverlay.headerHeight / 2
+			#expect(abs(bounds.maxY - close.midY - headerMiddle) < 1,
+				"The header's middle is \(bounds.maxY - close.midY) from the window's top, not \(headerMiddle)")
+			// The view's points, from its bottom-left, are the window's: it fills the window.
+			let hit = host.view.hitTest(host.view.superview?.convert(titleBar, from: nil) ?? titleBar)
+			#expect(hit is VaultWindowDragView, "Pressing the title bar moves the window, as it does without Settings; \(String(describing: hit)) took it")
+
+			try NativeTestClick.send(to: host.window, at: beside)
+			#expect(try await host.waitUntil { fixture.store.shownSettingsCategory == nil }, "A click on the backdrop closes Settings")
+		}
+
 		@Test("a lock time chosen from its menu is saved and applies, and Restore Defaults puts the page back")
 		func choosesAndRestores() async throws {
 			let fixture = try makeFixture()

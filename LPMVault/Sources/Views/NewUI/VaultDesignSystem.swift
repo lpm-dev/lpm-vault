@@ -142,6 +142,8 @@ enum VaultPalette {
 
 enum VaultMetrics {
 	static let titleBar: CGFloat = 46
+	/// How far the window's buttons are from its leading edge.
+	static let windowButtonsInset: CGFloat = 14
 	static let sidebar: CGFloat = 260
 	static let sidebarMinimum: CGFloat = 240
 	static let sidebarMaximum: CGFloat = 460
