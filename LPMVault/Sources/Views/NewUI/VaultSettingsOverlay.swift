@@ -47,16 +47,21 @@ struct VaultSettingsOverlay: View {
 	var body: some View {
 		GeometryReader { geometry in
 			let frame = Self.panelFrame(in: geometry.size, scrollBar: scrollBar)
-			ZStack {
+			ZStack(alignment: .topLeading) {
 				VaultPalette.scrim
 					.overlay { VaultClickCatcher { store.closeAccountPage() } }
 					.accessibilityHidden(true)
+				windowControls
 				panel
 					.frame(width: frame.width, height: frame.height)
 					.position(x: frame.midX, y: frame.midY)
 			}
 			.frame(width: geometry.size.width, height: geometry.size.height)
 		}
+		// From the window's top, as the workspace under it runs under the
+		// system's title bar inset: otherwise the backdrop leaves the title
+		// bar undimmed and the panel sits that inset lower.
+		.ignoresSafeArea(.container, edges: .top)
 		// Its keys work wherever focus is in the window, unless a sheet, such as a backup's, is over it.
 		.background(VaultMenuKeys { handle($0) })
 		.onReceive(NotificationCenter.default.publisher(for: .findSettings)) { _ in searchFocused = true }
@@ -106,6 +111,19 @@ struct VaultSettingsOverlay: View {
 		let top = VaultMetrics.titleBar + margin
 		let width = max(0, min(maximumWidth(scrollBar: scrollBar), size.width - 2 * margin))
 		return CGRect(x: (size.width - width) / 2, y: top, width: width, height: max(0, size.height - top - margin))
+	}
+
+	/// The window's buttons above the backdrop, where the title bar draws
+	/// them, as a window's own stay above what it shows. The rest of the
+	/// title bar still moves the window.
+	private var windowControls: some View {
+		HStack(spacing: 0) {
+			VaultTrafficLights()
+			Spacer(minLength: 0)
+		}
+		.padding(.leading, VaultMetrics.windowButtonsInset)
+		.frame(height: VaultMetrics.titleBar)
+		.background(VaultWindowDragArea())
 	}
 
 	private var panel: some View {

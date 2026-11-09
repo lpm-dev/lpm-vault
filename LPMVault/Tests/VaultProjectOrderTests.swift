@@ -440,7 +440,7 @@ extension SheetInteractionTests {
 				try await host.settle()
 				let bands = try labelBands(in: host, through: 240)
 				try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
-				return try columns.map { try pixel(in: host, at: NSPoint(x: $0, y: bands[row].midY)) }
+				return try host.colors(at: columns.map { NSPoint(x: $0, y: bands[row].midY) })
 			}
 			let reference = try await colors(.matrix, row: 0, at: [VaultSidebarLayout.projectInset + 3])
 			let project = try #require(reference.first)
@@ -511,9 +511,8 @@ extension SheetInteractionTests {
 				let bands = try labelBands(in: host)
 				try #require(!bands.isEmpty)
 				let inset = VaultSidebarLayout.projectInset
-				return (try pixel(in: host, at: NSPoint(x: inset + 3, y: bands[0].midY)),
-					try pixel(in: host, at: NSPoint(x: inset / 2, y: bands[0].midY)),
-					try backgroundEdge(in: host, band: bands[0]))
+				let colors = try host.colors(at: [NSPoint(x: inset + 3, y: bands[0].midY), NSPoint(x: inset / 2, y: bands[0].midY)])
+				return (colors[0], colors[1], try backgroundEdge(in: host, band: bands[0]))
 			}
 			let matrix = try await row(.matrix)
 			let (red, green, blue) = matrix.background
@@ -951,16 +950,6 @@ extension SheetInteractionTests {
 				}
 			}
 			return count
-		}
-
-		/// The color drawn at `point`, in window coordinates, as red, green and blue.
-		private func pixel<V: View>(in host: SheetTestHost<V>, at point: NSPoint) throws -> (Int, Int, Int) {
-			let image = try host.snapshot(host.view)
-			let context = try pixelContext(image)
-			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-			let scale = CGFloat(image.width) / host.view.bounds.width
-			let offset = (Int((host.view.bounds.height - point.y) * scale) * image.width + Int(point.x * scale)) * 4
-			return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
 		}
 
 		/// How many pixels in `band` and `columns` are drawn in the accent's purple, and how much of
