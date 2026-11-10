@@ -10,15 +10,18 @@ The app makes network requests for features that you use:
 - Login and account operations contact LPM.dev.
 - Optional cloud sync sends encrypted values and the metadata needed for project and account operations.
 - Account images can require image requests.
+- Publishing contacts the platforms that you connect, such as Vercel or your Coolify server.
+- Connecting Vercel, Netlify, GitHub, or Cloudflare contacts LPM.dev, and so does renewing a token that expires.
 - Update checks contact the public Sparkle feed and release download service.
 
 Encryption of secret values does not hide all project, account, or request metadata from the service.
 Hosting providers receive network connection information for requests they serve.
 
-Sparkle asks before it enables background update checks.
-Automatic downloads start disabled.
+Background update checks start enabled. Turn off **Check automatically** in **Settings → Updates** to stop them.
+Automatic downloads and installs start disabled.
 The app disables Sparkle system-profile reporting.
 Use **Check for Updates…** for a manual check.
+**Send feedback** in **Settings → About** opens a GitHub issue in your browser. It fills in only the LPM Vault and macOS versions.
 
 Copied values and exported `.env` files leave the app's storage boundary.
 The app cannot remove values that another process already received or retained.
