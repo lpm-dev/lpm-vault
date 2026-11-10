@@ -37,7 +37,7 @@ If macOS rejects the app, record the exact message and report it through the ins
 Do not disable Gatekeeper, remove quarantine attributes, or bypass signature checks.
 
 Use **Check for Updates…** in the application menu.
-Background update checks require your consent.
+Background update checks start enabled. **Settings → Updates** turns them off.
 If an update fails, download the current official installer and report the error.
 Do not delete Keychain data as an update workaround.
 

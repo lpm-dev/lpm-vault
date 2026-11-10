@@ -45,7 +45,7 @@ Public source code and a copied entitlement file cannot grant access to this gro
 
 The app requires a signed feed and verifies each archive before extraction. The feed uses a signed DMG enclosure. A separate universal ZIP supports manual distribution.
 
-Sparkle asks the user whether to enable background update checks. Automatic downloads start disabled. The application menu provides **Check for Updates…**. Debug builds disable production updates.
+Background update checks start enabled (`SUEnableAutomaticChecks`), so Sparkle doesn't ask for permission first. Automatic downloads and installs start disabled (`SUAutomaticallyUpdate`). **Settings → Updates** changes both. The application menu provides **Check for Updates…**. Debug builds disable production updates.
 
 When Sparkle offers a new version, **Update available** appears beside **Lock**. The button opens the current update window. The reminder clears when the update session ends, including after **Skip This Version** or **Remind Me Later**.
 
