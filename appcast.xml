@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
 --><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel><title>LPM Vault updates</title><link>https://vault.lpm.dev/</link><item>
+            <title>1.3.0</title>
+            <pubDate>Tue, 10 Nov 2026 12:21:28 +0000</pubDate>
+            <link>https://vault.lpm.dev/</link>
+            <sparkle:version>9.0.1</sparkle:version>
+            <sparkle:shortVersionString>1.3.0 Nightly · 2026-11-10 · db601de</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://vault.lpm.dev/releases/v1.3.0-nightly.20261110.42.db601de/LPM-Vault-1.3.0-nightly.20261110.42.db601de.dmg" length="34619256" type="application/octet-stream" sparkle:edSignature="YJbXtP/5PNf555igi4eL2snCs3i8trLNv27qd57TWwoJzl6HZU5bcd1IGMdgs3qjQGQ7n2klt5G/uk6++1ppAQ=="></enclosure>
+        <sparkle:channel>nightly</sparkle:channel></item>
+    <item>
             <title>1.2.0</title>
             <pubDate>Tue, 10 Nov 2026 07:04:32 +0000</pubDate>
             <link>https://vault.lpm.dev/</link>
@@ -9,16 +18,7 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://vault.lpm.dev/releases/v1.2.0/LPM-Vault-1.2.0.dmg" length="34619113" type="application/octet-stream" sparkle:edSignature="BZGnNfQ5Zr9Jnz9Q9UWF1Ex/gls9d1o3oMlfxi27CKM2uMwakBhrPozPlLsK2kvzXnIVxt0w4ZijXo/DXhuWAA=="></enclosure>
         </item>
-    <item>
-            <title>1.2.0</title>
-            <pubDate>Mon, 09 Nov 2026 12:42:47 +0000</pubDate>
-            <link>https://vault.lpm.dev/</link>
-            <sparkle:version>8.0.5</sparkle:version>
-            <sparkle:shortVersionString>1.2.0 Nightly · 2026-11-09 · 6df6f32</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://vault.lpm.dev/releases/v1.2.0-nightly.20261109.40.6df6f32/LPM-Vault-1.2.0-nightly.20261109.40.6df6f32.dmg" length="34619224" type="application/octet-stream" sparkle:edSignature="qNmGCh1kAduUUtaKGWVjmjv3LwFkRnT8dgAPjLsraxI0952M5OAeIuB0HodHGS91eVUjyBB5IhwJfsbJ9Ps5DA=="></enclosure>
-        <sparkle:channel>nightly</sparkle:channel></item>
     </channel></rss><!-- sparkle-signatures:
-edSignature: YzI3X5W8hctXfLccTkqBlYC/++g5Syo1o0/XRe3t0RmVfpTpafoZmFZCH7tXLyGKBUb/a3YMlQuoQYrclIb8BQ==
+edSignature: wp1FvYMCO4PGy+W4UmHFjget08tnP+bNck7DCGpkz5smjCuBREHbd/Sfu1ZzWM0uko01TB3nzDGRzTCXxKYqCQ==
 length: 1873
 -->
