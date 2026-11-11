@@ -102,8 +102,10 @@ struct EnvFileExportGitTests {
 	@Test("a refused destination never reaches the writer, and warnings come back from a write")
 	func preparerGatesTheWriter() async throws {
 		let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
 		let wrote = Recorded(false)
-		let refusing = EnvFileExportService(worker: { _, _, _ in wrote.value = true }, preparer: { _, _ in
+		let refusing = EnvFileExportService(worker: { _, _, _, _, _ in wrote.value = true }, preparer: { _, _, _ in
 			throw EnvFileExportError.notKeptOutOfGit(reason: "could not keep it out of git: no")
 		})
 		await #expect(throws: EnvFileExportError.notKeptOutOfGit(reason: "could not keep it out of git: no")) {
@@ -114,7 +116,7 @@ struct EnvFileExportGitTests {
 			== "Could not keep it out of git: no. Nothing was exported.")
 
 		let projects = Recorded([String]())
-		let warning = EnvFileExportService(worker: { _, _, _ in wrote.value = true }, preparer: { _, project in
+		let warning = EnvFileExportService(worker: { _, _, _, _, _ in wrote.value = true }, preparer: { _, _, project in
 			projects.value.append(project.path)
 			return ["git could not be run"]
 		})
