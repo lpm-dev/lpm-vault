@@ -29,12 +29,12 @@ enum CoolifyAPIError: Error, Equatable, Sendable {
 	case server(Int)
 }
 
-/// A Coolify instance's address. Its API lives under `/api/v1`. Tokens go
-/// only over HTTPS, or over plain HTTP to this Mac itself, as through an SSH tunnel.
+/// A Coolify instance's address. Its API lives under `/api/v1`, and tokens
+/// go only over HTTPS.
 struct CoolifyInstance: Hashable, Sendable, CustomStringConvertible {
 	enum Problem: Error, Equatable, Sendable {
 		case invalid
-		/// Plain HTTP to another machine would send the token unencrypted.
+		/// Plain HTTP would expose the token to the network or a competing local process.
 		case insecure
 	}
 
@@ -51,10 +51,21 @@ struct CoolifyInstance: Hashable, Sendable, CustomStringConvertible {
 		self = instance
 	}
 
+	/// Reads an origin saved by this app, including a former localhost HTTP
+	/// origin that remains visible for reconnection but can no longer make requests.
+	init?(storedOrigin text: String) {
+		guard case .success(let instance) = Self.parse(text, allowingStoredLoopbackHTTP: true), instance.origin == text else { return nil }
+		self = instance
+	}
+
 	/// The address the person typed. The scheme defaults to https, and a
 	/// path to the API itself is accepted, since that's what Coolify's
 	/// documentation shows.
 	static func parse(_ text: String) -> Result<CoolifyInstance, Problem> {
+		parse(text, allowingStoredLoopbackHTTP: false)
+	}
+
+	private static func parse(_ text: String, allowingStoredLoopbackHTTP: Bool) -> Result<CoolifyInstance, Problem> {
 		var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !text.isEmpty, text.utf8.count <= 2_048 else { return .failure(.invalid) }
 		if !text.contains("://") { text = "https://" + text }
@@ -65,7 +76,7 @@ struct CoolifyInstance: Hashable, Sendable, CustomStringConvertible {
 			let host = components.percentEncodedHost?.lowercased(), isValidHost(host)
 		else { return .failure(.invalid) }
 		if let port = components.port, !(1...65_535).contains(port) { return .failure(.invalid) }
-		guard scheme == "https" || isLoopback(host) else { return .failure(.insecure) }
+		guard scheme == "https" || (allowingStoredLoopbackHTTP && isLoopback(host)) else { return .failure(.insecure) }
 		let defaultPort = scheme == "https" ? 443 : 80
 		var origin = "\(scheme)://\(host)"
 		if let port = components.port, port != defaultPort { origin += ":\(port)" }
@@ -79,9 +90,14 @@ struct CoolifyInstance: Hashable, Sendable, CustomStringConvertible {
 
 	var description: String { origin }
 
+	var usesSecureTransport: Bool { origin.hasPrefix("https://") }
+	var secureOriginSuggestion: String {
+		usesSecureTransport ? origin : "https://" + origin.dropFirst("http://".count)
+	}
+
 	/// The API URL for `path`, whose parts are already safe to put in a path.
 	func url(_ path: [String], query: [URLQueryItem] = []) -> URL? {
-		guard var components = URLComponents(string: origin) else { return nil }
+		guard usesSecureTransport, var components = URLComponents(string: origin) else { return nil }
 		components.percentEncodedPath = "/api/v1/" + path.joined(separator: "/")
 		components.queryItems = query.isEmpty ? nil : query
 		return components.url

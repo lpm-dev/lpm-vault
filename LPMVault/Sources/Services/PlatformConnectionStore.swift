@@ -102,6 +102,9 @@ actor PlatformConnectionStore {
 			else { continue }
 			if let generation = record.connection.generation, retired.contains(generation) { continue }
 			listing.connections.append(record.connection)
+			if case .coolify(let coolify) = record.connection.account, !coolify.instance.usesSecureTransport {
+				listing.expired.insert(record.connection.id)
+			}
 			if let refresh = record.refresh, refresh.isRejected || (refresh.attempt == nil && date >= refresh.expiresAt) {
 				listing.expired.insert(record.connection.id)
 			}
@@ -780,7 +783,7 @@ actor PlatformConnectionStore {
 				accessToken: grant.accessToken)
 		case .coolify?:
 			guard keys == ["version", "platform", "accessToken", "connectedAt", "instance", "teamId", "teamName"],
-				let origin = object["instance"] as? String, let instance = CoolifyInstance(origin: origin),
+				let origin = object["instance"] as? String, let instance = CoolifyInstance(storedOrigin: origin),
 				let teamID = object["teamId"] as? String, CoolifyTeam.isValidID(teamID),
 				let teamName = (object["teamName"] as? String)?.escapingDirectionControls, isValidName(teamName),
 				CoolifyClient.isValidAccessToken(accessToken)
