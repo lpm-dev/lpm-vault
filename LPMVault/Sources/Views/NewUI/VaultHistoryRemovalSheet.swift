@@ -9,6 +9,7 @@ struct VaultHistoryRemovalSheet: View {
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
 	@State private var shows = false
+	@State private var revealGeneration = 0
 	@State private var working = false
 	@State private var failure: Failure?
 
@@ -17,13 +18,36 @@ struct VaultHistoryRemovalSheet: View {
 		case message(String)
 	}
 
+	private struct RevealTarget: Equatable {
+		let id: UUID
+		let projectID: String
+		let entry: String
+		let environment: String
+		let key: String
+		let side: String
+
+		init(_ review: VaultLocalHistory.RemovalReview) {
+			id = review.id
+			projectID = review.projectID
+			entry = review.entry
+			environment = review.environment
+			key = review.key
+			side = review.side
+		}
+	}
+
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
-		if let review = history.removalReview {
-			content(review)
+		Group {
+			if let review = history.removalReview {
+				content(review)
+			}
 		}
+		.onChange(of: history.removalReview.map(RevealTarget.init)) { _, _ in hideValue() }
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in hideValue() }
+		.onDisappear { hideValue() }
 	}
 
 	private func content(_ review: VaultLocalHistory.RemovalReview) -> some View {
@@ -90,7 +114,7 @@ struct VaultHistoryRemovalSheet: View {
 		}
 		.frame(width: 600)
 		.background(VaultPalette.content)
-		.onChange(of: obscured) { _, covered in if covered { shows = false } }
+		.onChange(of: obscured) { _, covered in if covered { hideValue() } }
 	}
 
 	private func subject(_ review: VaultLocalHistory.RemovalReview) -> some View {
@@ -113,8 +137,7 @@ struct VaultHistoryRemovalSheet: View {
 					help: shows ? "Hide the value" : "Reveal the value",
 					disabled: obscured
 				) {
-					shows.toggle()
-					if shows { Task { await history.reveal(review.entry) } }
+					toggleReveal(review)
 				}
 			}
 			if let entry {
@@ -126,6 +149,31 @@ struct VaultHistoryRemovalSheet: View {
 		.padding(14)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+	}
+
+	private func toggleReveal(_ review: VaultLocalHistory.RemovalReview) {
+		if shows { return hideValue() }
+		let target = RevealTarget(review)
+		let generation = revealGeneration
+		let hideGeneration = store.valueAccess.hideGeneration
+		store.valueAccess.reveal {
+			guard canReveal(target, generation: generation, hideGeneration: hideGeneration) else { return }
+			shows = true
+			Task {
+				guard canReveal(target, generation: generation, hideGeneration: hideGeneration) else { return }
+				await history.reveal(review.entry)
+			}
+		}
+	}
+
+	private func canReveal(_ target: RevealTarget, generation: Int, hideGeneration: Int) -> Bool {
+		generation == revealGeneration && hideGeneration == store.valueAccess.hideGeneration && !obscured && !working && store.isUnlocked
+			&& store.selectedProjectId == project.id && history.projectID == project.id && history.removalReview.map(RevealTarget.init) == target
+	}
+
+	private func hideValue() {
+		revealGeneration &+= 1
+		shows = false
 	}
 
 	private func group(_ title: String, note: String?, places: [Int], review: VaultLocalHistory.RemovalReview) -> some View {

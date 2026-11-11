@@ -33,6 +33,7 @@ struct EnvFileImportReviewSheet: View {
 	@Environment(\.vaultImportUndoTimer) private var undoTimer
 	@State private var filter = Filter.all
 	@State private var revealed = false
+	@State private var revealGeneration = 0
 	@State private var replacingKeys: Set<String> = []
 	@State private var skippingKeys: Set<String> = []
 	@State private var task: Task<Void, Never>?
@@ -93,6 +94,7 @@ struct EnvFileImportReviewSheet: View {
 		.onChange(of: store.isShowingAccountPage) { _, showing in if showing { close() } }
 		.onChange(of: isObscured) { _, obscured in if obscured { hideValues() } }
 		.onChange(of: review.id) { _, _ in hideValues() }
+		.onChange(of: store.valueAccess.hideGeneration) { _, _ in hideValues() }
 	}
 
 	// MARK: - Header
@@ -528,10 +530,19 @@ struct EnvFileImportReviewSheet: View {
 	private func toggleReveal() {
 		if revealed { return hideValues() }
 		guard task == nil, completion == nil, failure == nil, !isObscured, store.isCurrentEnvFileImportReview(review) else { return }
-		revealed = true
+		let generation = revealGeneration
+		let hideGeneration = store.valueAccess.hideGeneration
+		let reviewID = review.id
+		store.valueAccess.reveal {
+			guard generation == revealGeneration, hideGeneration == store.valueAccess.hideGeneration, reviewID == review.id,
+				task == nil, completion == nil, failure == nil, !isObscured, store.isCurrentEnvFileImportReview(review)
+			else { return }
+			revealed = true
+		}
 	}
 
 	private func hideValues() {
+		revealGeneration &+= 1
 		revealed = false
 	}
 
