@@ -6,6 +6,16 @@ struct BackupExportAuthorization: Sendable {
 	let sessionGeneration: Int
 }
 
+struct BackupFileWrite: Sendable {
+	let data: Data
+	let destination: URL
+	let authorization: FileWriteAuthorization
+
+	func write() throws {
+		try SecureFileWriter.write(data, to: destination, authorization: authorization)
+	}
+}
+
 /// A backup just saved.
 struct BackupExportResult: Equatable, Sendable {
 	let file: URL

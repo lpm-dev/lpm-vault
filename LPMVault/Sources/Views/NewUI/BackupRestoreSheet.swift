@@ -786,7 +786,7 @@ struct BackupRestoreSheet: View {
 			defer { task = nil }
 			do {
 				let result = try await store.restoreBackup(review, choices: choices) { finished.append($0) }
-				if let settings = result.settings { applySettings(settings) }
+				if !Task.isCancelled, store.isCurrentBackupRestoreReview(review), let settings = result.settings { applySettings(settings) }
 				self.result = result
 				phase = .finished
 			} catch {

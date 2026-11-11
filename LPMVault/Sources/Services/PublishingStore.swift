@@ -13,6 +13,7 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 	case duplicateLocation(existing: UUID)
 	case limitReached
 	case tooLarge
+	case cancelled
 	/// The destination was removed while the publish ran.
 	case destinationRemoved
 	/// The destination was pointed somewhere else while the publish ran.
@@ -30,6 +31,7 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 		case .duplicateLocation: "Another destination already publishes there."
 		case .limitReached: "This env project has the most publish destinations it can hold."
 		case .tooLarge: "The publish destinations are too large to save."
+		case .cancelled: "The operation was cancelled."
 		case .destinationRemoved: "The publish destination was removed."
 		case .destinationMoved: "The publish destination was changed."
 		case .destinationChanged: "The publish destination changed meanwhile."
@@ -72,9 +74,11 @@ actor PublishingStore {
 	func save(
 		_ destination: PublishDestination,
 		to vaultID: String,
-		replacing expected: PublishDestination? = nil
+		replacing expected: PublishDestination? = nil,
+		authorization: FileWriteAuthorization? = nil
 	) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
+			try authorization?.check()
 			if let invalidity = destination.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
 			var destinations = try readDestinations(of: vaultID)
 			if let other = destinations.first(where: { $0.id != destination.id && $0.target.location == destination.target.location }) {
@@ -85,6 +89,7 @@ actor PublishingStore {
 				if let expected, stored != expected { throw PublishingStoreError.destinationChanged }
 				guard destination != stored else { return destinations }
 				if stored.target.location != destination.target.location {
+					try authorization?.check()
 					try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, destination.id)).get()
 				}
 				var replacement = destination
@@ -95,6 +100,7 @@ actor PublishingStore {
 				guard destinations.count < PublishingRecords.maximumDestinations else { throw PublishingStoreError.limitReached }
 				destinations.append(destination)
 			}
+			try authorization?.check()
 			try writeDestinations(destinations, of: vaultID)
 			return destinations
 		}.mapError(Self.storeError)
@@ -412,6 +418,7 @@ actor PublishingStore {
 
 	private static func storeError(_ error: Error) -> PublishingStoreError {
 		switch error {
+		case is CancellationError: .cancelled
 		case let error as PublishingStoreError: error
 		case let error as KeychainError: .keychain(error)
 		case PublishingRecords.DecodingError.newerVersion: .newerVersion

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-final class EnvFileExportAuthorization: @unchecked Sendable {
+final class FileWriteAuthorization: @unchecked Sendable {
 	private let lock = NSLock()
 	private var valid = true
 
@@ -9,8 +9,10 @@ final class EnvFileExportAuthorization: @unchecked Sendable {
 		lock.withLock { valid = false }
 	}
 
+	var isValid: Bool { !Task.isCancelled && lock.withLock { valid } }
+
 	func check() throws {
-		guard !Task.isCancelled, lock.withLock({ valid }) else {
+		guard isValid else {
 			throw CancellationError()
 		}
 	}
@@ -22,6 +24,8 @@ final class EnvFileExportAuthorization: @unchecked Sendable {
 		}
 	}
 }
+
+typealias EnvFileExportAuthorization = FileWriteAuthorization
 
 /// Why an export wrote nothing: git would have committed the file.
 enum EnvFileExportError: LocalizedError, Equatable, Sendable {
@@ -257,7 +261,7 @@ enum SecureFileWriter {
 		_ data: Data,
 		to destination: URL,
 		permissions: mode_t = mode_t(S_IRUSR | S_IWUSR),
-		authorization: EnvFileExportAuthorization? = nil,
+		authorization: FileWriteAuthorization? = nil,
 		replaceExisting: Bool = true,
 		beforeReplacement: @escaping () throws -> Void = {},
 		directorySynchronizer: ((URL) -> Int32?)? = nil,

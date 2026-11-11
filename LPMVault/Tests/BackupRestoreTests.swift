@@ -26,7 +26,7 @@ struct BackupRestoreTests {
 	}
 
 	/// A store on a Mac holding `local` projects, listed in its sidebar.
-	private func fixture(_ local: [String: [String: [String: String]]] = [:]) throws -> Fixture {
+	private func fixture(_ local: [String: [String: [String: String]]] = [:], keyBackend: (any KeychainStoreBackend)? = nil) throws -> Fixture {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-backup-restore-\(UUID().uuidString)", directoryHint: .isDirectory)
 		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 		let defaults = try #require(UserDefaults(suiteName: folder.lastPathComponent))
@@ -35,10 +35,15 @@ struct BackupRestoreTests {
 		let biometric = MockBiometricService()
 		let keys = InMemoryKeychainBackend()
 		let home = try testLPMHome(in: folder)
+		let keyStore = keyBackend.map {
+			BackupKeyStore(roots: SharedKeychainStore(service: BackupKeyStore.testRootService, backend: $0),
+				sharing: SharedKeychainStore(service: BackupKeyStore.testSharingService, backend: $0),
+				wrapping: SharedKeychainStore(service: BackupKeyStore.testWrappingService, backend: $0), home: home)
+		} ?? .inMemory(keys, home: home)
 		let store = VaultStore(
 			keychainService: keychain, biometricService: biometric, apiService: MockAPIService(), preferences: defaults,
 			projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
-			backupKeys: .inMemory(keys, home: home))
+			backupKeys: keyStore)
 		store.projects = local.keys.sorted().map { VaultProject(id: $0, name: $0, path: "", environments: local[$0] ?? [:]) }
 		store.isUnlocked = true
 		return Fixture(store: store, keychain: keychain, keys: keys, home: home, biometric: biometric, defaults: defaults, folder: folder)
@@ -438,6 +443,9 @@ struct BackupRestoreTests {
 		#expect(fixture.keychain.envStorage.isEmpty)
 		fixture.biometric.shouldSucceed = true
 		fixture.store.lock()
+		#expect(!fixture.store.isCurrentBackupRestoreReview(review))
+		fixture.store.isUnlocked = true
+		#expect(!fixture.store.isCurrentBackupRestoreReview(review))
 		await #expect(throws: CancellationError.self) {
 			try await fixture.store.restoreBackup(review, choices: .defaults(for: review.plan, hasLocalProjects: false))
 		}
@@ -461,6 +469,268 @@ struct BackupRestoreTests {
 		try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
 		await #expect(throws: BackupRestoreFailure.file(.notAFile)) {
 			try await fixture.store.openBackup(at: link, passphrase: Self.passphrase)
+		}
+	}
+
+
+
+	@Test("withdrawn restore keeps completed projects and cleanup but does not apply global settings",
+		arguments: ["lock", "cancel", "none"])
+	func settingsRespectRevocation(transition: String) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		fixture.store.settings.lockAfter = .thirtyMinutes
+		fixture.store.settings.valueApproval = .afterFiveMinutes
+		fixture.store.settings.rehide = .thirtySeconds
+		fixture.store.settings.hidesFromCapture = true
+		var weaker = fixture.store.settings.snapshot
+		weaker.security.valueApproval = .never
+		weaker.security.rehide = .never
+		weaker.security.hidesFromCapture = false
+		let settings = BackupAppSection.Settings(
+			appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .stable,
+			projectOrder: ["revocation-a", "revocation-b"], environmentOrders: [:],
+			preferences: .init(app: weaker, updates: .standard))
+		let sync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "org_demo", scope: .organization(slug: "demo"))
+		let url = try backup([
+			project("revocation-a", environments: ["default": ["TOKEN": "DEMO-A"]]),
+			project("revocation-b", environments: ["default": ["TOKEN": "DEMO-B"]], sync: sync),
+		], app: .init(settings: settings), in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let choices = BackupRestoreChoices(included: ["revocation-a", "revocation-b"], applySettings: true)
+		var completed: [String] = []
+		let task = Task { @MainActor in
+			try await fixture.store.restoreBackup(review, choices: choices) { item in
+				completed.append(item.vaultId)
+				guard item.vaultId == "revocation-a" else { return }
+				if transition == "lock" { fixture.store.lock() }
+				if transition == "cancel" { withUnsafeCurrentTask { $0?.cancel() } }
+			}
+		}
+		let result = try await task.value
+		let persisted = VaultSettings(defaults: fixture.defaults)
+		#expect(fixture.keychain.envStorage["revocation-a"] != nil)
+		if transition == "none" {
+			#expect(fixture.keychain.envStorage["revocation-b"] != nil)
+			#expect(persisted.valueApproval == .never)
+			#expect(!persisted.hidesFromCapture)
+			#expect(result.settings != nil)
+		} else {
+			#expect(completed == ["revocation-a"])
+			#expect(fixture.keychain.envStorage["revocation-b"] == nil)
+			#expect(persisted.valueApproval == .afterFiveMinutes)
+			#expect(persisted.rehide == .thirtySeconds)
+			#expect(persisted.hidesFromCapture)
+			#expect(result.settings == nil)
+			#expect(fixture.store.syncPauses["revocation-b"] == nil)
+			let associations = try JSONDecoder().decode([String: String].self,
+				from: fixture.keychain.dataStorage["__org_associations__"] ?? Data("{}".utf8))
+			#expect(associations["revocation-b"] == nil)
+		}
+	}
+
+
+	@Test("key restoration stops before the next item after revocation",
+		arguments: ["lock", "cancel", "none"])
+	func keyInstallationRespectsRevocation(transition: String) async throws {
+		let backend = GatedBackupKeyBackend()
+		let fixture = try fixture(keyBackend: backend)
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		let first = String(repeating: "a", count: 64)
+		let second = String(repeating: "b", count: 64)
+		var keys = BackupKeys()
+		keys.personalRoots = [
+			.init(account: first, key: secret(String(repeating: "1", count: 64))),
+			.init(account: second, key: secret(String(repeating: "2", count: 64))),
+		]
+		let url = try backup([project("after-keys", environments: ["default": ["TOKEN": "DEMO"]])], keys: keys, in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let choices = BackupRestoreChoices(included: ["after-keys"], applySettings: false, restoreKeys: true)
+		backend.arm()
+		let task = Task { @MainActor in try await fixture.store.restoreBackup(review, choices: choices) }
+		do {
+			try #require(try await waitUntil { backend.gate.isWaiting })
+			if transition == "lock" { fixture.store.lock() }
+			if transition == "cancel" { task.cancel() }
+			backend.gate.release()
+			let result = try await task.value
+			#expect(try backend.base.read(service: BackupKeyStore.testRootService, account: first) != nil)
+			if transition == "none" {
+				#expect(try backend.base.read(service: BackupKeyStore.testRootService, account: second) != nil)
+				#expect(fixture.keychain.envStorage["after-keys"] != nil)
+				#expect(result.keys?.added == 2)
+			} else {
+				#expect(try backend.base.read(service: BackupKeyStore.testRootService, account: second) == nil)
+				#expect(fixture.keychain.envStorage["after-keys"] == nil)
+				#expect(result.keys?.added == 1)
+				#expect(result.settings == nil)
+			}
+		} catch {
+			backend.gate.release()
+			_ = await task.result
+			throw error
+		}
+	}
+
+
+	@Test("queued destination writes recheck revoked backup authority", arguments: [false, true])
+	func destinationAuthorityIsRechecked(revoked: Bool) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		let authorization = FileWriteAuthorization()
+		let gate = BackupTestGate()
+		fixture.keychain.beforeAppItemRead = { store, account in
+			if store == .publishing, account == "destinations.backup-destination" { gate.pause() }
+		}
+		let destination = vercelDestination(source: "default")
+		let task = Task { await fixture.store.publishing.save(destination, to: "backup-destination", authorization: authorization) }
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			if revoked { authorization.invalidate() }
+			gate.release()
+			let result = await task.value
+			fixture.keychain.beforeAppItemRead = nil
+			let saved = try await fixture.store.publishing.destinations(of: "backup-destination").get()
+			if revoked {
+				#expect(result == .failure(.cancelled))
+				#expect(saved.isEmpty)
+			} else {
+				#expect(saved == [destination])
+			}
+		} catch {
+			gate.release()
+			_ = await task.value
+			throw error
+		}
+	}
+
+	@Test("restored icons require current backup authority", arguments: [false, true])
+	func iconAuthorityIsChecked(revoked: Bool) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		let authorization = FileWriteAuthorization()
+		if revoked { authorization.invalidate() }
+		let restored = await fixture.store.projectIcons.restore(.choice(.emoji("🚀")), for: "backup-icon", authorization: authorization)
+		#expect(restored == !revoked)
+		#expect(fixture.store.projectIcons.savedChoices(for: ["backup-icon"]).isEmpty == revoked)
+	}
+
+	@Test("revoked image restore removes its prepared PNG and never publishes its choice", arguments: [false, true])
+	func restoredImageRespectsRevocation(revoked: Bool) async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let gate = BackupTestGate()
+		let directory = fixture.folder.appending(path: "restored-icons", directoryHint: .isDirectory)
+		let icons = ProjectIconStore(preferences: fixture.defaults, imagesDirectory: directory,
+			prepareRestoredImage: { name, png, directory, authorization in
+				let choice = ProjectIconStore.prepareRestoredImage(name, png, directory, authorization)
+				gate.pause()
+				return choice
+			})
+		let authorization = FileWriteAuthorization()
+		let png = try ProjectIconFixture.png(red: 255, green: 0, blue: 0)
+		let task = Task { await icons.restore(.image(name: "demo.png", png: png), for: "image-project", authorization: authorization) }
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			#expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 1)
+			if revoked { authorization.invalidate() }
+			gate.release()
+			#expect(await task.value == !revoked)
+			await icons.waitForFileWork()
+			#expect(icons.savedChoices(for: ["image-project"]).isEmpty == revoked)
+			#expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == (revoked ? 0 : 1))
+		} catch {
+			gate.release()
+			_ = await task.value
+			await icons.waitForFileWork()
+			throw error
+		}
+	}
+
+	@Test("organization preparation queued before revocation writes nothing", arguments: ["lock", "cancel", "none"])
+	func organizationPreparationRespectsRevocation(transition: String) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		let sync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "org_demo", scope: .organization(slug: "demo"))
+		let url = try backup([project("queued-org", environments: ["default": ["TOKEN": "DEMO"]], sync: sync)], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let gate = BackupTestGate()
+		fixture.keychain.beforeKeychainTransaction = { gate.pause() }
+		let task = Task { @MainActor in
+			try await fixture.store.restoreBackup(review, choices: .init(included: ["queued-org"], applySettings: false))
+		}
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			if transition == "lock" { fixture.store.lock() }
+			if transition == "cancel" { task.cancel() }
+			gate.release()
+			_ = try await task.value
+			#expect(fixture.keychain.dataWriteCounts["__org_associations__", default: 0] == (transition == "none" ? 1 : 0))
+			#expect((fixture.keychain.envStorage["queued-org"] != nil) == (transition == "none"))
+		} catch {
+			gate.release()
+			_ = await task.result
+			throw error
+		}
+	}
+
+	@Test("an admitted project may finish after revocation but later projects and settings stop",
+		arguments: ["lock", "cancel"])
+	func admittedProjectFinishes(transition: String) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		fixture.store.settings.hidesFromCapture = true
+		var weaker = VaultSettings.standard
+		weaker.security.hidesFromCapture = false
+		let settings = BackupAppSection.Settings(appearance: .dark, keySort: .descending, quitShortcut: .hold,
+			updateChannel: .stable, projectOrder: [], environmentOrders: [:], preferences: .init(app: weaker, updates: .standard))
+		let sync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "org_demo", scope: .organization(slug: "demo"))
+		let url = try backup([
+			project("admitted-a", environments: ["default": ["TOKEN": "DEMO-A"]], sync: sync),
+			project("admitted-b", environments: ["default": ["TOKEN": "DEMO-B"]], sync: sync),
+		], app: .init(settings: settings), in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let gate = BackupTestGate()
+		fixture.keychain.beforeRestoredProjectWrite = { project in if project.id == "admitted-a" { gate.pause() } }
+		let task = Task { @MainActor in
+			try await fixture.store.restoreBackup(review, choices: .init(included: ["admitted-a", "admitted-b"], applySettings: true))
+		}
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			if transition == "lock" { fixture.store.lock() } else { task.cancel() }
+			gate.release()
+			let result = try await task.value
+			#expect(fixture.keychain.envStorage["admitted-a"] != nil)
+			#expect(fixture.keychain.envStorage["admitted-b"] == nil)
+			#expect(Set(VaultSyncPause.load(from: fixture.defaults).keys) == ["admitted-a"])
+			let associations = try JSONDecoder().decode([String: String].self,
+				from: fixture.keychain.dataStorage["__org_associations__"] ?? Data("{}".utf8))
+			#expect(associations == ["admitted-a": "demo"])
+			#expect(VaultSettings(defaults: fixture.defaults).hidesFromCapture)
+			#expect(result.settings == nil)
+			#expect(!fixture.store.isWriting)
+		} catch {
+			gate.release()
+			_ = await task.result
+			throw error
 		}
 	}
 

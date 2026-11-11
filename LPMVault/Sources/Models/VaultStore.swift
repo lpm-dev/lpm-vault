@@ -1496,6 +1496,8 @@ final class VaultStore {
   /// Whether updates are looked for and installed in the background, which
   /// the app's updater knows and a backup carries.
   @ObservationIgnored var automaticUpdates: @MainActor () -> BackupAppSection.AutomaticUpdates? = { nil }
+  @ObservationIgnored var backupFileWriter: @Sendable (BackupFileWrite) throws -> Void = { try $0.write() }
+  @ObservationIgnored private var backupWorkAuthorizations: [UUID: FileWriteAuthorization] = [:]
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
   /// The last backup this Mac exported.
@@ -5892,8 +5894,8 @@ final class VaultStore {
 
   /// Seals a backup of every env project, removed ones included, with
   /// `passphrase`, and saves it to `destination`, replacing a file there.
-  /// Nothing is saved once the session `authorization` came from ends or the
-  /// task is cancelled.
+  /// Ending the authorized session or cancelling stops an uncommitted write.
+  /// A write already committed still reports success.
   func exportBackup(
     _ contents: BackupExporter.Contents,
     passphrase: String,
@@ -5901,7 +5903,14 @@ final class VaultStore {
     authorization: BackupExportAuthorization
   ) async throws -> BackupExportResult {
     let write = writes.begin()
-    defer { writes.end(write) }
+    let workID = UUID()
+    let commitAuthorization = FileWriteAuthorization()
+    backupWorkAuthorizations[workID] = commitAuthorization
+    defer {
+      commitAuthorization.invalidate()
+      backupWorkAuthorizations[workID] = nil
+      writes.end(write)
+    }
     await waitForLocalStateRefresh()
     guard isUnlocked, authorization.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
     let exporter = BackupExporter(
@@ -5920,7 +5929,14 @@ final class VaultStore {
     try Task.checkCancellation()
     guard isUnlocked, authorization.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
     let file = sealed.file
-    try await BlockingWork.run { try SecureFileWriter.write(file, to: destination) }
+    let writer = backupFileWriter
+    try await withTaskCancellationHandler {
+      try await BlockingWork.run {
+        try writer(BackupFileWrite(data: file, destination: destination, authorization: commitAuthorization))
+      }
+    } onCancel: {
+      commitAuthorization.invalidate()
+    }
     let record = VaultBackupRecord(date: now, bytes: file.count)
     record.save(to: preferences)
     lastBackup = record
@@ -6005,6 +6021,10 @@ final class VaultStore {
       sessionGeneration: sessionGeneration)
   }
 
+  func isCurrentBackupRestoreReview(_ review: BackupRestoreReview) -> Bool {
+    isUnlocked && review.sessionGeneration == vaultSessionGeneration
+  }
+
   /// Restores what the person chose from `review`, once they authenticate,
   /// project by project, telling `progress` as each one ends. A project that
   /// changed here since the review is left as it is. Cancelling stops after
@@ -6020,15 +6040,23 @@ final class VaultStore {
     choices: BackupRestoreChoices,
     progress: @MainActor (BackupRestoreResult.Item) -> Void = { _ in }
   ) async throws -> BackupRestoreResult {
-    guard isUnlocked, review.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    guard !Task.isCancelled, isCurrentBackupRestoreReview(review) else { throw CancellationError() }
     guard await confirmSensitiveAction(reason: "restore a backup into your env projects"),
       review.sessionGeneration == vaultSessionGeneration
     else { throw CancellationError() }
     let write = writes.begin()
     isRestoringBackup = true
+    let workID = UUID()
+    let workAuthorization = FileWriteAuthorization()
+    backupWorkAuthorizations[workID] = workAuthorization
     defer {
+      workAuthorization.invalidate()
+      backupWorkAuthorizations[workID] = nil
       isRestoringBackup = false
       writes.end(write)
+    }
+    func isCurrent() -> Bool {
+      workAuthorization.isValid && isCurrentBackupRestoreReview(review)
     }
     let restoredAt = Date()
     let keyStore = backupKeys
@@ -6036,12 +6064,18 @@ final class VaultStore {
     var installedKeys: BackupKeyStore.Review?
     var keyFailure: String?
     if choices.restoreKeys, !backupKeys.isEmpty {
-      switch await BlockingWork.run({ Result { () throws(BackupKeyStore.Failure) in try keyStore.install(backupKeys) } }) {
+      switch await BlockingWork.run({ Result { () throws(BackupKeyStore.Failure) in try keyStore.install(backupKeys, authorization: workAuthorization) } }) {
       case .success(let installed): installedKeys = installed
       case .failure(let failure): keyFailure = failure.message
       }
     }
+    guard isCurrent() else {
+      return BackupRestoreResult(items: [], destinations: 0, keys: installedKeys, keyFailure: keyFailure, settings: nil)
+    }
     let present = await BlockingWork.run { try? keyStore.presentKeys() }
+    guard isCurrent() else {
+      return BackupRestoreResult(items: [], destinations: 0, keys: installedKeys, keyFailure: keyFailure, settings: nil)
+    }
     let coverage = present.map { BackupKeyStore.Coverage(present: $0, review: installedKeys ?? review.keys, backup: backupKeys) }
     func hasKey(for sync: BackupPayload.Sync) -> Bool { coverage?.hasKey(for: sync) ?? false }
 
@@ -6057,7 +6091,7 @@ final class VaultStore {
     }
     var associatedHere = Set<String>()
     if !organizations.isEmpty {
-      if let added = await persistence.addOrgAssociations(organizations.mapValues(\.slug)) {
+      if let added = await persistence.addOrgAssociations(organizations.mapValues(\.slug), authorization: workAuthorization) {
         associatedHere = added
       } else {
         for (id, organization) in organizations where syncPauses[id] == nil {
@@ -6065,19 +6099,20 @@ final class VaultStore {
         }
       }
     }
-    var pausedHere = Set(pausing.keys)
+    var pausedHere = Set<String>()
     let covered = installedKeys.map { installed in
       syncPauses.compactMap { id, pause in
         pause.sync.map { coverage?.addedKey(for: $0, installed: installed) ?? false } == true ? id : nil
       }
     } ?? []
-    if !pausing.isEmpty || !covered.isEmpty {
+    if isCurrent(), !pausing.isEmpty || !covered.isEmpty {
       for id in covered { syncPauses[id] = nil }
       syncPauses.merge(pausing) { current, _ in current }
       VaultSyncPause.save(syncPauses, to: preferences)
+      pausedHere = Set(pausing.keys)
     }
     for project in review.plan.projects {
-      guard !Task.isCancelled, isUnlocked, review.sessionGeneration == vaultSessionGeneration else { break }
+      guard isCurrent() else { break }
       let id = project.id
       let outcome: BackupRestoreOutcome
       switch project.status {
@@ -6134,33 +6169,40 @@ final class VaultStore {
     if !unwrittenAssociations.isEmpty { await persistence.removeOrgAssociations(unwrittenAssociations) }
     await refreshLocalState()
 
+    guard isCurrent() else {
+      return BackupRestoreResult(items: items, destinations: 0, keys: installedKeys, keyFailure: keyFailure, settings: nil)
+    }
+
     var destinations = 0
     let app = review.plan.contents.app
     for id in kept {
+      guard isCurrent() else { break }
       guard let list = app?.destinations[id] else { continue }
-      destinations += await restoreDestinations(list, into: id)
+      destinations += await restoreDestinations(list, into: id, authorization: workAuthorization)
     }
     var settings: BackupAppSection.Settings?
-    if choices.applySettings, let restored = app?.settings {
+    if isCurrent(), choices.applySettings, let restored = app?.settings {
       settings = restored
       applyRestoredSettings(restored, to: kept)
       for id in kept {
-        if let icon = app?.icons[id] { _ = await projectIcons.restore(icon, for: id) }
+        guard isCurrent() else { break }
+        if let icon = app?.icons[id] { _ = await projectIcons.restore(icon, for: id, authorization: workAuthorization) }
       }
     }
     return BackupRestoreResult(
-      items: items, destinations: destinations, keys: installedKeys, keyFailure: keyFailure, settings: settings)
+      items: items, destinations: destinations, keys: installedKeys, keyFailure: keyFailure, settings: isCurrent() ? settings : nil)
   }
 
   /// Adds the destinations a backup held for a project that this Mac's don't
   /// already cover, by ID or by where they publish; returns how many.
-  private func restoreDestinations(_ destinations: [PublishDestination], into vaultId: String) async -> Int {
-    guard case .success(let existing) = await publishing.destinations(of: vaultId) else { return 0 }
+  private func restoreDestinations(_ destinations: [PublishDestination], into vaultId: String, authorization: FileWriteAuthorization) async -> Int {
+    guard authorization.isValid, case .success(let existing) = await publishing.destinations(of: vaultId), authorization.isValid else { return 0 }
     var ids = Set(existing.map(\.id))
     var locations = Set(existing.map(\.target.location))
     var added = 0
     for destination in destinations where !ids.contains(destination.id) && !locations.contains(destination.target.location) {
-      guard case .success = await publishing.save(destination, to: vaultId) else { continue }
+      guard authorization.isValid else { break }
+      guard case .success = await publishing.save(destination, to: vaultId, authorization: authorization) else { continue }
       ids.insert(destination.id)
       locations.insert(destination.target.location)
       added += 1
@@ -6454,6 +6496,8 @@ final class VaultStore {
     keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1
     vaultSessionGeneration &+= 1
+    for authorization in backupWorkAuthorizations.values { authorization.invalidate() }
+    backupWorkAuthorizations.removeAll(keepingCapacity: true)
     cancelExports()
     cancelLocalEnvImports()
     cancelLocalEnvPreviews()
