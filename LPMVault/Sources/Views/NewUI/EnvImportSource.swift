@@ -158,6 +158,7 @@ struct EnvImportSourcePicker: View {
 	var disabled = false
 
 	@Environment(\.vaultEnvFileChooser) private var fileChooser
+	@Environment(\.vaultContentObscured) private var obscured
 	@State private var isDropTargeted = false
 	@State private var editorFocused = false
 
@@ -265,7 +266,10 @@ struct EnvImportSourcePicker: View {
 			EnvImportPasteEditor(
 				text: Binding(get: { state.text }, set: { state.setText($0) }),
 				isFocused: $editorFocused,
-				isEditable: !disabled
+				isEditable: !disabled,
+				valueAccess: store.valueAccess,
+				clipboard: store.clipboard,
+				canCopy: { store.isUnlocked && store.selectedProjectId == projectID && !store.isShowingAccountPage && !obscured && state.mode == .text }
 			)
 			.overlay(alignment: .topLeading) {
 				if state.text.isEmpty {
@@ -396,6 +400,9 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 	@Binding var text: String
 	@Binding var isFocused: Bool
 	var isEditable = true
+	let valueAccess: VaultValueAccess
+	let clipboard: ClipboardManager
+	let canCopy: @MainActor () -> Bool
 
 	func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -436,6 +443,10 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 		textView.string = text
 		textView.delegate = context.coordinator
 		textView.onFocusChange = { focused in context.coordinator.parent.isFocused = focused }
+		textView.onCopy = { [weak textView, weak coordinator = context.coordinator] cutting in
+			guard let textView, let coordinator else { return }
+			coordinator.copySelection(in: textView, cutting: cutting)
+		}
 		context.coordinator.shownText = text
 
 		let scrollView = NSScrollView()
@@ -462,19 +473,25 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 		if ExactText(text) != ExactText(context.coordinator.shownText) {
 			textView.string = text
 			context.coordinator.shownText = text
+			context.coordinator.textRevision &+= 1
 			context.coordinator.undoManager.removeAllActions()
 		}
 	}
 
 	static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
 		coordinator.undoManager.removeAllActions()
-		(scrollView.documentView as? PasteTextView)?.onFocusChange = nil
+		if let textView = scrollView.documentView as? PasteTextView {
+			textView.onFocusChange = nil
+			textView.onCopy = nil
+			textView.delegate = nil
+		}
 	}
 
 	@MainActor
 	final class Coordinator: NSObject, NSTextViewDelegate {
 		var parent: EnvImportPasteEditor
 		var shownText = ""
+		var textRevision = 0
 		let undoManager = UndoManager()
 
 		init(_ parent: EnvImportPasteEditor) { self.parent = parent }
@@ -482,7 +499,27 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 		func textDidChange(_ notification: Notification) {
 			guard let textView = notification.object as? NSTextView else { return }
 			shownText = textView.string
+			textRevision &+= 1
 			parent.text = shownText
+		}
+
+		func copySelection(in textView: PasteTextView, cutting: Bool) {
+			let selection = textView.selectedRanges
+			let ranges = selection.map(\.rangeValue).filter { $0.length > 0 }
+			guard parent.isEditable, parent.canCopy(), !ranges.isEmpty else { return }
+			let before = textView.string
+			let text = before as NSString
+			let value = ranges.map { text.substring(with: $0) }.joined()
+			let revision = textRevision
+			let canCopy = parent.canCopy
+			parent.valueAccess.copy { [weak self, weak textView] in
+				guard let self, let textView, textView.window != nil, textView.delegate === self,
+					parent.isEditable, textView.isEditable, revision == textRevision,
+					canCopy(), parent.canCopy(), ExactText(textView.string) == ExactText(before), textView.selectedRanges == selection
+				else { return }
+				guard parent.clipboard.copy(value) else { return }
+				if cutting { textView.delete(nil) }
+			}
 		}
 
 		func undoManager(for view: NSTextView) -> UndoManager? { undoManager }
@@ -492,9 +529,43 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 	/// reaches the import as a file instead of becoming its path in the text.
 	final class PasteTextView: NSTextView {
 		var onFocusChange: ((Bool) -> Void)?
+		var onCopy: ((Bool) -> Void)?
 
 		override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
 		override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
+
+		override func copy(_ sender: Any?) { onCopy?(false) }
+
+		override func cut(_ sender: Any?) {
+			guard isEditable else { return }
+			onCopy?(true)
+		}
+
+		override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+			if item.action == #selector(copy(_:)) || item.action == #selector(cut(_:)) {
+				guard onCopy != nil, selectedRanges.contains(where: { $0.rangeValue.length > 0 }) else { return false }
+			}
+			return super.validateUserInterfaceItem(item)
+		}
+
+		override func menu(for event: NSEvent) -> NSMenu? {
+			let menu = NSMenu()
+			var items: [(String, Selector, String)] = [("Copy", #selector(copy(_:)), "c")]
+			if isEditable { items = [("Cut", #selector(cut(_:)), "x")] + items + [("Paste", #selector(paste(_:)), "v")] }
+			for (title, action, key) in items + [("Select All", #selector(selectAll(_:)), "a")] {
+				menu.addItem(withTitle: title, action: action, keyEquivalent: key).target = self
+			}
+			return menu
+		}
+
+		override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool { false }
+
+		override func dragSelection(with event: NSEvent, offset mouseOffset: NSSize, slideBack: Bool) -> Bool { false }
+
+		override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+			returnType: NSPasteboard.PasteboardType?) -> Any? { nil }
+
+		override func quickLook(with event: NSEvent) {}
 
 		override func becomeFirstResponder() -> Bool {
 			let became = super.becomeFirstResponder()
