@@ -527,7 +527,7 @@ struct VaultWorkspaceView: View {
 								mode: mode,
 								selectedKey: selectedKey,
 								copiedEnvironment: copiedEnvironment(in: project),
-								revealedKeys: $revealedKeys,
+								revealedKeys: revealedKeysBinding(for: project),
 								onClose: { showsInspector = false },
 								onCopy: copyValue,
 								onDelete: requestDeleteSecret,
@@ -1540,6 +1540,17 @@ struct VaultWorkspaceView: View {
 		if let request = store.valueSearch.openRequest, request.changedProject { showOpenedValue(request) }
 	}
 
+	private func revealedKeysBinding(for project: VaultProject) -> Binding<Set<String>> {
+		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
+		return Binding(
+			get: { context.isCurrent(in: store) ? revealedKeys : [] },
+			set: { keys in
+				guard context.isCurrent(in: store) else { return }
+				revealedKeys = keys
+			}
+		)
+	}
+
 	private func contentView(_ project: VaultProject, snapshot: VaultWorkspaceSnapshot) -> some View {
 		VaultContentView(
 			project: project,
@@ -1552,7 +1563,7 @@ struct VaultWorkspaceView: View {
 			sortOrder: $keySortOrder,
 			searchText: searchText,
 			selectedKey: $selectedKey,
-			revealedKeys: $revealedKeys,
+			revealedKeys: revealedKeysBinding(for: project),
 			valueAccess: store.valueAccess,
 			showsInspector: $showsInspector,
 			columnWidths: Binding(
