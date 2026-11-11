@@ -798,6 +798,43 @@ extension SheetInteractionTests {
 			#expect(try await host.text().contains("TOKEN, set in 1 of 1 environments, values shown"))
 		}
 
+		@Test("a sync confirmation closes instead of retargeting a newly selected project")
+		func syncConfirmationStaysWithItsProject() async throws {
+			let (store, _) = makeStore(additionalProject: true)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer {
+				if let sheet = host.window.attachedSheet { host.window.endSheet(sheet) }
+				host.window.close()
+			}
+
+			NotificationCenter.default.post(name: .pullProject, object: nil)
+			try await host.settle()
+			#expect(host.window.attachedSheet != nil)
+			store.openProject(id: "other")
+			#expect(try await host.waitUntil {
+				store.selectedProjectId == "other" && store.workspaceSnapshots["other"] != nil
+			})
+			try await host.settle()
+			#expect(host.window.attachedSheet == nil)
+		}
+
+		@Test("confirming a pull closes its sheet")
+		func pullConfirmationClosesWhenConfirmed() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer {
+				if let sheet = host.window.attachedSheet { host.window.endSheet(sheet) }
+				host.window.close()
+			}
+
+			NotificationCenter.default.post(name: .pullProject, object: nil)
+			let sheet = try #require(try await host.waitUntil { host.window.attachedSheet != nil } ? host.window.attachedSheet : nil)
+			try await host.click("Pull", in: sheet)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
+		}
+
 		@Test("copy all keeps the toolbar stationary and confirms success")
 		func copyAllFeedbackAndLayout() async throws {
 			let keychain = MockKeychainService()

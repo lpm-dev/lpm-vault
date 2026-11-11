@@ -396,18 +396,6 @@ struct VaultEnvironmentTarget: Identifiable, Hashable, Sendable {
   let environment: String
 }
 
-struct VaultSyncTarget: Identifiable, Equatable {
-  let projectId: String
-  let account: SelectedAccount
-
-  var id: String {
-    switch account {
-    case .personal: "personal:\(projectId)"
-    case .org(let slug): "org:\(slug):\(projectId)"
-    }
-  }
-}
-
 enum VaultConflictRecoveryAction {
   case pullAndMerge
   case forcePush
@@ -652,15 +640,15 @@ extension VaultStore {
     else { return }
     switch (target.account, action) {
     case (.personal, .pullAndMerge):
-      guard await pullFromCloud() else { return }
+      guard await pullFromCloud(target: target) else { return }
       guard selectedAccount == target.account,
         selectedProject?.id == target.projectId
       else { return }
-      await pushToCloud()
+      await pushToCloud(target: target)
     case (.personal, .forcePush):
-      await pushToCloud(force: true)
+      await pushToCloud(force: true, target: target)
     case (.org(let slug), .pullAndMerge):
-      await pullFromOrg(orgSlug: slug)
+      await pullFromOrg(orgSlug: slug, target: target)
     case (.org, .forcePush):
       return
     }

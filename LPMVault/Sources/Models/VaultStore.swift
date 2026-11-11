@@ -6697,8 +6697,8 @@ final class VaultStore {
 
   /// Push the selected project's secrets to cloud.
   /// Pushes ALL environments (default, live, local, etc.), not just the selected one.
-  func pushToCloud(force: Bool = false) async {
-    await pushPersonal(force ? .force : .update)
+  func pushToCloud(force: Bool = false, target: VaultSyncTarget? = nil) async {
+    await pushPersonal(force ? .force : .update, target: target)
   }
 
   /// Replaces lpm.dev's copy of the selected personal project, whose sync a
@@ -6737,10 +6737,12 @@ final class VaultStore {
     case replace
   }
 
-  private func pushPersonal(_ mode: PersonalPushMode) async {
+  private func pushPersonal(_ mode: PersonalPushMode, target: VaultSyncTarget? = nil) async {
     let write = writes.begin()
     defer { writes.end(write) }
-    guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
+    guard isUnlocked, selectedAccount == .personal, let project = selectedProject,
+      target == nil || target == VaultSyncTarget(projectId: project.id, account: .personal)
+    else {
       return
     }
     if mode == .replace {
@@ -7080,10 +7082,12 @@ final class VaultStore {
 
   /// Pull secrets from cloud and merge into the selected project.
   @discardableResult
-  func pullFromCloud() async -> Bool {
+  func pullFromCloud(target: VaultSyncTarget? = nil) async -> Bool {
     let write = writes.begin()
     defer { writes.end(write) }
-    guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
+    guard isUnlocked, selectedAccount == .personal, let project = selectedProject,
+      target == nil || target == VaultSyncTarget(projectId: project.id, account: .personal)
+    else {
       return false
     }
     guard !refuseSyncIfPaused(project) else { return false }
@@ -7343,8 +7347,10 @@ final class VaultStore {
   /// If any member keys are new or changed, the push is blocked and
   /// `showKeyApprovalSheet` is set — the user must approve before continuing.
   @discardableResult
-  func pushToOrg(orgSlug: String) async -> VaultCreationResult {
-    guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject else {
+  func pushToOrg(orgSlug: String, target: VaultSyncTarget? = nil) async -> VaultCreationResult {
+    guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject,
+      target == nil || target == VaultSyncTarget(projectId: project.id, account: .org(orgSlug))
+    else {
       return .failed
     }
     guard !refuseSyncIfPaused(project) else { return .failed }
@@ -8329,10 +8335,12 @@ final class VaultStore {
   }
 
   /// Pull a vault from an org using X25519 decryption.
-  func pullFromOrg(orgSlug: String) async {
+  func pullFromOrg(orgSlug: String, target: VaultSyncTarget? = nil) async {
     let write = writes.begin()
     defer { writes.end(write) }
-    guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject else {
+    guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject,
+      target == nil || target == VaultSyncTarget(projectId: project.id, account: .org(orgSlug))
+    else {
       return
     }
     guard !refuseSyncIfPaused(project) else { return }
