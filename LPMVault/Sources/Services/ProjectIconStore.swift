@@ -97,14 +97,18 @@ final class ProjectIconStore {
 	typealias PrepareImport = @Sendable (_ url: URL, _ projectFolder: String, _ directory: URL)
 		-> Result<(choice: ProjectIconChoice, image: ProjectIconImage), ImportFailure>
 	@ObservationIgnored private let prepareImport: PrepareImport
+	typealias PrepareRestoredImage = @Sendable (String, Data, URL, FileWriteAuthorization?) -> ProjectIconChoice?
+	@ObservationIgnored private let prepareRestoredImage: PrepareRestoredImage
 
 	init(
 		preferences: UserDefaults, imagesDirectory: URL = ProjectIconStore.defaultImagesDirectory,
-		prepareImport: @escaping PrepareImport = ProjectIconStore.prepareImport
+		prepareImport: @escaping PrepareImport = ProjectIconStore.prepareImport,
+		prepareRestoredImage: @escaping PrepareRestoredImage = ProjectIconStore.prepareRestoredImage
 	) {
 		self.preferences = preferences
 		self.imagesDirectory = imagesDirectory
 		self.prepareImport = prepareImport
+		self.prepareRestoredImage = prepareRestoredImage
 	}
 
 	// MARK: - Appearance
@@ -494,22 +498,36 @@ final class ProjectIconStore {
 	/// a choice as it is, an image drawn again and copied into LPM Vault's
 	/// folder under a new name. False when the project has one, or it couldn't
 	/// be kept.
-	func restore(_ icon: BackupAppSection.Icon, for projectID: String) async -> Bool {
-		guard savedChoices(for: [projectID]).isEmpty else { return false }
+	func restore(_ icon: BackupAppSection.Icon, for projectID: String, authorization: FileWriteAuthorization? = nil) async -> Bool {
+		guard authorization?.isValid != false, savedChoices(for: [projectID]).isEmpty else { return false }
 		switch icon {
 		case .choice(let choice):
 			return save(choice, for: projectID)
 		case .image(let name, let png):
 			let directory = imagesDirectory
+			let prepare = prepareRestoredImage
 			let choice = await BlockingWork.run { () -> ProjectIconChoice? in
-				guard let copy = ProjectIconRenderer.copy(from: png) else { return nil }
-				let file = UUID().uuidString + ".png"
-				guard ProjectIconImageFolder.write(copy.png, named: file, in: directory) else { return nil }
-				return .storedImage(file: file, name: Self.storedImageDisplayName(name))
+				prepare(name, png, directory, authorization)
 			}
-			guard let choice, savedChoices(for: [projectID]).isEmpty else { return false }
+			guard let choice else { return false }
+			guard authorization?.isValid != false else {
+				if case .storedImage(let file, _) = choice { deleteStoredImages([file]) }
+				return false
+			}
+			guard savedChoices(for: [projectID]).isEmpty else { return false }
 			return save(choice, for: projectID)
 		}
+	}
+
+	nonisolated static func prepareRestoredImage(
+		_ name: String, _ png: Data, _ directory: URL, _ authorization: FileWriteAuthorization?
+	) -> ProjectIconChoice? {
+		guard authorization?.isValid != false else { return nil }
+		guard let copy = ProjectIconRenderer.copy(from: png) else { return nil }
+		guard authorization?.isValid != false else { return nil }
+		let file = UUID().uuidString + ".png"
+		guard ProjectIconImageFolder.write(copy.png, named: file, in: directory) else { return nil }
+		return .storedImage(file: file, name: storedImageDisplayName(name))
 	}
 
 	/// Forgets a project's chosen icon and its copied image, as when it's deleted.

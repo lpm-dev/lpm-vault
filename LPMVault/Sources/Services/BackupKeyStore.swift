@@ -180,8 +180,9 @@ struct BackupKeyStore: Sendable {
 	/// Adds every key in `keys` this Mac doesn't have, never replacing one it
 	/// has, and raises floors that are lower here, all under the lock the LPM
 	/// CLI and LPM Vault take to create keys.
-	func install(_ keys: BackupKeys) throws(Failure) -> Review {
-		try locked { () throws(Failure) -> Review in try visit(keys, install: true) }
+	/// Withdrawal returns the work completed so far; an admitted item may finish.
+	func install(_ keys: BackupKeys, authorization: FileWriteAuthorization? = nil) throws(Failure) -> Review {
+		try locked { () throws(Failure) -> Review in try visit(keys, install: true, authorization: authorization) }
 	}
 
 	/// The keys this Mac holds, read from their accounts alone.
@@ -195,12 +196,13 @@ struct BackupKeyStore: Sendable {
 		}
 	}
 
-	private func visit(_ keys: BackupKeys, install: Bool) throws(Failure) -> Review {
+	private func visit(_ keys: BackupKeys, install: Bool, authorization: FileWriteAuthorization? = nil) throws(Failure) -> Review {
 		var review = Review()
 		func place(
 			_ text: SecretBytes, as account: String, in store: SharedKeychainStore, named name: String,
 			normalized: (Data) -> SecretBytes?, onDiffering: () -> Void = {}, onAdded: () -> Void = {}
 		) throws(Failure) {
+			guard authorization?.isValid != false else { return }
 			func compare(_ stored: Data) {
 				if let local = normalized(stored), Self.equal(local, text) {
 					review.alreadyHere += 1
@@ -218,6 +220,7 @@ struct BackupKeyStore: Sendable {
 				onAdded()
 				return
 			}
+			guard authorization?.isValid != false else { return }
 			do {
 				try text.withUnsafeBytes { bytes in
 					guard let base = bytes.baseAddress else { throw KeychainStoreError.concurrentModification }
@@ -233,11 +236,13 @@ struct BackupKeyStore: Sendable {
 			}
 		}
 		for root in keys.personalRoots {
+			guard authorization?.isValid != false else { return review }
 			try place(
 				root.key, as: root.account, in: roots, named: "personal root keys", normalized: Self.hexKey,
 				onDiffering: { review.differingRoots.insert(root.account) }, onAdded: { review.addedRoots.insert(root.account) })
 		}
 		for key in keys.sharingKeys {
+			guard authorization?.isValid != false else { return review }
 			let account = VaultCrypto.scopedX25519AccountPrefix + key.account
 			if let live = key.live {
 				try place(
@@ -250,13 +255,16 @@ struct BackupKeyStore: Sendable {
 			}
 		}
 		if let wrappingKey = keys.wrappingKey {
+			guard authorization?.isValid != false else { return review }
 			try place(wrappingKey, as: VaultCrypto.wrappingKeyAccount, in: wrapping, named: "legacy wrapping key", normalized: Self.hexKey)
 		}
 		for floor in keys.floors {
+			guard authorization?.isValid != false else { return review }
 			do {
 				let local = try PersonalProjectCrypto.floor(digest: floor.digest, home: home, lockHeld: true)
 				guard floor.version > local else { continue }
 				if install {
+					guard authorization?.isValid != false else { return review }
 					_ = try PersonalProjectCrypto.floor(digest: floor.digest, advanceTo: floor.version, home: home, lockHeld: true)
 				}
 				review.floorsRaised += 1

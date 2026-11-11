@@ -59,6 +59,49 @@ extension SheetInteractionTests {
 			SheetTestHost(BackupRestoreSheet(store: fixture.store, chooseFile: { file }), size: NSSize(width: 600, height: 760))
 		}
 
+
+		@Test("Cancel during restore never applies the backup's window settings", arguments: [false, true])
+		func cancelledRestoreDoesNotApplySettings(cancelled: Bool) async throws {
+			let fixture = try fixture()
+			defer {
+				fixture.store.lock()
+				fixture.tearDown()
+			}
+			fixture.store.settings.hidesFromCapture = true
+			var weaker = VaultSettings.standard
+			weaker.security.hidesFromCapture = false
+			let settings = BackupAppSection.Settings(appearance: .dark, keySort: .descending, quitShortcut: .hold,
+				updateChannel: .stable, projectOrder: [], environmentOrders: [:], preferences: .init(app: weaker, updates: .standard))
+			let url = try backup([project("cancelled-project", environments: ["default": ["TOKEN": "DEMO"]])],
+				app: .init(settings: settings), in: fixture.folder)
+			var applied: [BackupAppSection.Settings] = []
+			let host = SheetTestHost(BackupRestoreSheet(store: fixture.store, applySettings: { applied.append($0) }, chooseFile: { url }),
+				size: NSSize(width: 600, height: 760))
+			defer { host.window.close() }
+			let gate = BackupTestGate()
+			fixture.keychain.beforeRestoredProjectWrite = { _ in gate.pause() }
+			do {
+				try await host.click("Choose…")
+				try host.enterValue(Self.passphrase, at: 0)
+				try #require(try await host.waitUntil { element("Continue", in: host.window)?.isEnabled == true })
+				try await host.click("Continue")
+				try #require(try await host.waitForText("Review what comes in"))
+				try await host.click("Restore 1 item")
+				try #require(try await waitUntil { gate.isWaiting })
+				if cancelled { try await host.click("Cancel") }
+				gate.release()
+				try #require(try await host.waitForText("Restore finished"))
+				#expect(applied.count == (cancelled ? 0 : 1))
+				#expect(VaultSettings(defaults: fixture.defaults).hidesFromCapture == cancelled)
+				#expect(fixture.keychain.envStorage["cancelled-project"] != nil)
+				#expect(!fixture.store.isWriting)
+			} catch {
+				gate.release()
+				_ = await fixture.store.finishWritesInProgress(within: testWaitLimit)
+				throw error
+			}
+		}
+
 		@Test("the passphrase field waits for a file, and a wrong passphrase says there's no limit on attempts")
 		func wrongPassphrase() async throws {
 			let fixture = try fixture()

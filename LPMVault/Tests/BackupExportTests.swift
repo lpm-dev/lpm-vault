@@ -225,6 +225,94 @@ struct BackupExportTests {
 		#expect(BackupExporter.sync(metadata(unbound), orgSlug: nil) == nil)
 	}
 
+
+	@Test("backup replacement and success metadata respect revocation at writer admission",
+		arguments: ["lock", "cancel", "none"])
+	func writingRespectsRevocation(transition: String) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		fixture.store.settings.lockAfter = .thirtyMinutes
+		let originalAuthorization = try #require(await fixture.store.authorizeBackupExport())
+		_ = try await fixture.store.exportBackup(.init(), passphrase: Self.passphrase,
+			to: fixture.destination, authorization: originalAuthorization)
+		let originalData = try Data(contentsOf: fixture.destination)
+		let originalRecord = fixture.store.lastBackup
+		fixture.keychain.envStorage["vault-a"]?.environments["default"]?["TOKEN"] = "DEMO-NEW"
+		let gate = BackupTestGate()
+		fixture.store.backupFileWriter = { write in
+			gate.pause()
+			try write.write()
+		}
+		let authorization = try #require(await fixture.store.authorizeBackupExport())
+		let task = Task { @MainActor in
+			try await fixture.store.exportBackup(.init(), passphrase: Self.passphrase,
+				to: fixture.destination, authorization: authorization)
+		}
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			if transition == "lock" { fixture.store.lock() }
+			if transition == "cancel" { task.cancel() }
+			gate.release()
+			let result = await task.result
+			if transition == "none" {
+				_ = try result.get()
+				#expect(try Data(contentsOf: fixture.destination) != originalData)
+				#expect(fixture.store.lastBackup != originalRecord)
+			} else {
+				let cancelled: Bool
+				switch result {
+				case .failure(let error): cancelled = error is CancellationError
+				case .success: cancelled = false
+				}
+				#expect(cancelled)
+				#expect(try Data(contentsOf: fixture.destination) == originalData)
+				#expect(fixture.store.lastBackup == originalRecord)
+				#expect(VaultBackupRecord(defaults: fixture.defaults) == originalRecord)
+			}
+			let names = try FileManager.default.contentsOfDirectory(atPath: fixture.folder.path)
+			#expect(!names.contains { $0.hasPrefix(".lpm-vault-") && $0.hasSuffix(".tmp") })
+		} catch {
+			gate.release()
+			_ = await task.result
+			throw error
+		}
+	}
+
+	@Test("a backup committed before revocation still reports its successful write", arguments: ["lock", "cancel"])
+	func committedBackupReportsSuccess(transition: String) async throws {
+		let fixture = try fixture()
+		defer {
+			fixture.store.lock()
+			fixture.tearDown()
+		}
+		let gate = BackupTestGate()
+		fixture.store.backupFileWriter = { write in
+			try write.write()
+			gate.pause()
+		}
+		let authorization = try #require(await fixture.store.authorizeBackupExport())
+		let task = Task { @MainActor in
+			try await fixture.store.exportBackup(.init(), passphrase: Self.passphrase,
+				to: fixture.destination, authorization: authorization)
+		}
+		do {
+			try #require(try await waitUntil { gate.isWaiting })
+			if transition == "lock" { fixture.store.lock() } else { task.cancel() }
+			gate.release()
+			let result = try await task.value
+			#expect(result.bytes == (try Data(contentsOf: fixture.destination)).count)
+			#expect(fixture.store.lastBackup?.bytes == result.bytes)
+			#expect(VaultBackupRecord(defaults: fixture.defaults) == fixture.store.lastBackup)
+		} catch {
+			gate.release()
+			_ = await task.result
+			throw error
+		}
+	}
+
 	@Test("a copied icon is carried as the PNG LPM Vault keeps; one that can't be read stays out")
 	func icons() throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-backup-icons-\(UUID().uuidString)", directoryHint: .isDirectory)

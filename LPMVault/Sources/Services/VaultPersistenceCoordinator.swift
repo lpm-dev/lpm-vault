@@ -1156,12 +1156,14 @@ actor VaultPersistenceCoordinator {
 	/// Associates each vault in `slugs` with its organization where it has
 	/// none, in one write. Returns the vaults it associated, or nil when the
 	/// associations couldn't be saved.
-	func addOrgAssociations(_ slugs: [String: String]) -> Set<String>? {
+	func addOrgAssociations(_ slugs: [String: String], authorization: FileWriteAuthorization? = nil) -> Set<String>? {
 		switch service.withKeychainTransaction({ () -> Set<String>? in
+			guard authorization?.isValid != false else { return [] }
 			guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
 			let added = Set(slugs.keys.filter { associations[$0] == nil })
 			guard !added.isEmpty else { return [] }
 			for vaultId in added { associations[vaultId] = slugs[vaultId] }
+			guard authorization?.isValid != false else { return [] }
 			guard let data = try? JSONEncoder().encode(associations),
 				service.writeData(account: "__org_associations__", data: data)
 			else { return nil }
