@@ -225,6 +225,7 @@
 		9353C42198A65538DA3E2621 /* PersonalProjectSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91D4007E5BFE99FA0AD820C3 /* PersonalProjectSyncTests.swift */; };
 		941460F227C1E7E8B4D20F20 /* ProjectEnvSchemaOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4036BEAE9D18D531B8B023 /* ProjectEnvSchemaOverview.swift */; };
 		944FFE2B1896AE3C17197674 /* VaultSheetChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928F7EC25905ABD41EAD3431 /* VaultSheetChrome.swift */; };
+		9480A4DA15B1AE75678C2A1C /* VaultSyncTarget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 055AAFE7BDAE3019232915B3 /* VaultSyncTarget.swift */; };
 		94CE98228716C7DC2F4FDD6B /* NetlifyPublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */; };
 		951307774BC5CE6E1CF0591B /* EnvImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01D3798174BCEF3FD9DC5CE2 /* EnvImportSheet.swift */; };
 		979C304D2034F831393D1530 /* VaultCaptureProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF2B50ECE3B288D0A03E379 /* VaultCaptureProtection.swift */; };
@@ -360,6 +361,7 @@
 		F3DC4D077377B4236C33711F /* PublishingRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0C6799A6B6B51E02C3C6AB /* PublishingRecords.swift */; };
 		F3E30AC0F9D7412BA7438A9A /* VaultQuitCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A975FA422FF69083251C6F /* VaultQuitCoordinatorTests.swift */; };
 		F4F0E1CEEAB67D6393260AB9 /* ValueSearchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1663002CFA04C526411C1ABE /* ValueSearchModel.swift */; };
+		F51CD50B8F540BEC78E5E751 /* SyncConfirmationTargetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6355CD6E52198A70747A5589 /* SyncConfirmationTargetTests.swift */; };
 		F582C5D76F836FC9A2872351 /* BackupFormatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF418392C55D737E549E35C /* BackupFormatTests.swift */; };
 		F5EB07872AC04122D281B746 /* VaultProjectHoverCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 560EC55109EB625CC828673B /* VaultProjectHoverCardTests.swift */; };
 		F68A2909B02F5B1881F8D26F /* ProjectEnvSchemaReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = E66574D8B70EDA392CAC3BCA /* ProjectEnvSchemaReferences.swift */; };
@@ -399,6 +401,7 @@
 		0401251686E34C8D7EA23B1E /* VaultProjectIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultProjectIconView.swift; sourceTree = "<group>"; };
 		042A5B7493608D54BEBEE398 /* RenewingGitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenewingGitHubClient.swift; sourceTree = "<group>"; };
 		04EF250095A599AED29C4563 /* VaultTypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultTypographyTests.swift; sourceTree = "<group>"; };
+		055AAFE7BDAE3019232915B3 /* VaultSyncTarget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSyncTarget.swift; sourceTree = "<group>"; };
 		05BF0E7D2234A6C4C92BE40F /* SchemaReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaReviewTests.swift; sourceTree = "<group>"; };
 		0631260A130D30932AA85D3A /* PublishReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishReport.swift; sourceTree = "<group>"; };
 		06490EEFC05413818E516BC3 /* AppDelegateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateTests.swift; sourceTree = "<group>"; };
@@ -541,6 +544,7 @@
 		61F6C9EE8B916ECE78400C09 /* VaultPaneBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultPaneBudgetTests.swift; sourceTree = "<group>"; };
 		621C09DBB341EAA1AA6C9DB1 /* VaultKeyEdit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultKeyEdit.swift; sourceTree = "<group>"; };
 		623FE311DD484D349571A459 /* ProjectConfigOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigOpener.swift; sourceTree = "<group>"; };
+		6355CD6E52198A70747A5589 /* SyncConfirmationTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConfirmationTargetTests.swift; sourceTree = "<group>"; };
 		639C6432C2667DC16F75B730 /* WorkspaceInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceInteractionTests.swift; sourceTree = "<group>"; };
 		63C91F636E4DF09BA177F24F /* Mocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Mocks.swift; sourceTree = "<group>"; };
 		645BEA707FEE95D9292487CF /* SettingsPageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPageTests.swift; sourceTree = "<group>"; };
@@ -925,6 +929,7 @@
 				27E12D44BC93517A3B9AC6DB /* VaultSettings.swift */,
 				7BCD31A6E5640173573C75B0 /* VaultSettingsSearch.swift */,
 				FFE4B46C5693219A4558C620 /* VaultStore.swift */,
+				055AAFE7BDAE3019232915B3 /* VaultSyncTarget.swift */,
 				27CF35B91CFDCB52E6AEE84F /* VaultUnsavedWork.swift */,
 				E4B7DE3D0FC5BED4201860DA /* VaultValueAccess.swift */,
 				DD382178E5B936352E5D8275 /* VaultWrites.swift */,
@@ -1085,6 +1090,7 @@
 				3AF464BE570316E4FFF4D195 /* SettingsSearchInteractionTests.swift */,
 				EB5AE92D6F2427FE033064E9 /* SettingsSearchTests.swift */,
 				2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */,
+				6355CD6E52198A70747A5589 /* SyncConfirmationTargetTests.swift */,
 				7A8500EA1B90B673155FDB5A /* UpdateCheckerTests.swift */,
 				2265F6B68F3F42C969D3C5A5 /* ValueCharacterTests.swift */,
 				5CFC95BACBC0D111312A0AFB /* ValueCheckTableInteractionTests.swift */,
@@ -1444,6 +1450,7 @@
 				016F7B2C84F8934C97975C53 /* SettingsSearchInteractionTests.swift in Sources */,
 				818B73F035C80514DA4F0B55 /* SettingsSearchTests.swift in Sources */,
 				5FF5B4064E8EAF4BCE4B8755 /* SheetInteractionTests.swift in Sources */,
+				F51CD50B8F540BEC78E5E751 /* SyncConfirmationTargetTests.swift in Sources */,
 				8DFD27CCCCEAAA3605397A7D /* UpdateCheckerTests.swift in Sources */,
 				1141B3FF1D92DD8867914182 /* ValueCharacterTests.swift in Sources */,
 				10DBB703BEE70D866593025D /* ValueCheckTableInteractionTests.swift in Sources */,
@@ -1684,6 +1691,7 @@
 				CDE077E3A94AF3438A936E5C /* VaultSidebarView.swift in Sources */,
 				EA1C30880BFC914F606EA1AF /* VaultSmartViews.swift in Sources */,
 				CD366278CA66735CA979B005 /* VaultStore.swift in Sources */,
+				9480A4DA15B1AE75678C2A1C /* VaultSyncTarget.swift in Sources */,
 				B47DF5E0B8720BF7BCA80E43 /* VaultTitleBarView.swift in Sources */,
 				62F686E49DE1FA689A89F65D /* VaultUnsavedWork.swift in Sources */,
 				7829BA57CC131D40EC2757CF /* VaultValueAccess.swift in Sources */,
