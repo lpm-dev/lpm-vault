@@ -22,7 +22,7 @@ enum CoolifyConnectError: Error, Equatable, Sendable {
 	var message: String {
 		switch self {
 		case .invalidAddress: "Enter your Coolify address, such as https://coolify.example.com."
-		case .insecureAddress: "Coolify’s address must start with https://, so the token isn’t sent unencrypted. For an instance without a domain, open an SSH tunnel and use http://localhost with the tunnel’s port."
+		case .insecureAddress: "Coolify’s address must start with https://. Configure TLS with a certificate this Mac trusts before connecting."
 		case .invalidToken: "Paste the whole API token Coolify showed when you created it."
 		case .unauthorized: "Coolify didn’t accept this token. It may be mistyped or revoked."
 		case .apiDisabled: "Coolify’s API is turned off. Turn on API access in Coolify’s Settings → Advanced, then connect again."
