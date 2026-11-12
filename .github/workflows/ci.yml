@@ -1,15 +1,17 @@
 name: CI
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
   workflow_call:
 permissions:
   contents: read
 # A pull request's newer commit replaces the run of its older one, whose
-# result nothing waits for. Every other run finishes: each commit on main
-# keeps its own result, and a release calls this workflow and the UI
-# regressions from one run, so the two take different groups.
+# result nothing waits for. Every other run finishes: the merge queue ends
+# its own runs, each commit on main keeps its own result, and a release
+# calls this workflow and the UI regressions from one run, so the two take
+# different groups.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,14 +23,18 @@ jobs:
     outputs:
       engine: ${{ steps.engine.outputs.needed }}
     steps:
-      # The merge commit and its first parent, the base branch.
+      # A pull request's merge commit and its first parent, the base branch.
+      # A merge group can hold more than one commit, so its base needn't be
+      # its first parent; the whole history has it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: ${{ github.event_name == 'merge_group' && 0 || 2 }}
       - name: Find changes the engine reproduction needs to check
         id: engine
-        run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT"
+        env:
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT" ${BASE:+"$BASE"}
   swift:
     name: Swift tests
     uses: ./.github/workflows/swift-tests.yml
@@ -58,7 +64,8 @@ jobs:
         id: cache-key
         run: python3 LPMVault/Scripts/ci-cache-key.py engine --github-output "$GITHUB_OUTPUT"
       - name: Restore engine dependencies and intermediates
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/registry
@@ -68,14 +75,26 @@ jobs:
           restore-keys: ${{ steps.cache-key.outputs.prefix }}
       - name: Reproduce bundled env engine
         run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
+      - name: Save engine dependencies and intermediates
+      # The merge queue's branch is gone once its run ends, so a cache saved
+      # from it could never be restored.
+        if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/env-engine-target
+          key: ${{ steps.cache-key.outputs.key }}
   release:
-    name: Universal release bundle verification
+    name: ${{ github.event_name == 'pull_request' && 'arm64' || 'Universal' }} release bundle verification
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     # Compiling the app once for each architecture takes 9 to 15 minutes on
     # these 3-core runners, cache or not, and a slow runner has needed more
-    # than twice that.
+    # than twice that. A pull request compiles it for one; the merge queue
+    # compiles both before the pull request merges.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -87,7 +106,8 @@ jobs:
         id: cache-key
         run: python3 LPMVault/Scripts/ci-cache-key.py release --github-output "$GITHUB_OUTPUT"
       - name: Restore release dependencies and intermediates
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: build-check
           key: ${{ steps.cache-key.outputs.key }}
@@ -99,9 +119,11 @@ jobs:
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh
           bash LPMVault/Scripts/fetch-sparkle-tools.sh "$RUNNER_TEMP/sparkle-test-tools"
           SPARKLE_TEST_TOOLS="$RUNNER_TEMP/sparkle-test-tools" python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
-      - name: Build universal release bundle
+      - name: Build release bundle
+        env:
+          ARCHITECTURES: ${{ github.event_name == 'pull_request' && 'arm64' || 'arm64 x86_64' }}
         run: |
-          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
+          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check ARCHS="$ARCHITECTURES" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
           python3 LPMVault/Scripts/verify-update-config.py 'build-check/Build/Products/Release/LPM Vault.app/Contents/Info.plist'
       - name: Verify nested signing
         run: |
@@ -110,6 +132,14 @@ jobs:
           codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.app'
       - name: Record release build input timestamps
         run: python3 LPMVault/Scripts/ci-cache-key.py release --record-source-times
+      - name: Save release dependencies and intermediates
+      # The merge queue's branch is gone once its run ends, so a cache saved
+      # from it could never be restored.
+        if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: build-check
+          key: ${{ steps.cache-key.outputs.key }}
   macos:
     name: macOS tests and release bundle
     needs: [changes, swift, engine, release]

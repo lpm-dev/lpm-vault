@@ -39,7 +39,8 @@ jobs:
         id: cache-key
         run: python3 LPMVault/Scripts/ci-cache-key.py swift --github-output "$GITHUB_OUTPUT"
       - name: Restore Swift dependencies and intermediates
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: LPMVault/.build
           key: ${{ steps.cache-key.outputs.key }}
@@ -70,3 +71,11 @@ jobs:
       - name: Swift tests on a one-thread cooperative pool
         if: inputs.cooperative
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
+      - name: Save Swift dependencies and intermediates
+      # The merge queue's branch is gone once its run ends, so a cache saved
+      # from it could never be restored.
+        if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: LPMVault/.build
+          key: ${{ steps.cache-key.outputs.key }}
