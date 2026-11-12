@@ -46,8 +46,8 @@ struct VaultWorkspaceView: View {
 	/// Focuses the Project Settings name field each time it changes.
 	@State private var projectNameFocusRequest: UUID?
 
-	@State private var showPushConfirmation = false
-	@State private var showPullConfirmation = false
+	@State private var pushTarget: VaultSyncTarget?
+	@State private var pullTarget: VaultSyncTarget?
 	@State private var conflictTarget: VaultSyncTarget?
 	@State private var showConnectCLISheet = false
 	@State private var publishSession: PublishSession?
@@ -237,6 +237,8 @@ struct VaultWorkspaceView: View {
 		}
 		.onChange(of: store.selectedAccount) { _, _ in
 			conflictTarget = nil
+			pushTarget = nil
+			pullTarget = nil
 			shownMenu = nil
 		}
 		.onChange(of: publishMenuDestinations.isEmpty) { _, empty in
@@ -291,7 +293,7 @@ struct VaultWorkspaceView: View {
 			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
 		}
 		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
-			onPull: { showPullConfirmation = true }, onPush: { showPushConfirmation = true }))
+			onPull: presentPullConfirmation, onPush: presentPushConfirmation))
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
@@ -324,8 +326,8 @@ struct VaultWorkspaceView: View {
 				sidebarVisible: sidebarVisible,
 				onToggleSidebar: toggleSidebar,
 				onConnectCLI: { showConnectCLISheet = true },
-				onPull: { showPullConfirmation = true },
-				onPush: { showPushConfirmation = true },
+				onPull: presentPullConfirmation,
+				onPush: presentPushConfirmation,
 				isConnectSheetPresented: showConnectCLISheet,
 				onPublish: { publishSession = store.makePublishSession(for: $0) },
 				showsPublishMenu: shows(.publish),
@@ -707,11 +709,11 @@ struct VaultWorkspaceView: View {
 			AddVariableSheet(store: store, projectId: target.projectId, environment: target.environment, initialKey: target.initialKey)
 				.vaultPrivacyProtected(isObscured)
 		}
-		.sheet(isPresented: $showPushConfirmation) {
-			pushConfirmationSheet.vaultPrivacyProtected(isObscured)
+		.sheet(item: $pushTarget) { target in
+			pushConfirmationSheet(target).vaultPrivacyProtected(isObscured)
 		}
-		.sheet(isPresented: $showPullConfirmation) {
-			pullConfirmationSheet.vaultPrivacyProtected(isObscured)
+		.sheet(item: $pullTarget) { target in
+			pullConfirmationSheet(target).vaultPrivacyProtected(isObscured)
 		}
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
@@ -949,43 +951,55 @@ struct VaultWorkspaceView: View {
 	}
 
 	@ViewBuilder
-	private var pushConfirmationSheet: some View {
-		if let project {
+	private func pushConfirmationSheet(_ target: VaultSyncTarget) -> some View {
+		if let project = store.projects.first(where: { $0.id == target.projectId }) {
 			SyncConfirmationSheet(
-				action: isOrganization ? .share : .push,
+				action: target.account == .personal ? .push : .share,
 				projectName: project.name,
 				keyCount: project.secretCount,
 				onConfirm: {
-					showPushConfirmation = false
-					if case .org(let slug) = store.selectedAccount {
-						Task { await store.pushToOrg(orgSlug: slug) }
+					pushTarget = nil
+					if case .org(let slug) = target.account {
+						Task { await store.pushToOrg(orgSlug: slug, target: target) }
 					} else {
-						Task { await store.pushToCloud() }
+						Task { await store.pushToCloud(target: target) }
 					}
 				},
-				onCancel: { showPushConfirmation = false }
+				onCancel: { pushTarget = nil }
 			)
 		}
 	}
 
 	@ViewBuilder
-	private var pullConfirmationSheet: some View {
-		if let project {
+	private func pullConfirmationSheet(_ target: VaultSyncTarget) -> some View {
+		if let project = store.projects.first(where: { $0.id == target.projectId }) {
 			SyncConfirmationSheet(
 				action: .pull,
 				projectName: project.name,
 				keyCount: project.secretCount,
 				onConfirm: {
-					showPullConfirmation = false
-					if case .org(let slug) = store.selectedAccount {
-						Task { await store.pullFromOrg(orgSlug: slug) }
+					pullTarget = nil
+					if case .org(let slug) = target.account {
+						Task { await store.pullFromOrg(orgSlug: slug, target: target) }
 					} else {
-						Task { await store.pullFromCloud() }
+						Task { await store.pullFromCloud(target: target) }
 					}
 				},
-				onCancel: { showPullConfirmation = false }
+				onCancel: { pullTarget = nil }
 			)
 		}
+	}
+
+	private var currentSyncTarget: VaultSyncTarget? {
+		project.map { VaultSyncTarget(projectId: $0.id, account: store.selectedAccount) }
+	}
+
+	private func presentPushConfirmation() {
+		pushTarget = currentSyncTarget
+	}
+
+	private func presentPullConfirmation() {
+		pullTarget = currentSyncTarget
 	}
 
 	@ViewBuilder
@@ -1533,6 +1547,8 @@ struct VaultWorkspaceView: View {
 		showsInspector = false
 		shownMenu = nil
 		conflictTarget = nil
+		pushTarget = nil
+		pullTarget = nil
 		exportTask?.cancel()
 		exportTask = nil
 		exportID = nil
