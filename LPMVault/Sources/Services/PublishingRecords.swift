@@ -206,7 +206,7 @@ enum PublishingRecords {
 		let fields = try Fields(json, [
 			"instance", "teamId", "teamName", "resource", "resourceId", "resourceName", "projectName", "environmentName", "deployments",
 		])
-		guard let instance = CoolifyInstance(origin: try fields.string("instance")) else { throw DecodingError.unreadable }
+		guard let instance = CoolifyInstance(storedOrigin: try fields.string("instance")) else { throw DecodingError.unreadable }
 		return CoolifyPublishTarget(
 			instance: instance,
 			teamID: try fields.string("teamId"),

@@ -38,6 +38,8 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 		case .otherRegistry: "\(name) was connected through the other LPM environment, which alone renews its connection. Switch to it, or connect \(name) again here."
 		case .expired where platform == .cloudflare:
 			"The \(name) connection no longer works, as when LPM Vault was removed under Connected Applications on Cloudflare. Connect \(name) again on the Platforms page."
+		case .expired where platform == .coolify:
+			"The \(name) connection needs an HTTPS address. Reconnect \(name) on the Platforms page."
 		case .expired: "The \(name) connection expired. Connect \(name) again on the Platforms page."
 		case .unavailable: "The \(name) connection couldn’t be renewed right now. Check your network and try again."
 		case .refused: "\(name) refused to renew the connection right now. Try again later."
@@ -234,6 +236,9 @@ actor PlatformCredentials {
 		case .failure(let error): return .done(.failure(.store(error)))
 		}
 		if let generation, record.connection.generation != generation { return .done(.failure(.replaced)) }
+		if case .coolify(let coolify) = record.connection.account, !coolify.instance.usesSecureTransport {
+			return .done(.failure(.expired))
+		}
 		var cloudflare: CloudflareConnectionAccount?
 		if case .cloudflare(let account) = record.connection.account {
 			// Tokens of a client this Registry doesn't run, as after the production client changed, can't renew.

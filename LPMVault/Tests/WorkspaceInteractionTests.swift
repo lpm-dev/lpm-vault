@@ -835,6 +835,41 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
 		}
 
+		@Test("a reveal approved after project navigation cannot unmask the new project's same-named value")
+		func pendingRevealStaysWithItsProject() async throws {
+			let defaultsDomain = "pending-reveal-\(UUID().uuidString)"
+			let defaults = try #require(UserDefaults(suiteName: defaultsDomain))
+			defer { defaults.removePersistentDomain(forName: defaultsDomain) }
+			let keychain = MockKeychainService()
+			let (store, biometric) = makeStore(additionalProject: true, keychain: keychain, preferences: defaults)
+			defer { store.lock() }
+			store.settings.valueApproval = .afterFiveMinutes
+			let other = VaultProject(id: "other", name: "Other", path: "",
+				environments: ["default": ["TOKEN": "other-project-value"]])
+			keychain.envStorage[other.id] = (name: other.name, path: "", environments: other.environments)
+			store.projects[1] = other
+			let approval = WorkspaceApprovalGate()
+			biometric.authenticateHandlers = [{
+				await approval.arriveAndWait()
+				return true
+			}]
+			let host = try await workspace(store, defaults: defaults)
+			defer { host.window.close() }
+
+			try await host.click("Reveal")
+			await approval.waitUntilArrived()
+			store.openProject(id: other.id)
+			#expect(try await host.waitUntil {
+				store.selectedProjectId == other.id && store.workspaceSnapshots[other.id] != nil
+			})
+			#expect(try await host.waitForText("TOKEN, set in 1 of 1 environments, values hidden"))
+			await approval.release()
+			try await host.settle()
+			try await quietPeriod()
+
+			#expect(try await !host.text().contains("TOKEN, set in 1 of 1 environments, values shown"))
+		}
+
 		@Test("copy all keeps the toolbar stationary and confirms success")
 		func copyAllFeedbackAndLayout() async throws {
 			let keychain = MockKeychainService()
@@ -966,13 +1001,14 @@ extension SheetInteractionTests {
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY), "The row is selected as it was")
 		}
 
-		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {
+		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService(), preferences: UserDefaults = .standard) -> (VaultStore, MockBiometricService) {
 			let biometric = MockBiometricService()
 			let project = VaultProject(id: "workspace", name: "Workspace", path: "",
 				environments: environments)
 			keychain.envStorage[project.id] = (name: project.name, path: "", environments: project.environments)
 			let store = VaultStore(keychainService: keychain, biometricService: biometric,
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
+				apiService: MockAPIService(), preferences: preferences, authTokenProvider: { _, _ in nil },
+				clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project]
 			if additionalProject {
@@ -1224,6 +1260,32 @@ extension SheetInteractionTests {
 		private func clickAt<V: View>(_ point: NSPoint, in host: SheetTestHost<V>) throws {
 			try NativeTestClick.send(to: host.window, at: point)
 		}
+	}
+}
+
+private actor WorkspaceApprovalGate {
+	private var arrived = false
+	private var released = false
+	private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+	func waitUntilArrived() async {
+		guard !arrived else { return }
+		await withCheckedContinuation { arrivalWaiters.append($0) }
+	}
+
+	func arriveAndWait() async {
+		arrived = true
+		arrivalWaiters.forEach { $0.resume() }
+		arrivalWaiters.removeAll()
+		guard !released else { return }
+		await withCheckedContinuation { releaseWaiters.append($0) }
+	}
+
+	func release() {
+		released = true
+		releaseWaiters.forEach { $0.resume() }
+		releaseWaiters.removeAll()
 	}
 }
 
