@@ -6,7 +6,29 @@ on:
   workflow_call:
 permissions:
   contents: read
+# A pull request's newer commit replaces the run of its older one, whose
+# result nothing waits for. Every other run finishes: each commit on main
+# keeps its own result, and a release calls this workflow and the UI
+# regressions from one run, so the two take different groups.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  changes:
+    name: Engine changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      engine: ${{ steps.engine.outputs.needed }}
+    steps:
+      # The merge commit and its first parent, the base branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Find changes the engine reproduction needs to check
+        id: engine
+        run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT"
   swift:
     name: Swift tests
     uses: ./.github/workflows/swift-tests.yml
@@ -16,6 +38,8 @@ jobs:
       cooperative: true
   engine:
     name: Bundled env engine reproduction
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
@@ -88,7 +112,9 @@ jobs:
         run: python3 LPMVault/Scripts/ci-cache-key.py release --record-source-times
   macos:
     name: macOS tests and release bundle
-    needs: [swift, engine, release]
+    needs: [changes, swift, engine, release]
+    # Not skipped when a run is cancelled or a job fails: a skipped check
+    # would count as passed.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
