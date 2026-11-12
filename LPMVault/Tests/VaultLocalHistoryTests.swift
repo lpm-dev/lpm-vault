@@ -49,12 +49,14 @@ struct VaultLocalHistoryTests {
 
 	/// A real coordinator over an in-memory Keychain whose project went from
 	/// A=1 to `then`, A=2 unless a test says, and a model on it that confirms
-	/// when `confirms` says.
+	/// when `confirms` says. Its toast stays until a test ends a timer it
+	/// passes: the app's timers run on the wall clock, which would take the
+	/// toast away under a test that a loaded runner has paused.
 	private func fixture(
 		confirms: Bool = true,
 		then: (environments: [String: [String: String]], source: VaultHistorySource) = (["default": ["A": "2"]], VaultHistorySource(.editKey)),
-		undoTimer: VaultFeedbackTimer = .importUndo,
-		resultTimer: VaultFeedbackTimer = .copyConfirmation,
+		undoTimer: VaultFeedbackTimer = ManualFeedbackTimer().timer,
+		resultTimer: VaultFeedbackTimer = ManualFeedbackTimer().timer,
 		adjust: (inout VaultLocalHistory.Actions) -> Void = { _ in }
 	) throws -> (VaultLocalHistory, KeychainService) {
 		let service = KeychainService(testingService: "dev.lpm.vault.history-model.\(UUID().uuidString)", backend: InMemoryKeychainBackend())
@@ -136,10 +138,10 @@ struct VaultLocalHistoryTests {
 		#expect(review.changing == 2)
 	}
 
-	@Test("a rollback offers its undo, which puts the values back at once, until the undo window ends")
+	@Test("a rollback offers its undo, which puts the values back at once and says so for its own short while")
 	func appliedRollbackCanBeUndone() async throws {
-		let window = ManualFeedbackTimer()
-		let (history, service) = try fixture(undoTimer: window.timer)
+		let result = ManualFeedbackTimer()
+		let (history, service) = try fixture(resultTimer: result.timer)
 		await history.open(vaultId)
 		let edit = try #require(history.entries.first)
 		#expect(await history.reviewRollback(.undo(entry: edit.id, only: nil)) == nil)
@@ -154,14 +156,33 @@ struct VaultLocalHistoryTests {
 		#expect(try service.getProjectResult(vaultId: vaultId).get()?.environments == ["default": ["A": "2"]])
 		#expect(history.entries.first?.related?.id == applied.entry)
 
+		_ = try await waitUntil { result.started == 1 }
+		result.expire()
+		_ = try await waitUntil { history.applied == nil }
+	}
+
+	@Test("the offer to undo a rollback ends with the undo window, and nothing is undone after it")
+	func undoOfferEndsWithItsWindow() async throws {
+		let window = ManualFeedbackTimer()
+		let (history, service) = try fixture(undoTimer: window.timer)
+		await history.open(vaultId)
+		let edit = try #require(history.entries.first)
+		#expect(await history.reviewRollback(.undo(entry: edit.id, only: nil)) == nil)
+		#expect(await history.applyRollback() == .saved)
+		let offered = try #require(history.applied)
+		#expect(offered.undo == .available)
+
 		_ = try await waitUntil { window.started == 1 }
 		window.expire()
 		_ = try await waitUntil { history.applied == nil }
+		await history.undoApplied()
+		#expect(try service.getProjectResult(vaultId: vaultId).get()?.environments == ["default": ["A": "1"]])
+		#expect(history.entries.first?.id == offered.entry, "no undo was recorded")
 	}
 
 	@Test("undoing a rollback after the values changed again opens its review instead")
 	func undoAfterAnotherChangeIsReviewed() async throws {
-		let (history, service) = try fixture(undoTimer: ManualFeedbackTimer().timer)
+		let (history, service) = try fixture()
 		await history.open(vaultId)
 		let edit = try #require(history.entries.first)
 		#expect(await history.reviewRollback(.undo(entry: edit.id, only: nil)) == nil)
@@ -195,7 +216,7 @@ struct VaultLocalHistoryTests {
 
 	@Test("locking ends the offer to undo a rollback")
 	func lockingEndsTheUndoOffer() async throws {
-		let (history, _) = try fixture(undoTimer: ManualFeedbackTimer().timer)
+		let (history, _) = try fixture()
 		await history.open(vaultId)
 		let edit = try #require(history.entries.first)
 		#expect(await history.reviewRollback(.undo(entry: edit.id, only: nil)) == nil)
