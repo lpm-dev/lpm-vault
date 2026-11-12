@@ -521,7 +521,7 @@ extension VaultStoreTests {
 	@Test("dotenv export work runs off the cooperative pool, which blocking work must never hold")
 	func dotenvExportIsOffCooperativePool() async throws {
 		let pool = PoolObservation()
-		let service = EnvFileExportService(worker: { _, _, _ in pool.record() }, preparer: { _, _ in [] })
+		let service = EnvFileExportService(worker: { _, _, _, _, _ in pool.record() }, preparer: { _, _, _ in [] })
 		try await service.export(
 			secrets: ["TOKEN": "secret"],
 			to: FileManager.default.temporaryDirectory.appendingPathComponent("unused.env")
@@ -533,9 +533,9 @@ extension VaultStoreTests {
 	@MainActor
 	func dotenvExportDoesNotBlockMainActor() async throws {
 		let observation = Round4ThreadObservation()
-		let service = EnvFileExportService(worker: { _, _, _ in
+		let service = EnvFileExportService(worker: { _, _, _, _, _ in
 			observation.recordMainThread(Thread.isMainThread)
-		}, preparer: { _, _ in [] })
+		}, preparer: { _, _, _ in [] })
 
 		try await service.export(
 			secrets: ["TOKEN": "secret"],
@@ -2193,11 +2193,11 @@ extension VaultStoreTests {
 	@Test("dotenv exports use bounded background admission")
 	func dotenvExportAdmissionIsBounded() async {
 		let tracker = Round4ExportTracker()
-		let service = EnvFileExportService(worker: { _, destination, _ in
+		let service = EnvFileExportService(worker: { _, destination, _, _, _ in
 			tracker.enter(index: Int(destination.lastPathComponent) ?? -1)
 			defer { tracker.leave() }
 			tracker.waitForRelease()
-		}, preparer: { _, _ in [] })
+		}, preparer: { _, _, _ in [] })
 		let tasks = (0..<12).map { index in
 			Task {
 				_ = try? await service.export(
@@ -2297,14 +2297,16 @@ extension VaultStoreTests {
 		let destination = directory.appendingPathComponent("export.env")
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		let service = EnvFileExportService { secrets, destination, authorization in
+		let service = EnvFileExportService { secrets, destination, stagingDirectory, directoryDescriptor, authorization in
 			entered.signal()
 			#expect(release.wait(timeout: .now() + testWaitSeconds) == .success)
 			let content = EnvFileCodec.format(secrets)
 			try SecureFileWriter.write(
 				Data(content.utf8),
 				to: destination,
-				authorization: authorization
+				stagingDirectory: stagingDirectory,
+				authorization: authorization,
+				directoryDescriptor: directoryDescriptor
 			)
 		}
 		let operation = Task {
@@ -2373,13 +2375,15 @@ extension VaultStoreTests {
 		let destination = directory.appendingPathComponent("export.env")
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		let service = EnvFileExportService { secrets, destination, authorization in
+		let service = EnvFileExportService { secrets, destination, stagingDirectory, directoryDescriptor, authorization in
 			entered.signal()
 			release.wait()
 			try SecureFileWriter.write(
 				Data(EnvFileCodec.format(secrets).utf8),
 				to: destination,
-				authorization: authorization
+				stagingDirectory: stagingDirectory,
+				authorization: authorization,
+				directoryDescriptor: directoryDescriptor
 			)
 		}
 		let store = VaultStore(
@@ -2422,13 +2426,15 @@ extension VaultStoreTests {
 		let destination = directory.appendingPathComponent("export.env")
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		let service = EnvFileExportService { secrets, destination, authorization in
+		let service = EnvFileExportService { secrets, destination, stagingDirectory, directoryDescriptor, authorization in
 			entered.signal()
 			release.wait()
 			try SecureFileWriter.write(
 				Data(EnvFileCodec.format(secrets).utf8),
 				to: destination,
-				authorization: authorization
+				stagingDirectory: stagingDirectory,
+				authorization: authorization,
+				directoryDescriptor: directoryDescriptor
 			)
 		}
 		let store = VaultStore(
@@ -2500,13 +2506,15 @@ extension VaultStoreTests {
 		let destination = directory.appendingPathComponent("export.env")
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		let service = EnvFileExportService { secrets, destination, authorization in
+		let service = EnvFileExportService { secrets, destination, stagingDirectory, directoryDescriptor, authorization in
 			entered.signal()
 			release.wait()
 			try SecureFileWriter.write(
 				Data(EnvFileCodec.format(secrets).utf8),
 				to: destination,
-				authorization: authorization
+				stagingDirectory: stagingDirectory,
+				authorization: authorization,
+				directoryDescriptor: directoryDescriptor
 			)
 		}
 		let projectA = VaultProject(

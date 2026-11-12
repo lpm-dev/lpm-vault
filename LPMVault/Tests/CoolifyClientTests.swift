@@ -18,15 +18,16 @@ struct CoolifyInstanceTests {
 		#expect(origin("https://203.0.113.7:8000") == "https://203.0.113.7:8000")
 	}
 
-	@Test("plain HTTP is accepted only to this Mac itself, as through an SSH tunnel")
-	func refusesPlainHTTPElsewhere() {
+	@Test("plain HTTP is refused for every address, including this Mac")
+	func refusesPlainHTTP() {
 		#expect(CoolifyInstance.parse("http://coolify.example.com") == .failure(.insecure))
 		#expect(CoolifyInstance.parse("http://203.0.113.7:8000") == .failure(.insecure))
 		#expect(CoolifyInstance.parse("http://192.168.1.20:8000") == .failure(.insecure))
-		#expect(origin("http://localhost:8000") == "http://localhost:8000")
-		#expect(origin("http://127.0.0.1:8000") == "http://127.0.0.1:8000")
-		#expect(origin("http://[::1]:8000") == "http://[::1]:8000")
-		#expect(origin("http://localhost:80") == "http://localhost")
+		#expect(CoolifyInstance.parse("http://localhost:8000") == .failure(.insecure))
+		#expect(CoolifyInstance.parse("http://127.0.0.1:8000") == .failure(.insecure))
+		#expect(CoolifyInstance.parse("http://127.255.255.255:8000") == .failure(.insecure))
+		#expect(CoolifyInstance.parse("http://[::1]:8000") == .failure(.insecure))
+		#expect(CoolifyInstance.parse("http://localhost:80") == .failure(.insecure))
 	}
 
 	@Test("an address with anything besides a host and port is refused")
@@ -44,7 +45,7 @@ struct CoolifyInstanceTests {
 	@Test("a stored origin reads back only in its canonical form")
 	func storedOrigin() {
 		#expect(CoolifyInstance(origin: "https://coolify.example.com")?.address == "coolify.example.com")
-		#expect(CoolifyInstance(origin: "http://localhost:8000")?.address == "localhost:8000")
+		#expect(CoolifyInstance(origin: "http://localhost:8000") == nil)
 		#expect(CoolifyInstance(origin: "coolify.example.com") == nil)
 		#expect(CoolifyInstance(origin: "https://Coolify.example.com") == nil)
 		#expect(CoolifyInstance(origin: "https://coolify.example.com/") == nil)
@@ -146,6 +147,19 @@ struct CoolifyClientTests {
 		let route = PlatformHTTPStub.coolify { _ in .json(200, ["id": 0, "name": "Root"]) }
 		#expect(try await client(route, token: "has space").team() == .failure(.unauthorized))
 		#expect(try await client(route, token: "").team() == .failure(.unauthorized))
+		#expect(route.requests.isEmpty)
+	}
+
+	@Test("a client restored from any former HTTP loopback origin never sends reads or writes")
+	func refusesStoredHTTPTransport() async throws {
+		let route = PlatformHTTPStub.coolify { _ in .json(200, [:]) }
+		let write = CoolifyVariableWrite(key: "TOKEN", value: "DEMO-ONLY", isPreview: false, isLocked: true)
+		for origin in ["http://localhost:8000", "http://127.0.0.1:8000", "http://127.255.255.255:8000", "http://[::1]:8000"] {
+			let instance = try #require(CoolifyInstance(storedOrigin: origin))
+			let client = CoolifyClient(instance: instance, token: "3|DUMMY-ONLY", session: route.session)
+			#expect(await client.team() == .failure(.invalidResponse), "\(origin)")
+			#expect(await client.create(write, in: .application, id: "app-demo") == .failure(.invalidResponse), "\(origin)")
+		}
 		#expect(route.requests.isEmpty)
 	}
 
@@ -402,6 +416,9 @@ struct CoolifyConnectorTests {
 		let connector = connector(.success(CoolifyTeam(id: "0", name: "Root")), recorder: recorder)
 		#expect(await connector.connect(address: "coolify.example.com/projects", token: "3|abc") == .failure(.invalidAddress))
 		#expect(await connector.connect(address: "http://coolify.example.com", token: "3|abc") == .failure(.insecureAddress))
+		#expect(await connector.connect(address: "http://localhost:8000", token: "3|abc") == .failure(.insecureAddress))
+		#expect(await connector.connect(address: "http://127.0.0.1:8000", token: "3|abc") == .failure(.insecureAddress))
+		#expect(await connector.connect(address: "http://[::1]:8000", token: "3|abc") == .failure(.insecureAddress))
 		#expect(await connector.connect(address: "coolify.example.com", token: " \n") == .failure(.invalidToken))
 		#expect(await connector.connect(address: "coolify.example.com", token: "3|a b") == .failure(.invalidToken))
 		#expect(recorder.recorded.isEmpty)
@@ -419,6 +436,7 @@ struct CoolifyConnectorTests {
 			#expect(await connector(.failure(error)).connect(address: "coolify.example.com", token: "3|abc") == .failure(expected))
 		}
 		#expect(CoolifyConnectError.apiDisabled.message.contains("Settings → Advanced"))
-		#expect(CoolifyConnectError.insecureAddress.message.contains("SSH tunnel"))
+		#expect(CoolifyConnectError.insecureAddress.message.contains("TLS"))
+		#expect(!CoolifyConnectError.insecureAddress.message.contains("http://localhost"))
 	}
 }

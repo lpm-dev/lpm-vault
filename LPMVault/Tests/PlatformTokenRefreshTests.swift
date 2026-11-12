@@ -516,6 +516,23 @@ struct PlatformCredentialsTests {
 		#expect(await credentials.accessToken(for: "netlify.missing") == .failure(.store(.notFound)))
 	}
 
+	@Test("a saved HTTP Coolify token is withheld until the connection uses HTTPS")
+	func withholdsLegacyHTTPCoolifyToken() async throws {
+		let account = PlatformConnection.Account.coolify(CoolifyConnectionAccount(
+			instance: CoolifyInstance(origin: "https://localhost:8000")!, teamID: "0", teamName: "Root Team"))
+		let saved = try await store.save(account, accessToken: "3|coolify", at: start).get()
+		let encoded = try #require(keychain.platformConnectionStorage[saved.id])
+		keychain.platformConnectionStorage.removeValue(forKey: saved.id)
+		var object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+		object["instance"] = "http://localhost:8000"
+		let legacyID = "coolify.0.http://localhost:8000"
+		keychain.platformConnectionStorage[legacyID] = try JSONSerialization.data(withJSONObject: object)
+		let refresher = ScriptedTokenRefresher { _, _ in .failure(.transport) }
+
+		#expect(await credentials(refresher, at: TestDate(start)).accessToken(for: legacyID) == .failure(.expired))
+		#expect(refresher.calls.isEmpty)
+	}
+
 	@Test("a token about to expire is renewed once through lpm.dev, and the new tokens are saved with lifetimes from their arrival")
 	func renews() async throws {
 		let id = try await connect()
@@ -821,6 +838,8 @@ struct PlatformCredentialsTests {
 	@Test("each failure says what to do, naming the platform")
 	func messages() {
 		#expect(PlatformCredentialError.expired.message(for: .netlify) == "The Netlify connection expired. Connect Netlify again on the Platforms page.")
+		#expect(PlatformCredentialError.expired.message(for: .coolify)
+			== "The Coolify connection needs an HTTPS address. Reconnect Coolify on the Platforms page.")
 		#expect(PlatformCredentialError.signedOut.message(for: .netlify).hasPrefix("Sign in to LPM"))
 		#expect(PlatformCredentialError.otherAccount.message(for: .netlify).contains("another LPM account"))
 	}

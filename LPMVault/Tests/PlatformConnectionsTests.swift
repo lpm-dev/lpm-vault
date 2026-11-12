@@ -116,6 +116,33 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "render" }, account: id) == .failure(.newerVersion))
 	}
 
+	@Test("a saved localhost HTTP connection stays visible for HTTPS reconnection but can never make a request")
+	func legacyHTTPConnectionNeedsSecureReconnect() async throws {
+		let secure = PlatformConnectionStore.Record(
+			connection: PlatformConnection(account: coolify(), connectedAt: PublishTimestamp.normalized(connectedAt)),
+			accessToken: "3|coolify")
+		let encoded = try #require(PlatformConnectionStore.encode(secure))
+		var object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+		object["instance"] = "http://localhost:8000"
+		let legacy = try JSONSerialization.data(withJSONObject: object)
+		let legacyID = "coolify.0.http://localhost:8000"
+		keychain.platformConnectionStorage[legacyID] = legacy
+		let other = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
+
+		let listing = try await store.listing(at: connectedAt).get()
+		#expect(listing.connections.map(\.id).sorted() == [legacyID, other.id].sorted())
+		#expect(listing.expired == [legacyID])
+		#expect(keychain.platformConnectionStorage[legacyID] == legacy)
+
+		let record = try await store.record(for: legacyID).get()
+		guard case .coolify(let account) = record.connection.account else {
+			Issue.record("The legacy record did not decode as Coolify")
+			return
+		}
+		#expect(account.instance.url(["team"]) == nil)
+		#expect(account.instance.secureOriginSuggestion == "https://localhost:8000")
+	}
+
 	@Test("a Coolify connection that couldn't be read back isn't stored")
 	func refusesUnstorableCoolify() {
 		let connection = PlatformConnection(account: coolify(), connectedAt: connectedAt)
@@ -1028,9 +1055,13 @@ struct PlatformsPagePresentationTests {
 	@Test("an expired row says why and what to do, asking a browser platform's to sign in first")
 	func expiredCopy() {
 		#expect(PlatformsView.expiredStatus(.vercel) == "Expired" && PlatformsView.expiredStatus(.cloudflare) == "No longer works")
+		#expect(PlatformsView.expiredStatus(.coolify) == "Needs HTTPS")
+		#expect(PlatformsView.reconnectTitle(.coolify) == "Connect HTTPS")
+		#expect(PlatformsView.reconnectTitle(.netlify) == "Reconnect")
 		#expect(PlatformsView.expiredNote(.github, signedIn: true) == "Reconnect to keep publishing through it.")
 		#expect(PlatformsView.expiredNote(.github, signedIn: false) == "Sign in to LPM, then reconnect to keep publishing through it.")
-		#expect(PlatformsView.expiredNote(.coolify, signedIn: false) == "Reconnect to keep publishing through it.")
+		#expect(PlatformsView.expiredNote(.coolify, signedIn: false)
+			== "Connect its HTTPS address, use Change Destination to select and review the new connection, then disconnect this one.")
 	}
 
 	@Test("tiles take as many columns at least 220 points wide as fit, then even out the rows")
@@ -1616,19 +1647,28 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func sheet(_ answers: Answers) -> (PlatformConnections, SheetTestHost<ConnectCoolifySheet>) {
+		private func sheet(_ answers: Answers, initialAddress: String = "") -> (PlatformConnections, SheetTestHost<ConnectCoolifySheet>) {
 			let platforms = PlatformConnections(
 				store: PlatformConnectionStore(service: keychain),
 				connect: { _, _ in .failure(.cancelled) },
 				connectCoolify: { answers.next($0, $1) },
 				session: { nil },
 				openURL: { _ in })
-			let host = SheetTestHost(ConnectCoolifySheet(platforms: platforms), size: NSSize(width: 520, height: 520), keepsRequestedSize: true, usesHostingView: true)
+			let host = SheetTestHost(
+				ConnectCoolifySheet(platforms: platforms, initialAddress: initialAddress),
+				size: NSSize(width: 520, height: 520), keepsRequestedSize: true, usesHostingView: true)
 			return (platforms, host)
 		}
 
 		/// The sheet's own Connect button, in its footer, not the title above it.
 		private let footer = CGRect(x: 0.5, y: 0, width: 0.5, height: 0.2)
+
+		@Test("an HTTPS migration starts with the secure form of the old address")
+		func prefilledSecureAddress() async throws {
+			let (_, host) = sheet(Answers([]), initialAddress: "https://localhost:8000")
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "https://coolify.example.com") == "https://localhost:8000" })
+		}
 
 		@Test("Connect waits for both fields, explains a refusal, then saves the team Coolify names")
 		func connects() async throws {

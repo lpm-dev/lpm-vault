@@ -1397,7 +1397,7 @@ struct CompanionStorageReviewTests {
 		let keychain = MockKeychainService()
 		keychain.storage[vault] = ("Project", "", ["TOKEN": "team"])
 		let exports = ExportCount()
-		let exporter = EnvFileExportService { _, _, _ in exports.add() }
+		let exporter = EnvFileExportService { _, _, _, _, _ in exports.add() }
 		let store = VaultStore(
 			keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 			envFileImportService: MockEnvFileImportService(), envFileExportService: exporter,
