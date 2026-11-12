@@ -470,7 +470,8 @@ extension SheetInteractionTests {
 				size: size, keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			try await host.click("Schema")
-			#expect(try await host.waitForText("enforced by LPM CLI"))
+			// Not the note that the LPM CLI enforces the rules, which a narrow window's status bar gives up to fit.
+			#expect(try await host.waitForText("declared key", footer: 30))
 			return (store, host, folder)
 		}
 	}
