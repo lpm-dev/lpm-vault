@@ -8,6 +8,7 @@ struct PlatformsView: View {
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var pendingDisconnect: PlatformConnection?
 	@State private var connectingCoolify = false
+	@State private var coolifyAddress = ""
 	@State private var renaming: PlatformConnection?
 	@State private var renameDraft = ""
 	@State private var renameError: String?
@@ -82,7 +83,7 @@ struct PlatformsView: View {
 		}
 		.onChange(of: renameDraft) { renameError = nil }
 		.sheet(isPresented: $connectingCoolify) {
-			ConnectCoolifySheet(platforms: platforms, store: store)
+			ConnectCoolifySheet(platforms: platforms, store: store, initialAddress: coolifyAddress)
 		}
 		.onChange(of: isObscured) { _, obscured in
 			promptCurtained = obscured
@@ -92,7 +93,10 @@ struct PlatformsView: View {
 			}
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in
-			if !unlocked { connectingCoolify = false }
+			if !unlocked {
+				connectingCoolify = false
+				coolifyAddress = ""
+			}
 		}
 	}
 
@@ -284,13 +288,20 @@ struct PlatformsView: View {
 	/// What an expired connection's status says: a Cloudflare login's
 	/// renewal can also fail because its access was revoked, so it says only that it stopped working.
 	static func expiredStatus(_ platform: PublishPlatform) -> String {
-		platform == .cloudflare ? "No longer works" : "Expired"
+		switch platform {
+		case .cloudflare: "No longer works"
+		case .coolify: "Needs HTTPS"
+		default: "Expired"
+		}
 	}
 
 	/// What an expired connection's row says to do about it. Browser
 	/// platforms reconnect only through an LPM sign-in.
 	static func expiredNote(_ platform: PublishPlatform, signedIn: Bool) -> String {
-		BrowserPlatform(platform) != nil && !signedIn
+		if platform == .coolify {
+			return "Connect its HTTPS address, use Change Destination to select and review the new connection, then disconnect this one."
+		}
+		return BrowserPlatform(platform) != nil && !signedIn
 			? "Sign in to LPM, then reconnect to keep publishing through it."
 			: "Reconnect to keep publishing through it."
 	}
@@ -306,10 +317,16 @@ struct PlatformsView: View {
 						.accessibilityLabel("Cancel reconnecting \(connection.name)")
 				} else {
 					let needsSignIn = BrowserPlatform(connection.platform) != nil && !store.isLoggedIn
-					VaultBarButton(systemImage: "arrow.clockwise", title: "Reconnect", filled: true, disabled: platforms.isConnecting || needsSignIn) {
-						if connection.platform == .coolify { connectingCoolify = true } else { platforms.reconnect(connection) }
+					let title = Self.reconnectTitle(connection.platform)
+					VaultBarButton(systemImage: "arrow.clockwise", title: title, filled: true, disabled: platforms.isConnecting || needsSignIn) {
+						if case .coolify(let account) = connection.account {
+							coolifyAddress = account.instance.secureOriginSuggestion
+							connectingCoolify = true
+						} else {
+							platforms.reconnect(connection)
+						}
 					}
-					.accessibilityLabel("Reconnect \(connection.name)")
+					.accessibilityLabel("\(title) \(connection.name)")
 				}
 			}
 			if connection.platform == .github {
@@ -331,6 +348,10 @@ struct PlatformsView: View {
 			.accessibilityLabel("\(disconnectTitle) \(connection.name)")
 		}
 		.fixedSize()
+	}
+
+	static func reconnectTitle(_ platform: PublishPlatform) -> String {
+		platform == .coolify ? "Connect HTTPS" : "Reconnect"
 	}
 
 	@ViewBuilder
@@ -475,7 +496,9 @@ struct PlatformsView: View {
 					case .netlify?: platforms.connectNetlify()
 					case .github?: platforms.connectGitHub()
 					case .cloudflare?: platforms.connectCloudflare()
-					case nil: connectingCoolify = true
+					case nil:
+						coolifyAddress = ""
+						connectingCoolify = true
 					}
 				}
 				.accessibilityLabel("\(title) \(platform.displayName)")

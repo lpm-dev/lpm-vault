@@ -19,6 +19,12 @@ struct ConnectCoolifySheet: View {
 		case token
 	}
 
+	init(platforms: PlatformConnections, store: VaultStore? = nil, initialAddress: String = "") {
+		self.platforms = platforms
+		self.store = store
+		_address = State(initialValue: initialAddress)
+	}
+
 	private var isConnecting: Bool { connectTask != nil }
 
 	/// What quitting would discard: the address typed, never the token.
@@ -114,9 +120,10 @@ struct ConnectCoolifySheet: View {
 
 	private var guidance: some View {
 		VStack(alignment: .leading, spacing: 6) {
-			step(1, "Turn on API access in Coolify’s Settings → Advanced.")
-			step(2, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn’t need Root, Deploy or Read Sensitive.")
-			step(3, "The token reaches the team you had selected when you created it.")
+			step(1, "Use an https:// address with a certificate this Mac trusts.")
+			step(2, "Turn on API access in Coolify’s Settings → Advanced.")
+			step(3, "In Keys & Tokens → API Tokens, create a token with the Read and Write permissions. LPM Vault doesn’t need Root, Deploy or Read Sensitive.")
+			step(4, "The token reaches the team you had selected when you created it.")
 		}
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
