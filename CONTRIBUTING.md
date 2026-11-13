@@ -104,6 +104,8 @@ codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.
 
 The ad-hoc signature checks verify the bundle structure. They do not grant shared Keychain access.
 The [CI workflow](.github/workflows/ci.yml) is authoritative for the toolchain and required checks; the Swift steps live in the [Swift tests workflow](.github/workflows/swift-tests.yml) it shares with the UI regressions.
+A push to a pull request cancels the runs of its earlier commit, in both workflows.
+The checks rebuild the bundled env engine from its pinned source for a pull request only when it changes the engine in `LPMVault/Vendor/EnvEngine` or how the rebuild runs; `LPMVault/Scripts/engine-changes.py` decides. Every run after a merge to `main`, before a release and each night rebuilds it, and every run checks the bundle against the hashes in its `provenance.json`.
 Builds must complete with zero warnings.
 
 Keep Swift tests in `LPMVault/Tests`, release-tooling tests in `LPMVault/Scripts/Tests`, and website tests in `web/tests`.

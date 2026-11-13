@@ -17,6 +17,7 @@ def module(name, filename):
 
 
 cache = module('ci_cache', 'ci-cache-key.py')
+engine = module('engine_changes', 'engine-changes.py')
 results = module('ci_results', 'ci-results.py')
 ui_suite = module('ui_suite_changes', 'ui-suite-changes.py')
 
@@ -282,10 +283,17 @@ let package = Package(name: "TimestampFixture", targets: [.executableTarget(name
 
 
 class RequiredCheckTests(unittest.TestCase):
+    JOBS = ['changes', 'swift', 'engine', 'release']
+
+    def passed(self, engine_needed=True):
+        results = {name: {'result': 'success', 'outputs': {}} for name in self.JOBS}
+        results['changes']['outputs'] = {'engine': str(engine_needed).lower()}
+        return results
+
     def test_every_parallel_job_must_succeed(self):
-        passed = {name: {'result': 'success'} for name in ['swift', 'engine', 'release']}
+        passed = self.passed()
         self.assertEqual(results.failures(passed), [])
-        for job in passed:
+        for job in ['swift', 'engine', 'release']:
             for result in ['failure', 'cancelled', 'skipped', None]:
                 with self.subTest(job=job, result=result):
                     changed = {**passed, job: {'result': result}}
@@ -293,9 +301,205 @@ class RequiredCheckTests(unittest.TestCase):
             with self.subTest(missing=job):
                 self.assertEqual(results.failures({name: value for name, value in passed.items() if name != job}), [job])
 
+    def test_the_engine_rebuild_is_skipped_only_when_the_changes_job_says_so(self):
+        skipped = {**self.passed(engine_needed=False), 'engine': {'result': 'skipped'}}
+        self.assertEqual(results.failures(skipped), [])
+        self.assertEqual(results.failures(self.passed(engine_needed=False)), [])
+        for result in ['failure', 'cancelled', None]:
+            with self.subTest(engine=result):
+                self.assertEqual(results.failures({**skipped, 'engine': {'result': result}}), ['engine'])
+        for outputs in [{'engine': 'true'}, {'engine': ''}, {'engine': 'False'}, {}, None]:
+            with self.subTest(outputs=outputs):
+                changed = {**skipped, 'changes': {'result': 'success', 'outputs': outputs}}
+                self.assertEqual(results.failures(changed), ['engine'])
+
+    def test_a_changes_job_that_did_not_succeed_skips_nothing(self):
+        skipped = {**self.passed(engine_needed=False), 'engine': {'result': 'skipped'}}
+        for result in ['failure', 'cancelled', 'skipped', None]:
+            with self.subTest(changes=result):
+                changed = {**skipped, 'changes': {'result': result, 'outputs': {'engine': 'false'}}}
+                self.assertEqual(results.failures(changed), ['changes', 'engine'])
+        self.assertEqual(results.failures({name: value for name, value in skipped.items() if name != 'changes'}), ['changes', 'engine'])
+
     def test_renaming_a_dependency_cannot_silently_bypass_its_gate(self):
-        changed = {name: {'result': 'success'} for name in ['swift', 'engine', 'renamed_release']}
+        changed = {**self.passed(), 'renamed_release': {'result': 'success'}}
+        del changed['release']
         self.assertEqual(results.failures(changed), ['release', 'renamed_release'])
+
+    def test_the_check_waits_for_each_job_it_requires_and_runs_when_they_do_not(self):
+        lines = (Path(__file__).resolve().parents[3] / '.github/workflows/ci.yml').read_text().splitlines()
+        job = lines[lines.index('  macos:') + 1:]
+        needs = next(line for line in job if line.startswith('    needs:'))
+        self.assertEqual(set(re.findall(r'\w+', needs.split(':', 1)[1])), results.REQUIRED)
+        self.assertEqual(next(line for line in job if line.startswith('    if:')), '    if: always()')
+
+
+class EngineChangeTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[3]
+
+    def test_a_change_to_the_bundled_engine_needs_the_rebuild(self):
+        for path in ['LPMVault/Vendor/EnvEngine/provenance.json', 'LPMVault/Vendor/EnvEngine/THIRD_PARTY_NOTICES.html',
+                     'LPMVault/Vendor/EnvEngine/LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a',
+                     'LPMVault/Vendor/EnvEngine/fixtures/companion/markers.json']:
+            with self.subTest(path=path):
+                self.assertIsNotNone(engine.reason(path))
+
+    def test_a_change_to_how_the_rebuild_runs_needs_it(self):
+        for path in engine.RUNNER:
+            with self.subTest(path=path):
+                self.assertIsNotNone(engine.reason(path))
+
+    def test_app_code_tests_and_other_files_do_not(self):
+        for path in ['LPMVault/Sources/Services/CompanionEngine.swift', 'LPMVault/Tests/CompanionStorageTests.swift',
+                     'LPMVault/Package.swift', 'LPMVault/Vendor/EnvEngine.md', 'LPMVault/Scripts/ci-results.py',
+                     '.github/workflows/ui.yml', 'web/nginx.conf']:
+            with self.subTest(path=path):
+                self.assertIsNone(engine.reason(path))
+
+    def test_runner_files_match_the_repository_and_the_engine_job(self):
+        for path in engine.RUNNER:
+            with self.subTest(path=path):
+                self.assertTrue((self.ROOT / path).is_file())
+        self.assertTrue((self.ROOT / engine.ENGINE / 'provenance.json').is_file())
+        lines = (self.ROOT / '.github/workflows/ci.yml').read_text().splitlines()
+        start = lines.index('  engine:') + 1
+        end = next(i for i in range(start, len(lines)) if re.match(r'  \S', lines[i]))
+        job = '\n'.join(lines[start:end])
+        self.assertIn("    needs: changes\n    if: needs.changes.outputs.engine == 'true'\n", job)
+        scripts = set(re.findall(r'LPMVault/Scripts/[\w./-]+\.(?:py|sh)', job))
+        self.assertEqual(scripts, {path for path in engine.RUNNER if path.startswith('LPMVault/Scripts/')} - {'LPMVault/Scripts/engine-changes.py'})
+        self.assertEqual(set(re.findall(r'LPMVault/Vendor/[\w./-]+', job)), {engine.ENGINE + 'provenance.json'})
+
+    def repository(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        environment = {**os.environ, 'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+                       'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
+
+        def git(*arguments):
+            subprocess.run(['git', *arguments], cwd=root, env=environment, check=True, capture_output=True)
+
+        def commit(files, message):
+            for path, text in files.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                if text is None:
+                    (root / path).unlink()
+                else:
+                    (root / path).write_text(text)
+            git('add', '--all')
+            git('commit', '--quiet', '--message', message)
+
+        git('init', '--quiet', '--initial-branch', 'main')
+        return root, git, commit
+
+    def test_a_pull_requests_merge_commit_is_compared_with_its_base(self):
+        root, git, commit = self.repository()
+        commit({'LPMVault/Vendor/EnvEngine/provenance.json': 'one\n', 'LPMVault/Vendor/EnvEngine/fixtures/old.json': 'old\n',
+                'LPMVault/Sources/App.swift': 'app\n'}, 'base')
+        git('switch', '--quiet', '--create', 'feature')
+        commit({'LPMVault/Sources/App.swift': 'changed\n'}, 'app')
+        git('switch', '--quiet', 'main')
+        commit({'LPMVault/Vendor/EnvEngine/provenance.json': 'two\n'}, 'base re-exports the engine')
+        git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
+        self.assertEqual(engine.engine_changes(root, 'HEAD^1', 'HEAD'), [])
+
+        git('switch', '--quiet', 'feature')
+        git('mv', 'LPMVault/Vendor/EnvEngine/fixtures/old.json', 'LPMVault/Sources/old.json')
+        commit({'LPMVault/Scripts/verify-env-engine.py': 'verify\n'}, 'engine')
+        git('switch', '--quiet', 'main')
+        git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
+        self.assertEqual([path for path, _ in engine.engine_changes(root, 'HEAD^1', 'HEAD')],
+                         ['LPMVault/Scripts/verify-env-engine.py', 'LPMVault/Vendor/EnvEngine/fixtures/old.json'])
+
+    def decision(self, root, event):
+        output = root / 'output'
+        output.write_text('')
+        script = Path(__file__).resolve().parents[1] / 'engine-changes.py'
+        subprocess.run(['python3', str(script), '--event', event, '--github-output', str(output)], check=True, capture_output=True)
+        return output.read_text()
+
+    def test_only_a_pull_request_can_skip_the_rebuild(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for event in ['push', 'schedule', 'workflow_dispatch', 'merge_group', 'pull_request_target', '']:
+            with self.subTest(event=event):
+                self.assertEqual(self.decision(Path(directory.name), event), 'needed=true\n')
+
+    def test_the_changes_job_reports_what_the_script_decides_for_the_runs_event(self):
+        workflow = (self.ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn('      engine: ${{ steps.engine.outputs.needed }}\n', workflow)
+        self.assertIn('        id: engine\n        run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT"\n', workflow)
+
+
+class Context(dict):
+    """A GitHub expression context, in which a property that isn't there is empty."""
+
+    def __getattr__(self, name):
+        value = self.get(name, Context())
+        return Context(value) if isinstance(value, dict) else value
+
+
+class ConcurrencyTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[3]
+
+    def concurrency(self, workflow, github):
+        """A workflow's concurrency group and whether it cancels a run in progress, for a run with this `github` context."""
+        lines = (self.ROOT / '.github/workflows' / workflow).read_text().splitlines()
+        start = lines.index('concurrency:') + 1
+        settings = dict(line.strip().split(': ', 1) for line in lines[start:start + 2])
+
+        def evaluate(match):
+            source = match.group(1).replace('&&', ' and ').replace('||', ' or ')
+            value = eval(source, {'__builtins__': {}}, {'github': Context(github), 'format': lambda text, *values: text.format(*values)})
+            return str(value).lower() if isinstance(value, bool) else str(value)
+
+        group, cancels = (re.sub(r'\$\{\{(.*?)\}\}', evaluate, settings[key]) for key in ['group', 'cancel-in-progress'])
+        return group, cancels == 'true'
+
+    def pull_request(self, run, number=7, action='synchronize', label=None):
+        event = {'action': action, 'pull_request': {'number': number}}
+        if label:
+            event['label'] = {'name': label}
+        return {'event_name': 'pull_request', 'run_id': run, 'event': event}
+
+    def test_a_pull_requests_newer_run_replaces_its_older_one(self):
+        for workflow in ['ci.yml', 'ui.yml']:
+            with self.subTest(workflow=workflow):
+                older, newer = (self.concurrency(workflow, self.pull_request(run)) for run in [1, 2])
+                self.assertEqual(older, newer)
+                self.assertTrue(newer[1])
+                self.assertNotEqual(newer[0], self.concurrency(workflow, self.pull_request(3, number=8))[0])
+
+    def test_every_other_run_finishes(self):
+        for workflow in ['ci.yml', 'ui.yml']:
+            for event in ['push', 'schedule', 'workflow_dispatch', 'merge_group']:
+                with self.subTest(workflow=workflow, event=event):
+                    first, second = (self.concurrency(workflow, {'event_name': event, 'run_id': run, 'event': {}}) for run in [1, 2])
+                    self.assertNotEqual(first[0], second[0])
+                    self.assertFalse(first[1] or second[1])
+
+    def test_workflows_a_release_calls_from_one_run_do_not_share_a_group(self):
+        release = (self.ROOT / '.github/workflows/release.yml').read_text()
+        called = re.findall(r'uses: \./\.github/workflows/(\S+)', release)
+        self.assertEqual(sorted(called), ['ci.yml', 'ui.yml'])
+        github = {'event_name': 'schedule', 'run_id': 5, 'event': {}, 'workflow': 'Signed release'}
+        groups = [self.concurrency(workflow, github)[0] for workflow in called + ['release.yml']]
+        self.assertEqual(len(set(groups)), len(groups))
+
+    def test_opening_a_labeled_pull_request_runs_the_ui_suite_once(self):
+        opened = self.concurrency('ui.yml', self.pull_request(1, action='opened'))
+        labeled = self.concurrency('ui.yml', self.pull_request(2, action='labeled', label='ui-tests'))
+        self.assertEqual(opened, labeled)
+        self.assertTrue(labeled[1])
+
+    def test_another_label_does_not_end_a_ui_run(self):
+        running = self.concurrency('ui.yml', self.pull_request(1))[0]
+        for run in [2, 3]:
+            other = self.concurrency('ui.yml', self.pull_request(run, action='labeled', label='dependencies'))[0]
+            self.assertNotEqual(other, running)
+        self.assertNotEqual(self.concurrency('ui.yml', self.pull_request(2, action='labeled', label='dependencies'))[0],
+                            self.concurrency('ui.yml', self.pull_request(3, action='labeled', label='dependencies'))[0])
 
 
 class UISuiteChangeTests(unittest.TestCase):

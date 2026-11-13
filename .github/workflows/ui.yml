@@ -22,6 +22,14 @@ on:
   workflow_call:
 permissions:
   contents: read
+# A pull request's newer run replaces its older one: a newer commit's, or the
+# second of the two that opening a pull request with the ui-tests label
+# starts. A run that another label starts does nothing, so it takes a group
+# of its own and replaces none. Every other run finishes; the group's name
+# differs from the CI workflow's, since a release calls both from one run.
+concurrency:
+  group: ui-${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'ui-tests') && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     name: UI suite changes
