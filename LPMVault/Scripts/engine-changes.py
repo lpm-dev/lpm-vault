@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Decide whether a run rebuilds the bundled env engine from its pinned source.
 
-A pull request does when it changes the bundled engine, or how the rebuild
-runs: nothing else it changes can alter what the rebuild compares, and each
-rebuild holds a macOS runner for minutes. Every other run does, so the
-engine is rebuilt after each merge to main, before each release and every
-night, which is where a change outside the repository, such as a new runner
-image, shows.
+A pull request does, and so does the merge queue's run of it, when it
+changes the bundled engine, or how the rebuild runs: nothing else it changes
+can alter what the rebuild compares, and each rebuild holds a macOS runner
+for minutes. Every other run does, so the engine is rebuilt after each merge
+to main, before each release and every night, which is where a change
+outside the repository, such as a new runner image, shows.
 
 BASE and HEAD default to HEAD^1 and HEAD, as in a pull request's checkout:
-its merge commit, whose first parent is the base branch.
+its merge commit, whose first parent is the base branch. A merge group's
+run names its base.
 """
 import argparse
 from pathlib import Path
 import subprocess
 
+# The events whose run checks a change that hasn't merged yet.
+COMPARED = {'pull_request', 'merge_group'}
 ENGINE = 'LPMVault/Vendor/EnvEngine/'
 RUNNER = {
     '.github/workflows/ci.yml',
@@ -47,7 +50,7 @@ def main():
     parser.add_argument('--event', required=True, help='The name of the event the run answers, as GITHUB_EVENT_NAME gives it.')
     parser.add_argument('--github-output', type=Path)
     args = parser.parse_args()
-    if args.event == 'pull_request':
+    if args.event in COMPARED:
         changes = engine_changes(Path(__file__).resolve().parents[2], args.base, args.head)
         for path, why in changes:
             print(f'{path} {why}.')

@@ -412,24 +412,42 @@ class EngineChangeTests(unittest.TestCase):
         self.assertEqual([path for path, _ in engine.engine_changes(root, 'HEAD^1', 'HEAD')],
                          ['LPMVault/Scripts/verify-env-engine.py', 'LPMVault/Vendor/EnvEngine/fixtures/old.json'])
 
-    def decision(self, root, event):
+    def decision(self, root, event, *commits):
+        """What a copy of the script in the repository at `root` decides for a run of `event`."""
         output = root / 'output'
         output.write_text('')
-        script = Path(__file__).resolve().parents[1] / 'engine-changes.py'
-        subprocess.run(['python3', str(script), '--event', event, '--github-output', str(output)], check=True, capture_output=True)
+        script = root / 'LPMVault/Scripts/engine-changes.py'
+        script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(__file__).resolve().parents[1] / 'engine-changes.py', script)
+        subprocess.run(['python3', str(script), '--event', event, '--github-output', str(output), *commits], check=True, capture_output=True)
         return output.read_text()
 
-    def test_only_a_pull_request_can_skip_the_rebuild(self):
+    def test_only_a_change_that_has_not_merged_can_skip_the_rebuild(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        for event in ['push', 'schedule', 'workflow_dispatch', 'merge_group', 'pull_request_target', '']:
+        for event in ['push', 'schedule', 'workflow_dispatch', 'pull_request_target', '']:
             with self.subTest(event=event):
                 self.assertEqual(self.decision(Path(directory.name), event), 'needed=true\n')
+
+    def test_a_merge_group_is_compared_with_the_base_its_run_names(self):
+        root, git, commit = self.repository()
+        (root / '.gitignore').write_text('output\nLPMVault/Scripts/engine-changes.py\n')
+        commit({'LPMVault/Sources/App.swift': 'app\n', 'LPMVault/Vendor/EnvEngine/provenance.json': 'one\n'}, 'base')
+        git('tag', 'base')
+        commit({'LPMVault/Sources/App.swift': 'first pull request\n'}, 'first')
+        git('tag', 'first')
+        self.assertEqual(self.decision(root, 'merge_group', 'base'), 'needed=false\n')
+        commit({'LPMVault/Vendor/EnvEngine/provenance.json': 'two\n'}, 'second')
+        commit({'LPMVault/Sources/App.swift': 'third pull request\n'}, 'third')
+        self.assertEqual(self.decision(root, 'merge_group', 'first'), 'needed=true\n')
+        self.assertEqual(self.decision(root, 'pull_request'), 'needed=false\n')
 
     def test_the_changes_job_reports_what_the_script_decides_for_the_runs_event(self):
         workflow = (self.ROOT / '.github/workflows/ci.yml').read_text()
         self.assertIn('      engine: ${{ steps.engine.outputs.needed }}\n', workflow)
-        self.assertIn('        id: engine\n        run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT"\n', workflow)
+        self.assertIn("          fetch-depth: ${{ github.event_name == 'merge_group' && 0 || 2 }}\n", workflow)
+        self.assertIn('          BASE: ${{ github.event.merge_group.base_sha }}\n        run: python3 LPMVault/Scripts/engine-changes.py'
+                      ' --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT" ${BASE:+"$BASE"}\n', workflow)
 
 
 class Context(dict):
@@ -440,6 +458,16 @@ class Context(dict):
         return Context(value) if isinstance(value, dict) else value
 
 
+def expanded(text, github):
+    """`text` with each `${{ }}` expression in it evaluated for a run with this `github` context."""
+    def evaluate(match):
+        source = match.group(1).replace('&&', ' and ').replace('||', ' or ')
+        value = eval(source, {'__builtins__': {}}, {'github': Context(github), 'format': lambda text, *values: text.format(*values)})
+        return str(value).lower() if isinstance(value, bool) else str(value)
+
+    return re.sub(r'\$\{\{(.*?)\}\}', evaluate, text)
+
+
 class ConcurrencyTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[3]
 
@@ -448,14 +476,7 @@ class ConcurrencyTests(unittest.TestCase):
         lines = (self.ROOT / '.github/workflows' / workflow).read_text().splitlines()
         start = lines.index('concurrency:') + 1
         settings = dict(line.strip().split(': ', 1) for line in lines[start:start + 2])
-
-        def evaluate(match):
-            source = match.group(1).replace('&&', ' and ').replace('||', ' or ')
-            value = eval(source, {'__builtins__': {}}, {'github': Context(github), 'format': lambda text, *values: text.format(*values)})
-            return str(value).lower() if isinstance(value, bool) else str(value)
-
-        group, cancels = (re.sub(r'\$\{\{(.*?)\}\}', evaluate, settings[key]) for key in ['group', 'cancel-in-progress'])
-        return group, cancels == 'true'
+        return expanded(settings['group'], github), expanded(settings['cancel-in-progress'], github) == 'true'
 
     def pull_request(self, run, number=7, action='synchronize', label=None):
         event = {'action': action, 'pull_request': {'number': number}}
@@ -579,6 +600,41 @@ class UISuiteChangeTests(unittest.TestCase):
         git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
         self.assertEqual([path for path, _ in ui_suite.ui_suite_changes(root, 'HEAD^1', 'HEAD')],
                          ['LPMVault/Tests/Old.swift', 'LPMVault/Tests/QuitTests.swift'])
+
+
+class MergeQueueTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+
+    def test_the_required_checks_report_for_a_merge_group(self):
+        lines = (self.WORKFLOWS / 'ci.yml').read_text().splitlines()
+        start = lines.index('on:') + 1
+        events = [line.strip() for line in lines[start:next(i for i in range(start, len(lines)) if not lines[i].startswith(' '))]]
+        self.assertIn('merge_group:', events)
+        self.assertIn('pull_request:', events)
+
+    def test_a_pull_request_compiles_one_architecture_and_what_merges_compiles_both(self):
+        workflow = (self.WORKFLOWS / 'ci.yml').read_text()
+        setting = next(line.split(': ', 1)[1] for line in workflow.splitlines() if line.startswith('          ARCHITECTURES:'))
+        self.assertEqual(expanded(setting, {'event_name': 'pull_request'}), 'arm64')
+        for event in ['merge_group', 'push', 'schedule', 'workflow_dispatch']:
+            with self.subTest(event=event):
+                self.assertEqual(expanded(setting, {'event_name': event}), 'arm64 x86_64')
+        self.assertEqual(len(re.findall(r'xcodebuild .* ARCHS="\$ARCHITECTURES" .* build\n', workflow)), 1)
+        name = next(line.split(': ', 1)[1] for line in workflow.splitlines() if line.startswith('    name:') and 'release bundle' in line)
+        self.assertEqual(expanded(name, {'event_name': 'pull_request'}), 'arm64 release bundle verification')
+        self.assertEqual(expanded(name, {'event_name': 'merge_group'}), 'Universal release bundle verification')
+
+    def test_a_merge_groups_run_restores_caches_and_saves_none(self):
+        for workflow, caches in [('ci.yml', 2), ('swift-tests.yml', 1)]:
+            with self.subTest(workflow=workflow):
+                lines = (self.WORKFLOWS / workflow).read_text().splitlines()
+                uses = [line.strip() for line in lines if 'actions/cache' in line]
+                self.assertEqual(sum('actions/cache/restore@' in line for line in uses), caches)
+                saves = [index for index, line in enumerate(lines) if 'actions/cache/save@' in line]
+                self.assertEqual(len(saves), caches)
+                self.assertEqual(len(uses), 2 * caches)
+                for index in saves:
+                    self.assertEqual(lines[index - 1].strip(), "if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'")
 
 
 class WebCheckTests(unittest.TestCase):
