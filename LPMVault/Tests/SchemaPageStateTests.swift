@@ -353,7 +353,7 @@ extension SheetInteractionTests {
 			}
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-keys")?.rejection != nil })
 			#expect(try await waitForStatusBar(in: host) { $0.contains("Can’t save") && $0.contains("Show") && $0.contains("1 unsaved change") })
-			#expect(try await statusBarText(in: host).contains("1 key fails"), "A rejected draft still shows the failures lpm.json's rules find")
+			#expect(try await waitForStatusBar(in: host) { $0.contains("1 key fails") }, "A rejected draft still shows the failures lpm.json's rules find")
 		}
 
 		@Test("while lpm.json can't be read, the status bar names no problem it can't show")
@@ -533,7 +533,13 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema != nil && store.workspaceSnapshots[project.id] != nil })
 			if schemaPage {
 				try await host.click("Schema")
-				#expect(try await host.waitForText(lpmJSON.contains("envSchema") ? "enforced by LPM CLI" : "No rules yet"))
+				// The status bar gives up its parts to fit, the note that the LPM CLI enforces the rules first: in a
+				// narrow window the note goes once a failing key is counted, so the count of declared keys says the page is up.
+				if lpmJSON.contains("envSchema") {
+					#expect(try await host.waitForText("declared key", footer: 30))
+				} else {
+					#expect(try await host.waitForText("No rules yet"))
+				}
 			}
 			return (store, host, folder)
 		}
