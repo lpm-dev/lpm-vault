@@ -832,14 +832,13 @@ extension SheetInteractionTests {
 			NotificationCenter.default.post(name: .pullProject, object: nil)
 			let sheet = try #require(try await host.waitUntil { host.window.attachedSheet != nil } ? host.window.attachedSheet : nil)
 			try await host.click("Pull", in: sheet)
-			var closed = try await host.waitUntil { host.window.attachedSheet == nil }
-			if !closed {
-				// A second click says which half failed: it closes a sheet the first click never reached, and
-				// leaves open one that can't close.
-				try await host.click("Pull", in: sheet)
-				closed = try await host.waitUntil { host.window.attachedSheet == nil }
-				Issue.record("The sheet stayed open after Pull was clicked; a second click \(closed ? "closed it" : "left it open too")")
-			}
+			// This store has no login, so the pull is refused, and the refusal opens in a sheet of its own as soon
+			// as the confirmation closes. The window has no sheet only between the two, so this waits for the
+			// confirmation to leave the window, not for the window to be without one.
+			#expect(try await host.waitUntil { sheet.sheetParent == nil }, "The confirmation closes")
+			let refusal = try #require(try await host.waitUntil { host.window.attachedSheet != nil } ? host.window.attachedSheet : nil)
+			#expect(refusal !== sheet)
+			#expect(try await host.waitForText("Not logged in", in: refusal))
 		}
 
 		@Test("a reveal approved after project navigation cannot unmask the new project's same-named value")
