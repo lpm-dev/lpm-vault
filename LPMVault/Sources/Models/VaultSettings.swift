@@ -160,7 +160,7 @@ final class VaultSettings {
 		security: Security(
 			lockAfter: .standard, valueApproval: .standard, clipboardClear: .standard, rehide: .standard, hidesFromCapture: true),
 		newProjectsKeepHistory: true,
-		newProjectsAskBeforeCLIReads: false,
+		newProjectsAskBeforeCLIReads: true,
 		remindsToBackUp: true)
 
 	var security: Security {

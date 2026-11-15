@@ -13,13 +13,14 @@ struct NewProjectDefaultsTests {
 
 	private let binding = SyncPrincipalBinding(registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal")
 
-	@Test("by default a new project lets the CLI read it without asking and keeps local history, as before")
+	@Test("by default a new project asks before the CLI reads it and keeps local history")
 	func standardDefaults() async throws {
 		let (service, _, _) = makeService()
 		let project = VaultProject(id: "standard-new", name: "Standard", path: "", environments: ["default": [:]])
 		guard case .success(let commit) = await VaultPersistenceCoordinator(service: service).createProject(project, orgSlug: nil)
 		else { throw KeychainError.encodingFailed }
-		#expect(commit.cliAccess == .automatic)
+		#expect(commit.cliAccess == .requireApproval)
+		#expect(try service.cliAccessResult(vaultId: project.id).get() == .requireApproval)
 		#expect(try service.historyStateResult(vaultId: project.id).get().history != "off")
 		#expect(commit.warning == nil)
 	}
@@ -57,7 +58,8 @@ struct NewProjectDefaultsTests {
 		let (service, _, _) = makeService()
 		let coordinator = VaultPersistenceCoordinator(service: service)
 		let local = VaultProject(id: "merged", name: "Merged", path: "", environments: ["default": ["TOKEN": "local"]])
-		_ = await coordinator.createProject(local, orgSlug: nil)
+		_ = await coordinator.createProject(
+			local, orgSlug: nil, defaults: NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true))
 		let baseline = try await coordinator.loadProjectCreationRecord(vaultId: local.id).get()
 		let remote = VaultProject(id: local.id, name: local.name, path: "", environments: ["default": ["OTHER": "remote"]])
 		let result = await coordinator.importProject(

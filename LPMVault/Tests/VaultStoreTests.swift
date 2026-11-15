@@ -610,7 +610,7 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", environments: ["default": [:]]))
 		store.selectedProjectId = nil
-		#expect(store.projectCliAccess["created"] == .automatic)
+		#expect(store.projectCliAccess["created"] == .requireApproval)
 	}
 
 	@Test("restoring an existing protected project retains its actual sidebar policy")
@@ -5981,7 +5981,7 @@ struct VaultStoreTests {
 		))
 		#expect(keychain.storage["committed"]?.secrets["TOKEN"] == "secret")
 		#expect(store.projects.first?.id == "committed")
-		#expect(store.projectCliAccess["committed"] == .automatic)
+		#expect(store.projectCliAccess["committed"] == .requireApproval)
 	}
 
 	@Test("organization association failure rolls back the project")

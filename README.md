@@ -235,7 +235,8 @@ The [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and the [env guide](http
 
 CLI approval controls whether the LPM CLI must ask you before it reads the values of a project.
 To change it, open **Project Settings** (⌘I) for a project, then use **CLI approval**.
-**Ask before the CLI reads a new project** in **Settings → CLI** applies to new and imported projects.
+**Ask before the CLI reads a new project** in **Settings → CLI** applies to new and imported projects, and is on by default.
+A project the LPM CLI creates, as `lpm env set` does in a project without one, starts with CLI approval off.
 When CLI approval is off, `lpm run` gets the values without a prompt.
 When CLI approval is on, macOS asks for Touch ID or your Mac login password before the Keychain releases the values.
 If the authentication fails or you cancel it, the LPM CLI stops before it runs lifecycle hooks or the main script.

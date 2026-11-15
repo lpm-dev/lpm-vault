@@ -214,7 +214,7 @@ struct BackupAppSectionTests {
 		updates: .init(checks: false, downloads: true))
 
 	private static let listedSettings = #""appearance":"dark","keySort":"ascending","quitShortcut":"hold","updateChannel":"stable","projectOrder":[],"environmentOrders":{}"#
-	private static let preferenceSettings = #""security":{"lockAfter":120,"valueApproval":0,"clipboardClear":10,"rehide":0,"hidesFromCapture":true},"newProjects":{"keepHistory":true,"askBeforeCLIReads":false},"backupReminder":true,"automaticUpdates":{"check":true,"download":false}"#
+	private static let preferenceSettings = #""security":{"lockAfter":120,"valueApproval":0,"clipboardClear":10,"rehide":0,"hidesFromCapture":true},"newProjects":{"keepHistory":true,"askBeforeCLIReads":true},"backupReminder":true,"automaticUpdates":{"check":true,"download":false}"#
 
 	private func read(_ text: String) throws -> BackupAppSection {
 		try BackupAppSection(json: LPMConfigJSON(parsing: Data(text.utf8), rejectDuplicateKeys: true))

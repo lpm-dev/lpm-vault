@@ -26,13 +26,13 @@ struct VaultSecuritySettingsTests {
 		#expect(settings.rehide == .never)
 		#expect(settings.hidesFromCapture)
 		#expect(settings.newProjectsKeepHistory)
-		#expect(!settings.newProjectsAskBeforeCLIReads)
+		#expect(settings.newProjectsAskBeforeCLIReads)
 		#expect(settings.remindsToBackUp)
 
 		let changed = VaultSettings.Snapshot(
 			security: .init(lockAfter: .fifteenMinutes, valueApproval: .afterFiveMinutes, clipboardClear: .oneMinute,
 				rehide: .thirtySeconds, hidesFromCapture: false),
-			newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: true, remindsToBackUp: false)
+			newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: false, remindsToBackUp: false)
 		settings.snapshot = changed
 		#expect(VaultSettings(defaults: defaults).snapshot == changed)
 	}
@@ -465,7 +465,7 @@ struct VaultSettingsPageDefaultsTests {
 		quit.selection = .direct
 		settings.newProjectsKeepHistory = false
 		appearance.selection = .dark
-		settings.newProjectsAskBeforeCLIReads = true
+		settings.newProjectsAskBeforeCLIReads = false
 		settings.remindsToBackUp = false
 		settings.lockAfter = .thirtyMinutes
 		for category in [VaultSettingsCategory.general, .appearance, .cli, .backup, .security] {
@@ -479,7 +479,7 @@ struct VaultSettingsPageDefaultsTests {
 		pages.restore(.appearance)
 		pages.restore(.cli)
 		pages.restore(.backup)
-		#expect(appearance.selection == .system && !settings.newProjectsAskBeforeCLIReads && settings.remindsToBackUp)
+		#expect(appearance.selection == .system && settings.newProjectsAskBeforeCLIReads && settings.remindsToBackUp)
 		#expect(settings.lockAfter == .thirtyMinutes)
 		for category in [VaultSettingsCategory.general, .appearance, .cli, .backup] {
 			#expect(!pages.hasChanges(on: category), "\(category)")
@@ -499,6 +499,7 @@ struct BackupPreferenceChangesTests {
 		loose.security = .init(lockAfter: .thirtyMinutes, valueApproval: .never, clipboardClear: .twoMinutes, rehide: .never,
 			hidesFromCapture: false)
 		loose.newProjectsKeepHistory = false
+		loose.newProjectsAskBeforeCLIReads = false
 		loose.remindsToBackUp = false
 		let backup = BackupAppSection.Preferences(app: loose, updates: .init(checks: false, downloads: true))
 		#expect(backup.lessStrict(than: strict, updates: .standard) == [

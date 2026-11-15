@@ -83,8 +83,8 @@ enum ImportPersistenceResult: Sendable {
 
 /// What a project created on this Mac starts with, as Settings gives it.
 struct NewProjectDefaults: Equatable, Sendable {
-	var asksBeforeCLIReads = false
-	var keepsHistory = true
+	var asksBeforeCLIReads = VaultSettings.standard.newProjectsAskBeforeCLIReads
+	var keepsHistory = VaultSettings.standard.newProjectsKeepHistory
 }
 
 struct ProjectCreationPersistenceCommit: Sendable {
