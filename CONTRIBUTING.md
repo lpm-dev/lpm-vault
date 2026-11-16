@@ -51,11 +51,13 @@ Swift Testing accepts a test or suite name through `--filter`:
 swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors --filter ConnectCLITests
 ```
 
-Before you push a branch, run the whole Swift suite locally, native UI tests included; on an Apple silicon Mac it takes about two minutes:
+Before you push a branch, run the whole Swift suite locally, native UI tests included; on an Apple silicon Mac it takes about six minutes, most of them the UI suite:
 
 ```sh
-swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+swift build --build-tests --package-path LPMVault -Xswiftc -warnings-as-errors && swift test --package-path LPMVault --skip-build
 ```
+
+Every push to a pull request starts two or three jobs on macOS runners, which are often in short supply, so push a set of changes that has passed this run rather than one fix at a time.
 
 Pull request checks run every Swift test except the native UI suite, `SheetInteractionTests`.
 They run those tests a second time on a one-thread cooperative pool, so work that blocks a cooperative thread, or waits on a task that needs one, deadlocks there rather than only on a runner with few cores. After a build, run that check locally from the repository root; it takes a few seconds:
@@ -64,9 +66,10 @@ They run those tests a second time on a one-thread cooperative pool, so work tha
 bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
 ```
 
-The native UI suite's tests open real windows and run one at a time, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+The native UI suite's tests open real windows and run one at a time, so they are not a required check. The [UI regressions workflow](.github/workflows/ui.yml) runs them before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
 It also runs them, without the label, for a pull request that changes the suite's tests, the test support code they can use, or how the suite runs; `LPMVault/Scripts/ui-suite-changes.py` decides.
-Label a pull request `ui-tests` only when it changes what a sheet or view shows, or how it responds to input; the local run before you push covers the rest.
+The [post-merge checks](.github/workflows/post-merge.yml) run them for every commit on `main`.
+Label a pull request `ui-tests` when it changes what a sheet or view shows, or how it responds to input. Where the suite does run for a pull request, it takes a quarter of an hour or more to answer, so the local run before you push is the one to act on.
 The suite runs on one runner, in the order it runs locally. An on-demand run can take a `filter`, a regular expression for the identifiers of the tests to run, and runs only those. Use it to check one test on the runners' macOS without waiting for the whole suite:
 
 ```sh
@@ -78,7 +81,7 @@ UI tests find and read views through the accessibility tree, as VoiceOver does: 
 
 Every test waits for the state its next step needs, never for a length of time; a loaded runner can pause the test process for tens of seconds, and a test has to pass then too. `waitUntil` in `LPMVault/Tests/Waiting.swift` checks a condition until it holds; its limit, `testWaitLimit`, only bounds a failure. Better still is a gate the test controls, such as a mock that holds a request until the test releases it, which says exactly when each step happens. Code that measures the time between events takes a clock, and a test moves a `ManualClock` by hand. Check that something doesn't happen with `quietPeriod()` only when no state says the work that could do it is over. Don't assert how long something took: count what a fast path does differently, such as how often it rebuilds an index, or give it an input that a slower algorithm couldn't finish within the test's time limit.
 
-Before you open a pull request, also run the rest of the CI checks from the repository root:
+The pull request's checks run the rest, and answer in about ten minutes. Run these locally, from the repository root, only when your change touches what they check: the release tooling in `LPMVault/Scripts`, the workflows, the site in `web/`, or the Xcode project and its build settings:
 
 ```sh
 bash LPMVault/Scripts/Tests/release-tooling-tests.sh
@@ -103,10 +106,18 @@ codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.
 ```
 
 The ad-hoc signature checks verify the bundle structure. They do not grant shared Keychain access.
-The [CI workflow](.github/workflows/ci.yml) is authoritative for the toolchain and required checks; the Swift steps live in the [Swift tests workflow](.github/workflows/swift-tests.yml) it shares with the UI regressions.
+The [CI workflow](.github/workflows/ci.yml) is authoritative for the toolchain and required checks. Its Swift steps live in the [Swift tests workflow](.github/workflows/swift-tests.yml), which it shares with the UI regressions, and its release bundle steps in the [release bundle workflow](.github/workflows/release-bundle.yml).
 A push to a pull request cancels the runs of its earlier commit, in both workflows.
-The checks rebuild the bundled env engine from its pinned source for a pull request only when it changes the engine in `LPMVault/Vendor/EnvEngine` or how the rebuild runs; `LPMVault/Scripts/engine-changes.py` decides. Every run after a merge to `main`, before a release and each night rebuilds it, and every run checks the bundle against the hashes in its `provenance.json`.
-A pull request's checks compile the release bundle for arm64 only. The merge queue runs the same checks on the pull request merged with `main`, where it compiles the universal bundle, before the pull request lands.
+The checks rebuild the bundled env engine from its pinned source for a pull request only when it changes the engine in `LPMVault/Vendor/EnvEngine` or how the rebuild runs; `LPMVault/Scripts/engine-changes.py` decides. Every run before a release and each night rebuilds it, and every run checks the bundle against the hashes in its `provenance.json`.
+
+macOS runners are the scarce resource, so each stage runs only what the one before it didn't:
+
+- A pull request's checks compile the release bundle for arm64 only.
+- The merge queue runs the same checks on the pull request merged with `main`, before it lands. When `main` hasn't moved since the pull request's own run passed, the merge group holds the very tree that run checked, and the queue skips the macOS jobs; `LPMVault/Scripts/ci-passed-tree.py` finds that run, and only a run of a branch in this repository counts.
+- Every commit on `main` passed the queue as that same commit, so the [post-merge checks](.github/workflows/post-merge.yml) run only what the queue left out: the native UI suite and the universal bundle, with its x86_64 half. They are not required checks.
+- A release, and the nightly build, runs everything.
+
+GitHub gives up on a job that no hosted runner takes within about 15 minutes, and the run fails though nothing ran. The [runner retry workflow](.github/workflows/runner-retry.yml) runs such a run's failed jobs again, up to twice. It leaves alone a run in which a job ran and failed, so it never turns a failing test green, and it can't rerun a merge group, whose pull request has to be queued again.
 Builds must complete with zero warnings.
 
 Keep Swift tests in `LPMVault/Tests`, release-tooling tests in `LPMVault/Scripts/Tests`, and website tests in `web/tests`.

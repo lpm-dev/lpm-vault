@@ -1,15 +1,14 @@
 name: UI regressions
 # The native UI suite opens real windows and runs one test at a time, so it
-# runs here rather than in the pull request checks: after every merge to
-# main, on demand, before every release, and for a pull request that is
-# labeled ui-tests or changes the suite's tests, their support code or how
-# the suite runs (see ui-suite-changes.py). Contributors run it locally
-# before pushing. It runs on one runner, in one process and in the order it
-# runs locally; it takes a few minutes, and more runners would each pay for
-# a build. An on-demand run given a filter runs only the tests it matches.
+# runs here rather than in the required checks: on demand, before every
+# release, and for a pull request that is labeled ui-tests or changes the
+# suite's tests, their support code or how the suite runs (see
+# ui-suite-changes.py). The post-merge checks run it for every commit on
+# main. Contributors run it locally before pushing. It runs on one runner,
+# in one process and in the order it runs locally; it takes a few minutes,
+# and more runners would each pay for a build. An on-demand run given a
+# filter runs only the tests it matches.
 on:
-  push:
-    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
