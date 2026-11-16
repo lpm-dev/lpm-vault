@@ -66,6 +66,8 @@ struct VaultAppearanceTests {
 			(VaultPalette.accentTint, 0xEEEDFD, 0x2B2946, 1),
 			(VaultPalette.accentText, 0x2E2C8A, 0xD5D4FF, 1),
 			(VaultPalette.accent, 0x5E5CE6, 0x5E5CE6, 1),
+			(VaultPalette.curtain, 0xF1F1F4, 0x111113, 1),
+			(VaultPalette.curtainText, 0x5C5C64, 0xFFFFFF, 0.65),
 		]
 		for entry in colors {
 			for (scheme, hex, opacity) in [(ColorScheme.light, entry.light, Float(1)), (.dark, entry.dark, entry.darkOpacity)] {
@@ -141,6 +143,7 @@ struct VaultAppearanceTests {
 			(VaultPalette.orangeTintText, VaultPalette.content),
 			(Color.white, VaultPalette.accent),
 			(Color.white, VaultPalette.accentHover),
+			(VaultPalette.curtainText, VaultPalette.curtain),
 		] {
 			#expect(Self.contrast(foreground, on: background, in: scheme) >= 4.5, "\(foreground) on \(background) in \(scheme)")
 		}
