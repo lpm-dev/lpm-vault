@@ -136,11 +136,49 @@ enum ProjectCLILink {
 		}
 	}
 
+	/// Takes `chosen` as the project the LPM CLI acts on there: the nearest
+	/// folder at or above it with a package.json or lpm.json, at its real
+	/// path, as the CLI keeps a project's folder. A folder whose .lpm is the
+	/// LPM home is refused. Blocks on the file system.
+	static func choose(_ chosen: URL, for vaultId: String, home: LPMHome) -> Result<ProjectFolderChoice, ProjectCLILinkError> {
+		let root = CLIFiles.projectRoot(for: chosen, home: home)
+		if root?.stateIsHome == true { return .failure(.folderIsLPMHome) }
+		let folder = realPath((root?.url ?? chosen).path)
+		let picked = realPath(chosen.path)
+		return .success(ProjectFolderChoice(
+			path: folder, chosenInside: picked == folder ? nil : picked, status: status(vaultId: vaultId, folder: folder)))
+	}
+
+	private static func realPath(_ path: String) -> String {
+		guard let resolved = realpath(path, nil) else { return path }
+		defer { free(resolved) }
+		return String(cString: resolved)
+	}
+
 	private static func folderExists(_ folder: String) -> Bool {
 		var isDirectory: ObjCBool = false
 		return !folder.isEmpty
 			&& FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory)
 			&& isDirectory.boolValue
+	}
+}
+
+/// A folder chosen for a project, as the LPM CLI takes it.
+struct ProjectFolderChoice: Equatable, Sendable {
+	/// The project the LPM CLI acts on for the folder chosen, at its real path.
+	let path: String
+	/// The folder chosen, when the project around it was taken instead.
+	let chosenInside: String?
+	/// What the folder's lpm.json says about the project.
+	let status: ProjectCLILinkStatus
+
+	/// Whether its lpm.json keeps it from becoming the project's: it links
+	/// another project, or can't be read safely.
+	var isTaken: Bool {
+		switch status {
+		case .linkedToOtherVault, .unreadable, .noFolder: true
+		case .linked, .notLinked: false
+		}
 	}
 }
 

@@ -7,7 +7,7 @@ struct ConnectCLISheet: View {
 
 	@Bindable var store: VaultStore
 	let projectId: String
-	var folderPicker: @MainActor () -> URL? = Self.pickFolder
+	var folderPicker: @MainActor () -> URL? = VaultOpenPanel.projectFolder
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.openURL) private var openURL
 
@@ -555,17 +555,6 @@ struct ConnectCLISheet: View {
 			linkError = nil
 			refreshStatus()
 		}
-	}
-
-	private static func pickFolder() -> URL? {
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = false
-		panel.canChooseDirectories = true
-		panel.allowsMultipleSelection = false
-		panel.prompt = "Choose Folder"
-		panel.message = "Choose the folder that contains your project’s package.json"
-		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
-		return panel.url
 	}
 
 	private func copy(_ text: String, as item: String) {

@@ -291,6 +291,13 @@ extension SheetInteractionTests {
 			try await host.click("Close", in: connect)
 			_ = try await host.waitUntil { host.window.sheets.isEmpty }
 
+			try await host.click("Create env project")
+			let newProject = try await sheet(of: host)
+			#expect(try await host.waitForText("Local history", in: newProject))
+			try await save(host, "28-sheet-new-project", dark: dark, window: newProject)
+			try await host.click("Cancel", in: newProject)
+			_ = try await host.waitUntil { host.window.sheets.isEmpty }
+
 			store.showPlatforms()
 			#expect(try await host.waitForText("Close Settings"))
 			try await save(host, "08-platforms", dark: dark)

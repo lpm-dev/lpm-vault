@@ -254,6 +254,14 @@ final class ProjectIconStore {
 		if detailedProject == projectID { detailedProject = nil }
 	}
 
+	/// The icon `folder` gives a project whose icon is automatic, for one not created yet.
+	func automaticIcon(inFolder folder: String) async -> ProjectIconResolution {
+		let directory = imagesDirectory
+		return await BlockingWork.run {
+			Self.resolve(folder: folder, choice: .automatic, findsAutomatic: true, previous: nil, imagesDirectory: directory)
+		}
+	}
+
 	/// Returns once nothing is being resolved.
 	func waitUntilIdle() async {
 		guard !running.isEmpty || !queued.isEmpty else { return }
