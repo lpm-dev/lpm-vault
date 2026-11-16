@@ -210,7 +210,7 @@ struct BackupAppSectionTests {
 		app: VaultSettings.Snapshot(
 			security: .init(lockAfter: .thirtyMinutes, valueApproval: .afterFifteenMinutes, clipboardClear: .twoMinutes,
 				rehide: .fiveMinutes, hidesFromCapture: false),
-			newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: true, remindsToBackUp: false),
+			newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: false, remindsToBackUp: false),
 		updates: .init(checks: false, downloads: true))
 
 	private static let listedSettings = #""appearance":"dark","keySort":"ascending","quitShortcut":"hold","updateChannel":"stable","projectOrder":[],"environmentOrders":{}"#

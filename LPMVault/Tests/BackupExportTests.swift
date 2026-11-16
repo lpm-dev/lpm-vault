@@ -74,7 +74,7 @@ struct BackupExportTests {
 		fixture.defaults.set(VaultReleaseChannel.nightly.rawValue, forKey: UpdateChecker.channelDefaultsKey)
 		store.saveEnvironmentOrder(for: "vault-a", order: ["staging", "default"])
 		store.settings.lockAfter = .thirtyMinutes
-		store.settings.newProjectsAskBeforeCLIReads = true
+		store.settings.newProjectsAskBeforeCLIReads = false
 		store.automaticUpdates = { .init(checks: false, downloads: false) }
 		#expect(store.projectIcons.save(.emoji("🚀"), for: "vault-a"))
 		let destination = vercelDestination(source: "default")
@@ -104,7 +104,7 @@ struct BackupExportTests {
 		let app = try BackupAppSection(json: try #require(payload["app"]))
 		var carried = VaultSettings.standard
 		carried.security.lockAfter = .thirtyMinutes
-		carried.newProjectsAskBeforeCLIReads = true
+		carried.newProjectsAskBeforeCLIReads = false
 		#expect(app.settings == .init(
 			appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .nightly,
 			projectOrder: ["vault-a"], environmentOrders: ["vault-a": ["staging", "default"]],

@@ -488,7 +488,7 @@ actor VaultPersistenceCoordinator {
 	func createProject(
 		_ project: VaultProject,
 		orgSlug: String?,
-		defaults: NewProjectDefaults = NewProjectDefaults()
+		defaults: NewProjectDefaults
 	) -> ProjectCreationPersistenceResult {
 		switch service.withKeychainTransaction({
 			createProjectUnlocked(project, orgSlug: orgSlug, defaults: defaults)
@@ -1279,7 +1279,7 @@ actor VaultPersistenceCoordinator {
 		version: Int,
 		binding: SyncPrincipalBinding,
 		existing: ProjectCreationRecord? = nil,
-		defaults: NewProjectDefaults = NewProjectDefaults()
+		defaults: NewProjectDefaults
 	) -> ImportPersistenceResult {
 		switch service.withKeychainTransaction({
 			importProjectUnlocked(

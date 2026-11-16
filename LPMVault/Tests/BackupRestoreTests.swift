@@ -79,7 +79,7 @@ struct BackupRestoreTests {
 			app: VaultSettings.Snapshot(
 				security: .init(lockAfter: .fifteenMinutes, valueApproval: .afterFiveMinutes, clipboardClear: .thirtySeconds,
 					rehide: .oneMinute, hidesFromCapture: false),
-				newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: true, remindsToBackUp: false),
+				newProjectsKeepHistory: false, newProjectsAskBeforeCLIReads: false, remindsToBackUp: false),
 			updates: .init(checks: false, downloads: false))
 		let settings = BackupAppSection.Settings(
 			appearance: .dark, keySort: .descending, quitShortcut: .hold, updateChannel: .stable,

@@ -605,12 +605,24 @@ struct VaultStoreTests {
 	}
 
 	@Test("new project policy is available even if selection is cleared immediately")
-	func createdProjectPolicySurvivesImmediateNavigation() async {
-		let (store, _, _, _) = makeStore()
+	func createdProjectPolicySurvivesImmediateNavigation() async throws {
+		let (store, _, _, _) = makeStore(preferences: try isolatedDefaults())
 		store.isUnlocked = true
 		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", environments: ["default": [:]]))
 		store.selectedProjectId = nil
 		#expect(store.projectCliAccess["created"] == .requireApproval)
+	}
+
+	@Test("a project created with Settings' new-project defaults switched off lets the CLI read it and keeps no history")
+	func createdProjectFollowsSettingsSwitchedOff() async throws {
+		let (store, keychain, _, _) = makeStore(preferences: try isolatedDefaults())
+		store.settings.newProjectsAskBeforeCLIReads = false
+		store.settings.newProjectsKeepHistory = false
+		store.isUnlocked = true
+		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", environments: ["default": [:]]))
+		#expect(store.projectCliAccess["created"] == .automatic)
+		#expect(keychain.cliAccessPolicies["created"] == nil)
+		#expect(try keychain.historyStateResult(vaultId: "created").get().history == "off")
 	}
 
 	@Test("restoring an existing protected project retains its actual sidebar policy")
@@ -5897,7 +5909,8 @@ struct VaultStoreTests {
 			environments: ["default": ["TOKEN": "local", "LOCAL_ONLY": "keep"]]
 		)
 		let coordinator = VaultPersistenceCoordinator(service: keychain)
-		_ = await coordinator.createProject(local, orgSlug: nil)
+		_ = await coordinator.createProject(
+			local, orgSlug: nil, defaults: NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true))
 		let personalBinding = SyncPrincipalBinding(
 			registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal"
 		)
@@ -5956,7 +5969,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("cancellation after a durable cloud import still publishes the committed snapshot")
-	func postCommitImportCancellationAcknowledgesCommit() async {
+	func postCommitImportCancellationAcknowledgesCommit() async throws {
 		let importService = MockEnvProjectImportService()
 		importService.personalResult = .success(
 			RemoteEnvProjectPayload(
@@ -5967,7 +5980,7 @@ struct VaultStoreTests {
 				principalID: "user-1"
 			)
 		)
-		let (store, keychain) = makeImportStore(importService: importService)
+		let (store, keychain) = makeImportStore(importService: importService, preferences: try isolatedDefaults())
 		var operation: Task<Result<ImportedEnvProject, EnvProjectImportError>, Never>?
 		keychain.onCreateEnvironments = { operation?.cancel() }
 		operation = Task {
@@ -5982,6 +5995,30 @@ struct VaultStoreTests {
 		#expect(keychain.storage["committed"]?.secrets["TOKEN"] == "secret")
 		#expect(store.projects.first?.id == "committed")
 		#expect(store.projectCliAccess["committed"] == .requireApproval)
+	}
+
+	@Test("a cloud project imported with Settings' new-project defaults switched off lets the CLI read it and keeps no history")
+	func cloudImportFollowsSettingsSwitchedOff() async throws {
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .success(
+			RemoteEnvProjectPayload(
+				vaultId: "imported",
+				environments: ["default": ["TOKEN": "secret"]],
+				version: 2,
+				keyCount: 1,
+				principalID: "user-1"
+			)
+		)
+		let (store, keychain) = makeImportStore(importService: importService, preferences: try isolatedDefaults())
+		store.settings.newProjectsAskBeforeCLIReads = false
+		store.settings.newProjectsKeepHistory = false
+
+		let result = await store.importCloudProject(remoteProject(id: "imported", name: "remote"))
+
+		#expect(result == .success(ImportedEnvProject(projectId: "imported", version: 2, keyCount: 1)))
+		#expect(store.projectCliAccess["imported"] == .automatic)
+		#expect(keychain.cliAccessPolicies["imported"] == nil)
+		#expect(try keychain.historyStateResult(vaultId: "imported").get().history == "off")
 	}
 
 	@Test("organization association failure rolls back the project")
@@ -6066,7 +6103,8 @@ struct VaultStoreTests {
 	}
 
 	private func makeImportStore(
-		importService: MockEnvProjectImportService
+		importService: MockEnvProjectImportService,
+		preferences: UserDefaults = .standard
 	) -> (VaultStore, MockKeychainService) {
 		let keychain = MockKeychainService()
 		let store = VaultStore(
@@ -6074,6 +6112,7 @@ struct VaultStoreTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			importServiceFactory: { _ in importService },
+			preferences: preferences,
 			authTokenProvider: { _, _ in "session-token" }
 		)
 		store.currentUser = testUser(id: "user-1", username: "user")

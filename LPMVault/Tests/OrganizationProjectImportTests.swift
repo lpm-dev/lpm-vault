@@ -17,6 +17,8 @@ struct OrganizationProjectImportTests {
 	private var remote: VaultProject {
 		VaultProject(id: local.id, name: "Remote", path: "", environments: ["default": ["TOKEN": "cloud"]])
 	}
+	/// A local project the CLI reads without asking, with history kept.
+	private static let automatic = NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true)
 
 	@Test("organization imports preserve authenticated access errors without key lookup", arguments: ["organization", "account"], ["user-1", "other-user"])
 	func organizationImportsPreserveAccessErrors(scope: String, caller: String) async throws {
@@ -61,7 +63,7 @@ struct OrganizationProjectImportTests {
 		for changeAssociation in [false, true] {
 			let keychain = MockKeychainService()
 			let coordinator = VaultPersistenceCoordinator(service: keychain)
-			_ = await coordinator.createProject(local, orgSlug: nil)
+			_ = await coordinator.createProject(local, orgSlug: nil, defaults: Self.automatic)
 			let baseline = try await coordinator.loadProjectCreationRecord(vaultId: local.id).get()
 			if changeAssociation {
 				_ = await coordinator.associate(vaultId: local.id, orgSlug: "other-org")
@@ -71,7 +73,8 @@ struct OrganizationProjectImportTests {
 					projectId: local.id, expectedName: local.name, expectedPath: local.path, mutation: .editKey(edit))
 			}
 			let before = keychain.dataStorage
-			let result = await coordinator.importProject(remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline)
+			let result = await coordinator.importProject(
+			remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
 			guard case .conflict = result else { Issue.record("Concurrent change was accepted"); continue }
 			#expect(keychain.dataStorage == before)
 			let saved = try await coordinator.loadProject(vaultId: local.id).get()
@@ -84,11 +87,12 @@ struct OrganizationProjectImportTests {
 		for account in ["__org_associations__", mockSyncMetadataAccount(vaultId: local.id)] {
 			let keychain = MockKeychainService()
 			let coordinator = VaultPersistenceCoordinator(service: keychain)
-			_ = await coordinator.createProject(local, orgSlug: "previous-org")
+			_ = await coordinator.createProject(local, orgSlug: "previous-org", defaults: Self.automatic)
 			let baseline = try await coordinator.loadProjectCreationRecord(vaultId: local.id).get()
 			let before = keychain.dataStorage
 			keychain.failNextWriteDataAccounts = [account]
-			let result = await coordinator.importProject(remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline)
+			let result = await coordinator.importProject(
+			remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
 			guard case .failure = result else { Issue.record("Expected persistence failure"); continue }
 			#expect(keychain.dataStorage == before)
 			#expect(try await coordinator.loadProject(vaultId: local.id).get() == local)
@@ -99,11 +103,12 @@ struct OrganizationProjectImportTests {
 	func moveRejectsOlderOrganizationRevision() async throws {
 		let keychain = MockKeychainService()
 		let coordinator = VaultPersistenceCoordinator(service: keychain)
-		_ = await coordinator.createProject(local, orgSlug: nil)
+		_ = await coordinator.createProject(local, orgSlug: nil, defaults: Self.automatic)
 		_ = await coordinator.finishPush(pushedProject: local, action: "push", version: 5, binding: binding)
 		let baseline = try await coordinator.loadProjectCreationRecord(vaultId: local.id).get()
 		let before = keychain.dataStorage
-		let result = await coordinator.importProject(remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline)
+		let result = await coordinator.importProject(
+			remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
 		guard case .staleVersion = result else { Issue.record("Older organization revision was accepted"); return }
 		#expect(keychain.dataStorage == before)
 		#expect(try await coordinator.loadProject(vaultId: local.id).get() == local)
