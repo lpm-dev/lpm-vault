@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct VaultContentObscuredKey: EnvironmentKey {
 	static let defaultValue = false
@@ -56,6 +57,34 @@ func runVaultPrivacyAwareModal(_ panel: NSSavePanel) -> NSApplication.ModalRespo
 	let inactivityObserver = VaultModalPanelInactivityObserver(panel: panel)
 	defer { inactivityObserver.stop() }
 	return panel.runModal()
+}
+
+/// The panels that choose a project's folder and an image for its icon.
+@MainActor
+enum VaultOpenPanel {
+	static func projectFolder() -> URL? {
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = false
+		panel.canChooseDirectories = true
+		panel.allowsMultipleSelection = false
+		panel.prompt = "Choose Folder"
+		panel.message = "Choose the folder that contains your project’s package.json"
+		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
+		return panel.url
+	}
+
+	/// Opens in `folder`, the project's, when it has one.
+	static func iconImage(for projectName: String, in folder: String?) -> URL? {
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = true
+		panel.canChooseDirectories = false
+		panel.allowsMultipleSelection = false
+		panel.allowedContentTypes = [.image]
+		panel.message = "Choose an image for \(projectName)"
+		if let folder { panel.directoryURL = URL(fileURLWithPath: folder, isDirectory: true) }
+		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
+		return panel.url
+	}
 }
 
 @MainActor

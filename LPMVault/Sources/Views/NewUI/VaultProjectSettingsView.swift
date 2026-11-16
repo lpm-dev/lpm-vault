@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// A project's settings: its name and icon, which save together, its folder,
 /// its CLI approval, which changes as soon as Touch ID allows it, and
@@ -396,15 +395,7 @@ struct VaultProjectSettingsView: View {
 	}
 
 	private func chooseFile() {
-		guard !isImporting else { return }
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = true
-		panel.canChooseDirectories = false
-		panel.allowsMultipleSelection = false
-		panel.allowedContentTypes = [.image]
-		panel.message = "Choose an image for \(project.name)"
-		if folderExists { panel.directoryURL = URL(fileURLWithPath: project.path, isDirectory: true) }
-		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
+		guard !isImporting, let url = VaultOpenPanel.iconImage(for: project.name, in: folderExists ? project.path : nil) else { return }
 		let projectID = project.id
 		let folder = project.path
 		let store = store

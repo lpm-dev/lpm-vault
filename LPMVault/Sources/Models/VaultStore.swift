@@ -3217,13 +3217,15 @@ final class VaultStore {
     }
   }
 
-  /// Create a new vault with just a name (no folder needed).
-  /// If orgSlug is provided, immediately shares with that org.
+  /// Creates a project with what `setup` chooses for it; once it exists, its
+  /// folder's lpm.json is linked to it. If orgSlug is provided, immediately
+  /// shares with that org.
   @discardableResult
   func createVault(
     name: String,
     orgSlug: String? = nil,
-    vaultId: String = UUID().uuidString.lowercased()
+    vaultId: String = UUID().uuidString.lowercased(),
+    setup: NewProjectSetup = NewProjectSetup()
   ) async -> VaultCreationResult {
     let expectedAccount = orgSlug.map(SelectedAccount.org) ?? .personal
     let sessionGeneration = vaultSessionGeneration
@@ -3252,12 +3254,15 @@ final class VaultStore {
     else { return .failed }
     if let existing = creationRecord.project {
       guard existing.name == normalizedName,
-        existing.path.isEmpty,
+        existing.path == setup.folder,
         existing.environments == environments,
         creationRecord.orgAssociations[vaultId] == orgSlug
       else {
         error = "The pending env project no longer matches this creation request."
         return .failed
+      }
+      if let iconProblem = keepIcon(setup.icon, ofCreated: vaultId, named: normalizedName) {
+        noteCreationProblem(iconProblem)
       }
       if !projects.contains(where: { $0.id == vaultId }) {
         projects.append(existing)
@@ -3276,13 +3281,25 @@ final class VaultStore {
           vaultId: vaultId,
           name: normalizedName,
           environments: environments,
-          orgSlug: orgSlug
+          orgSlug: orgSlug,
+          setup: setup
         )
       else { return .failed }
     }
     guard isUnlocked, selectedAccount == expectedAccount,
       sessionGeneration == vaultSessionGeneration
     else { return .failed }
+
+    if !setup.folder.isEmpty {
+      let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: setup.folder, home: lpmHome)
+      guard isUnlocked, selectedAccount == expectedAccount,
+        sessionGeneration == vaultSessionGeneration
+      else { return .failed }
+      if let failure {
+        noteCreationProblem("\(normalizedName.escapingDirectionControls) was created, but LPM Vault couldn’t link its folder. \(failure.localizedDescription) Link it from Connect CLI.")
+      }
+      reloadKeyDescriptions()
+    }
 
     if let slug = orgSlug {
       openProject(id: vaultId)
@@ -3306,15 +3323,16 @@ final class VaultStore {
     return true
   }
 
-  /// Adds a project without a folder under a specific vault ID. Returns only
-  /// after the Keychain write and in-memory selection are complete; a folder is
-  /// linked later through Connect CLI.
+  /// Adds a project under a specific vault ID, with the folder, icon and
+  /// defaults `setup` chooses. Returns only after the Keychain write and
+  /// in-memory selection are complete; the folder's lpm.json isn't linked.
   @discardableResult
   func addProjectWithVaultId(
     vaultId: String,
     name: String,
     environments: [String: [String: String]],
-    orgSlug: String? = nil
+    orgSlug: String? = nil,
+    setup: NewProjectSetup = NewProjectSetup()
   ) async -> Bool {
     let write = writes.begin()
     defer { writes.end(write) }
@@ -3338,18 +3356,21 @@ final class VaultStore {
     let project = VaultProject(
       id: vaultId,
       name: normalizedName,
-      path: "",
+      path: setup.folder,
       environments: environments
     )
 
     // Run Keychain write off main thread to prevent UI freeze
     let policyRevision = cliAccessProjectRevisions[vaultId]
-    let result = await persistence.createProject(project, orgSlug: orgSlug, defaults: newProjectDefaults)
+    let result = await persistence.createProject(
+      project, orgSlug: orgSlug, defaults: setup.defaults ?? newProjectDefaults)
     switch result {
     case .success(let committed):
       guard sessionGeneration == vaultSessionGeneration, isUnlocked,
         selectedAccount == expectedAccount
       else { return true }
+      // Kept before the project shows, so the sidebar draws it with its icon from the start.
+      let iconProblem = keepIcon(setup.icon, ofCreated: vaultId, named: normalizedName)
       projects.append(project)
       projects.sort {
         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -3360,6 +3381,7 @@ final class VaultStore {
       vaultOrgAssociations = committed.orgAssociations
       openProject(id: vaultId)
       error = committed.warning
+      if let iconProblem { noteCreationProblem(iconProblem) }
       return true
     case .failure(let err):
       guard sessionGeneration == vaultSessionGeneration, isUnlocked,
@@ -3368,6 +3390,20 @@ final class VaultStore {
       error = err.description
       return false
     }
+  }
+
+  /// Keeps the icon chosen for a project just created, or for one a creation
+  /// tried again finds; says why when it can't.
+  private func keepIcon(_ icon: ProjectIconChoice, ofCreated vaultId: String, named name: String) -> String? {
+    let saved = projectIcons.savedChoices(for: [vaultId])[vaultId] ?? .automatic
+    guard saved != icon, !projectIcons.save(icon, for: vaultId) else { return nil }
+    return "LPM Vault couldn’t keep \(name.escapingDirectionControls)’s icon. Choose it again in Project Settings."
+  }
+
+  /// Adds a problem with a project just created to what `error` already says
+  /// about it, such as a default it couldn't take.
+  private func noteCreationProblem(_ message: String) {
+    error = [error, message].compactMap { $0 }.joined(separator: " ")
   }
 
   /// Renames a project from `expectedName`, and returns once the rename is

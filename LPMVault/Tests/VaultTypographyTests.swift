@@ -21,6 +21,7 @@ struct VaultTypographyTests {
 		"ConnectCLISheet.swift": 6,
 		"VaultValueCharacterWarning.swift": 1,
 		"VaultProjectSettingsView.swift": 1,
+		"NewVaultSheet.swift": 1,
 		"VaultSettingsSections.swift": 1,
 		"VaultMenuList.swift": 1,
 	]
