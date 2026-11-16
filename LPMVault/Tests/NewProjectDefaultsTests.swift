@@ -13,13 +13,15 @@ struct NewProjectDefaultsTests {
 
 	private let binding = SyncPrincipalBinding(registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal")
 
-	@Test("by default a new project lets the CLI read it without asking and keeps local history, as before")
+	@Test("Settings' standard defaults ask before the CLI reads a new project and keep its local history")
 	func standardDefaults() async throws {
 		let (service, _, _) = makeService()
 		let project = VaultProject(id: "standard-new", name: "Standard", path: "", environments: ["default": [:]])
-		guard case .success(let commit) = await VaultPersistenceCoordinator(service: service).createProject(project, orgSlug: nil)
+		guard case .success(let commit) = await VaultPersistenceCoordinator(service: service).createProject(
+			project, orgSlug: nil, defaults: NewProjectDefaults())
 		else { throw KeychainError.encodingFailed }
-		#expect(commit.cliAccess == .automatic)
+		#expect(commit.cliAccess == .requireApproval)
+		#expect(try service.cliAccessResult(vaultId: project.id).get() == .requireApproval)
 		#expect(try service.historyStateResult(vaultId: project.id).get().history != "off")
 		#expect(commit.warning == nil)
 	}
@@ -35,6 +37,31 @@ struct NewProjectDefaultsTests {
 		#expect(try service.cliAccessResult(vaultId: project.id).get() == .requireApproval)
 		#expect(try service.historyStateResult(vaultId: project.id).get().history == "off")
 		#expect(commit.warning == nil)
+	}
+
+	@Test("a project created with the setting switched off lets the CLI read it without asking")
+	func createdWithSettingOff() async throws {
+		let (service, _, _) = makeService()
+		let project = VaultProject(id: "open-new", name: "Open", path: "", environments: ["default": [:]])
+		guard case .success(let commit) = await VaultPersistenceCoordinator(service: service).createProject(
+			project, orgSlug: nil, defaults: NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true))
+		else { throw KeychainError.encodingFailed }
+		#expect(commit.cliAccess == .automatic)
+		#expect(try service.cliAccessResult(vaultId: project.id).get() == .automatic)
+		#expect(try service.historyStateResult(vaultId: project.id).get().history != "off")
+	}
+
+	@Test("a project imported with the setting switched off lets the CLI read it without asking")
+	func importedWithSettingOff() async throws {
+		let (service, _, _) = makeService()
+		let remote = VaultProject(id: "open-imported", name: "Open", path: "", environments: ["default": ["TOKEN": "remote"]])
+		let result = await VaultPersistenceCoordinator(service: service).importProject(
+			remote, orgSlug: nil, version: 1, binding: binding,
+			defaults: NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true))
+		guard case .success(let commit) = result else { throw KeychainError.encodingFailed }
+		#expect(commit.cliAccess == .automatic)
+		#expect(try service.cliAccessResult(vaultId: remote.id).get() == .automatic)
+		#expect(try service.historyStateResult(vaultId: remote.id).get().history != "off")
 	}
 
 	@Test("an imported project's values are never recorded when new projects keep no history, and the CLI asks first")
@@ -57,7 +84,8 @@ struct NewProjectDefaultsTests {
 		let (service, _, _) = makeService()
 		let coordinator = VaultPersistenceCoordinator(service: service)
 		let local = VaultProject(id: "merged", name: "Merged", path: "", environments: ["default": ["TOKEN": "local"]])
-		_ = await coordinator.createProject(local, orgSlug: nil)
+		_ = await coordinator.createProject(
+			local, orgSlug: nil, defaults: NewProjectDefaults(asksBeforeCLIReads: false, keepsHistory: true))
 		let baseline = try await coordinator.loadProjectCreationRecord(vaultId: local.id).get()
 		let remote = VaultProject(id: local.id, name: local.name, path: "", environments: ["default": ["OTHER": "remote"]])
 		let result = await coordinator.importProject(
