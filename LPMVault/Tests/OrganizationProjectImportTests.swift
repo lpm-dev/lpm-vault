@@ -74,7 +74,7 @@ struct OrganizationProjectImportTests {
 			}
 			let before = keychain.dataStorage
 			let result = await coordinator.importProject(
-			remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
+				remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
 			guard case .conflict = result else { Issue.record("Concurrent change was accepted"); continue }
 			#expect(keychain.dataStorage == before)
 			let saved = try await coordinator.loadProject(vaultId: local.id).get()
@@ -92,7 +92,7 @@ struct OrganizationProjectImportTests {
 			let before = keychain.dataStorage
 			keychain.failNextWriteDataAccounts = [account]
 			let result = await coordinator.importProject(
-			remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
+				remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline, defaults: Self.automatic)
 			guard case .failure = result else { Issue.record("Expected persistence failure"); continue }
 			#expect(keychain.dataStorage == before)
 			#expect(try await coordinator.loadProject(vaultId: local.id).get() == local)
