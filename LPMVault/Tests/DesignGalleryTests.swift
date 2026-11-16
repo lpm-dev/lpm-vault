@@ -342,6 +342,11 @@ extension SheetInteractionTests {
 			try await save(emptyHost, "13-empty", dark: dark)
 			emptyHost.window.close()
 
+			let curtainHost = try await host(VaultWorkspaceView(store: empty.store).vaultPrivacyProtected(true), store: empty.store, dark: dark)
+			#expect(try await curtainHost.waitForText("LPM Vault content hidden while the app is inactive"))
+			try await save(curtainHost, "29-privacy-curtain", dark: dark)
+			curtainHost.window.close()
+
 			let small = try makeFixture()
 			defer { small.store.lock(); try? FileManager.default.removeItem(atPath: small.folder) }
 			#expect(await small.store.loadProjects())

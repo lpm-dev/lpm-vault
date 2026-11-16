@@ -105,7 +105,9 @@ enum VaultPalette {
 
 	static let avatarNeutral = adaptive(light: 0xE2E1EA, dark: 0x2E2E33)
 	static let avatarNeutralForeground = adaptive(light: 0x55546A, dark: 0xFFFFFF, darkOpacity: 0.7)
-	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x111113)
+	/// What covers the window while the app is inactive: a step below the sidebar in both appearances.
+	static let curtain = adaptive(light: 0xF1F1F4, dark: 0x111113)
+	static let curtainText = adaptive(light: 0x5C5C64, dark: 0xFFFFFF, darkOpacity: 0.65)
 	/// A block of code or a command, a calm panel in both appearances.
 	static let codeBlock = adaptive(light: 0xF6F6F9, dark: 0x151517)
 	static let codeText = adaptive(light: 0x1C1C1E, dark: 0xE8E8ED)

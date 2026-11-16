@@ -15,13 +15,13 @@ extension EnvironmentValues {
 struct VaultPrivacyCurtain: View {
 	var body: some View {
 		ZStack {
-			VaultPalette.terminal
+			VaultPalette.curtain
 			VStack(spacing: 12) {
 				VaultAppMark(size: 56)
 				Text("LPM Vault")
 					.font(.headline)
 			}
-			.foregroundStyle(Color.white.opacity(0.65))
+			.foregroundStyle(VaultPalette.curtainText)
 		}
 		.ignoresSafeArea()
 		.accessibilityElement(children: .ignore)

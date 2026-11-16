@@ -61,5 +61,29 @@ extension SheetInteractionTests {
 			curtain.isObscured = false
 			#expect(try await host.waitForText("Pressed 1 times"), "What the view held survives the curtain")
 		}
+
+		private struct Filled: View {
+			var body: some View {
+				Content().frame(maxWidth: .infinity, maxHeight: .infinity).vaultPrivacyProtected(true)
+			}
+		}
+
+		@Test("the curtain is drawn in the window's appearance: light in Light, dark in Dark", arguments: [false, true])
+		func curtainFollowsAppearance(dark: Bool) async throws {
+			let host = SheetTestHost(Filled(), size: NSSize(width: 400, height: 240), keepsRequestedSize: true)
+			defer { host.window.close() }
+			host.window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+			#expect(try await host.waitForText("LPM Vault content hidden while the app is inactive"))
+			try await host.settle()
+			let corners = try host.colors(at: [NSPoint(x: 8, y: 8), NSPoint(x: 392, y: 232)])
+			for (red, green, blue) in corners {
+				let brightness = (red + green + blue) / 3
+				if dark {
+					#expect(brightness < 40, "The curtain is dark in Dark: \(red), \(green), \(blue)")
+				} else {
+					#expect(brightness > 215, "The curtain is light in Light: \(red), \(green), \(blue)")
+				}
+			}
+		}
 	}
 }
