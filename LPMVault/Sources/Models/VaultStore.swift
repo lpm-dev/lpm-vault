@@ -4418,6 +4418,9 @@ final class VaultStore {
     {
       return failure
     }
+    // The check can wait out the CLI's config lock; a request from a session
+    // that ended meanwhile changes nothing.
+    guard isUnlocked, session == vaultSessionGeneration, account == selectedAccount else { return .interrupted }
     if let failure = await linkCLIFolderOnThisMac(vaultId: vaultId, folder: folder, unlinkingFrom: replacingVaultId) {
       return failure
     }
