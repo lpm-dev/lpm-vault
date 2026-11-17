@@ -107,7 +107,8 @@ extension SheetInteractionTests {
 				return String(cString: pointer)
 			})
 			#expect(created.path == folder)
-			#expect(ProjectCLILink.status(vaultId: id, folder: folder) == .linked)
+			// The link is the last thing a creation writes, after the project and its settings.
+			#expect(try await host.waitUntil { ProjectCLILink.status(vaultId: id, folder: folder) == .linked })
 			#expect(fixture.keychain.cliAccessPolicies[id] == .requireApproval)
 			#expect(try fixture.keychain.historyStateResult(vaultId: id).get().history == "off")
 		}
