@@ -1,27 +1,34 @@
 name: CI
+# The required checks: for a pull request, for the merge queue's run of it
+# merged with main, and before a release. A commit that lands on main has
+# passed here as a merge group, so no run follows the push; the post-merge
+# checks run what this leaves out.
 on:
   pull_request:
   merge_group:
-  push:
-    branches: [main]
   workflow_call:
 permissions:
   contents: read
 # A pull request's newer commit replaces the run of its older one, whose
 # result nothing waits for. Every other run finishes: the merge queue ends
-# its own runs, each commit on main keeps its own result, and a release
-# calls this workflow and the UI regressions from one run, so the two take
-# different groups.
+# its own runs, and a release calls this workflow and the UI regressions
+# from one run, so the two take different groups.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  changes:
-    name: Engine changes
+  plan:
+    name: Plan
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # To find the pull request run that passed a merge group's tree.
+      actions: read
     outputs:
       engine: ${{ steps.engine.outputs.needed }}
+      verified: ${{ steps.passed.outputs.verified }}
+      run: ${{ steps.passed.outputs.run }}
     steps:
       # A pull request's merge commit and its first parent, the base branch.
       # A merge group can hold more than one commit, so its base needn't be
@@ -35,8 +42,18 @@ jobs:
         env:
           BASE: ${{ github.event.merge_group.base_sha }}
         run: python3 LPMVault/Scripts/engine-changes.py --event "$GITHUB_EVENT_NAME" --github-output "$GITHUB_OUTPUT" ${BASE:+"$BASE"}
+      # A pull request queued before main moves again merges as the tree its
+      # own run checked, and the macOS jobs would only repeat.
+      - name: Find a pull request run that passed this tree
+        id: passed
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 LPMVault/Scripts/ci-passed-tree.py find --repository "$GITHUB_REPOSITORY" --github-output "$GITHUB_OUTPUT"
   swift:
     name: Swift tests
+    needs: plan
+    if: needs.plan.outputs.verified != 'true'
     uses: ./.github/workflows/swift-tests.yml
     with:
       shard: rest
@@ -44,8 +61,8 @@ jobs:
       cooperative: true
   engine:
     name: Bundled env engine reproduction
-    needs: changes
-    if: needs.changes.outputs.engine == 'true'
+    needs: plan
+    if: needs.plan.outputs.verified != 'true' && needs.plan.outputs.engine == 'true'
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
@@ -86,63 +103,19 @@ jobs:
             ~/.cargo/git
             ${{ runner.temp }}/env-engine-target
           key: ${{ steps.cache-key.outputs.key }}
+  # A pull request and the merge queue's run of it compile one architecture,
+  # the same one, so that either run can stand for the other. The x86_64
+  # half is compiled once the commit is on main, and before a release.
   release:
-    name: ${{ github.event_name == 'pull_request' && 'arm64' || 'Universal' }} release bundle verification
-    runs-on: macos-15
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-    # Compiling the app once for each architecture takes 9 to 15 minutes on
-    # these 3-core runners, cache or not, and a slow runner has needed more
-    # than twice that. A pull request compiles it for one; the merge queue
-    # compiles both before the pull request merges.
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Verify bundled env engine integrity
-        run: python3 LPMVault/Scripts/verify-env-engine.py
-      - name: Identify compatible release cache
-        id: cache-key
-        run: python3 LPMVault/Scripts/ci-cache-key.py release --github-output "$GITHUB_OUTPUT"
-      - name: Restore release dependencies and intermediates
-        id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: build-check
-          key: ${{ steps.cache-key.outputs.key }}
-          restore-keys: ${{ steps.cache-key.outputs.prefix }}
-      - name: Restore timestamps of unchanged release inputs
-        run: python3 LPMVault/Scripts/ci-cache-key.py release --restore-source-times
-      - name: Release tooling tests
-        run: |
-          bash LPMVault/Scripts/Tests/release-tooling-tests.sh
-          bash LPMVault/Scripts/fetch-sparkle-tools.sh "$RUNNER_TEMP/sparkle-test-tools"
-          SPARKLE_TEST_TOOLS="$RUNNER_TEMP/sparkle-test-tools" python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
-      - name: Build release bundle
-        env:
-          ARCHITECTURES: ${{ github.event_name == 'pull_request' && 'arm64' || 'arm64 x86_64' }}
-        run: |
-          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check ARCHS="$ARCHITECTURES" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
-          python3 LPMVault/Scripts/verify-update-config.py 'build-check/Build/Products/Release/LPM Vault.app/Contents/Info.plist'
-      - name: Verify nested signing
-        run: |
-          bash LPMVault/Scripts/sign-sparkle.sh 'build-check/Build/Products/Release/LPM Vault.app' - --timestamp=none
-          codesign --force --sign - 'build-check/Build/Products/Release/LPM Vault.app'
-          codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.app'
-      - name: Record release build input timestamps
-        run: python3 LPMVault/Scripts/ci-cache-key.py release --record-source-times
-      - name: Save release dependencies and intermediates
-      # The merge queue's branch is gone once its run ends, so a cache saved
-      # from it could never be restored.
-        if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: build-check
-          key: ${{ steps.cache-key.outputs.key }}
+    name: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'arm64' || 'Universal' }} release bundle verification
+    needs: plan
+    if: needs.plan.outputs.verified != 'true'
+    uses: ./.github/workflows/release-bundle.yml
+    with:
+      architectures: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'arm64' || 'arm64 x86_64' }}
   macos:
     name: macOS tests and release bundle
-    needs: [changes, swift, engine, release]
+    needs: [plan, swift, engine, release]
     # Not skipped when a run is cancelled or a job fails: a skipped check
     # would count as passed.
     if: always()
@@ -156,6 +129,21 @@ jobs:
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
         run: python3 LPMVault/Scripts/ci-results.py
+      # The checkout is the pull request's merge with its base, the tree
+      # every job above checked.
+      - name: Name the tree these checks passed
+        id: tree
+        if: github.event_name == 'pull_request'
+        run: python3 LPMVault/Scripts/ci-passed-tree.py record --marker "$RUNNER_TEMP/passed-tree" --github-output "$GITHUB_OUTPUT"
+      - name: Record that these checks passed this tree
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ steps.tree.outputs.name }}
+          path: ${{ runner.temp }}/passed-tree
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
   web:
     name: Public update routes
     runs-on: ubuntu-latest

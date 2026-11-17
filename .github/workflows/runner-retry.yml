@@ -1,0 +1,33 @@
+name: Runner retry
+# GitHub gives up on a job that no hosted runner takes, and the run fails
+# though nothing ran. This runs such a run's failed jobs again; see
+# ci-runner-retry.py for which runs and how often. A merge group's branch is
+# gone once its run fails, so its pull request is queued again by hand.
+#
+# It runs the default branch's copy of the script and reads only the failed
+# run's job records, never anything that run built.
+on:
+  workflow_run:
+    workflows: [CI, UI regressions, Post-merge checks]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  retry:
+    name: Rerun jobs no runner took
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Rerun the failed jobs if none of them ran
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 LPMVault/Scripts/ci-runner-retry.py --repository "$GITHUB_REPOSITORY" --run "$RUN" --attempt "$ATTEMPT"

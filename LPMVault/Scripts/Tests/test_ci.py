@@ -18,7 +18,9 @@ def module(name, filename):
 
 cache = module('ci_cache', 'ci-cache-key.py')
 engine = module('engine_changes', 'engine-changes.py')
+passed_tree = module('ci_passed_tree', 'ci-passed-tree.py')
 results = module('ci_results', 'ci-results.py')
+retry = module('ci_runner_retry', 'ci-runner-retry.py')
 ui_suite = module('ui_suite_changes', 'ui-suite-changes.py')
 
 
@@ -27,7 +29,8 @@ class CacheIdentityTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        for path in ['.github/workflows/ci.yml', '.github/workflows/swift-tests.yml', 'LPMVault/Scripts/ci-cache-key.py',
+        for path in ['.github/workflows/ci.yml', '.github/workflows/swift-tests.yml', '.github/workflows/release-bundle.yml',
+                     'LPMVault/Scripts/ci-cache-key.py',
                      'LPMVault/Scripts/verify-env-engine.py', 'LPMVault/Vendor/EnvEngine/provenance.json',
                      'LPMVault/Package.swift', 'LPMVault/Package.resolved',
                      'LPMVault/LPMVault.xcodeproj/project.pbxproj', 'LPMVault/Info.plist',
@@ -67,11 +70,23 @@ class CacheIdentityTests(unittest.TestCase):
         before = self.identity()
         self.assertNotEqual(before[0], self.identity(toolchain='other-SDK-build')[0])
         for path in ['LPMVault/Package.swift', 'LPMVault/Package.resolved',
-                     '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
+                     'LPMVault/Scripts/ci-cache-key.py', '.github/workflows/swift-tests.yml']:
             with self.subTest(path=path):
                 self.write(path, 'changed')
                 self.assertNotEqual(before[0], self.identity()[0])
                 self.write(path, 'initial')
+
+    def test_a_cache_follows_only_the_workflow_that_holds_its_build_command(self):
+        builds = {'engine': 'ci.yml', 'swift': 'swift-tests.yml', 'release': 'release-bundle.yml'}
+        before = {kind: self.identity(kind) for kind in builds}
+        for workflow in ['ci.yml', 'swift-tests.yml', 'release-bundle.yml']:
+            self.write('.github/workflows/' + workflow, 'changed')
+            for kind, build in builds.items():
+                with self.subTest(workflow=workflow, kind=kind):
+                    (self.assertNotEqual if build == workflow else self.assertEqual)(before[kind][0], self.identity(kind)[0])
+            self.write('.github/workflows/' + workflow, 'initial')
+        for path in cache.cache_files('release', Path(__file__).resolve().parents[3])[0]:
+            self.assertTrue(path.is_file(), path)
 
     def test_an_engine_change_reuses_compatible_intermediates_with_a_new_save_key(self):
         for kind in ['swift', 'release']:
@@ -283,25 +298,31 @@ let package = Package(name: "TimestampFixture", targets: [.executableTarget(name
 
 
 class RequiredCheckTests(unittest.TestCase):
-    JOBS = ['changes', 'swift', 'engine', 'release']
+    JOBS = ['plan', 'swift', 'engine', 'release']
+    MACOS = ['swift', 'engine', 'release']
 
     def passed(self, engine_needed=True):
         results = {name: {'result': 'success', 'outputs': {}} for name in self.JOBS}
-        results['changes']['outputs'] = {'engine': str(engine_needed).lower()}
+        results['plan']['outputs'] = {'engine': str(engine_needed).lower()}
         return results
+
+    def verified(self):
+        """A merge group's results where a pull request's run passed the same tree."""
+        skipped = {name: {'result': 'skipped', 'outputs': {}} for name in self.MACOS}
+        return {**skipped, 'plan': {'result': 'success', 'outputs': {'engine': 'true', 'verified': 'true', 'run': 'https://example.com/run'}}}
 
     def test_every_parallel_job_must_succeed(self):
         passed = self.passed()
         self.assertEqual(results.failures(passed), [])
-        for job in ['swift', 'engine', 'release']:
-            for result in ['failure', 'cancelled', 'skipped', None]:
+        for job in self.MACOS:
+            for result in ['failure', 'cancelled', 'skipped', 'abandoned', None]:
                 with self.subTest(job=job, result=result):
                     changed = {**passed, job: {'result': result}}
                     self.assertEqual(results.failures(changed), [job])
             with self.subTest(missing=job):
                 self.assertEqual(results.failures({name: value for name, value in passed.items() if name != job}), [job])
 
-    def test_the_engine_rebuild_is_skipped_only_when_the_changes_job_says_so(self):
+    def test_the_engine_rebuild_is_skipped_only_when_the_plan_job_says_so(self):
         skipped = {**self.passed(engine_needed=False), 'engine': {'result': 'skipped'}}
         self.assertEqual(results.failures(skipped), [])
         self.assertEqual(results.failures(self.passed(engine_needed=False)), [])
@@ -310,16 +331,30 @@ class RequiredCheckTests(unittest.TestCase):
                 self.assertEqual(results.failures({**skipped, 'engine': {'result': result}}), ['engine'])
         for outputs in [{'engine': 'true'}, {'engine': ''}, {'engine': 'False'}, {}, None]:
             with self.subTest(outputs=outputs):
-                changed = {**skipped, 'changes': {'result': 'success', 'outputs': outputs}}
+                changed = {**skipped, 'plan': {'result': 'success', 'outputs': outputs}}
                 self.assertEqual(results.failures(changed), ['engine'])
 
-    def test_a_changes_job_that_did_not_succeed_skips_nothing(self):
+    def test_a_plan_job_that_did_not_succeed_skips_nothing(self):
         skipped = {**self.passed(engine_needed=False), 'engine': {'result': 'skipped'}}
         for result in ['failure', 'cancelled', 'skipped', None]:
-            with self.subTest(changes=result):
-                changed = {**skipped, 'changes': {'result': result, 'outputs': {'engine': 'false'}}}
-                self.assertEqual(results.failures(changed), ['changes', 'engine'])
-        self.assertEqual(results.failures({name: value for name, value in skipped.items() if name != 'changes'}), ['changes', 'engine'])
+            with self.subTest(plan=result):
+                changed = {**skipped, 'plan': {'result': result, 'outputs': {'engine': 'false'}}}
+                self.assertEqual(results.failures(changed), ['engine', 'plan'])
+                changed = {**self.verified(), 'plan': {'result': result, 'outputs': self.verified()['plan']['outputs']}}
+                self.assertEqual(results.failures(changed), ['engine', 'plan', 'release', 'swift'])
+        self.assertEqual(results.failures({name: value for name, value in skipped.items() if name != 'plan'}), ['engine', 'plan'])
+
+    def test_every_macos_job_is_skipped_only_where_a_pull_request_run_passed_the_tree(self):
+        verified = self.verified()
+        self.assertEqual(results.failures(verified), [])
+        for outputs in [{'verified': 'false'}, {'verified': ''}, {'verified': 'True'}, {'run': 'https://example.com/run'}, {}, None]:
+            with self.subTest(outputs=outputs):
+                changed = {**verified, 'plan': {'result': 'success', 'outputs': outputs}}
+                self.assertEqual(results.failures(changed), ['engine', 'release', 'swift'])
+        for job in self.MACOS:
+            for result in ['failure', 'cancelled', 'abandoned', None]:
+                with self.subTest(job=job, result=result):
+                    self.assertEqual(results.failures({**verified, job: {'result': result}}), [job])
 
     def test_renaming_a_dependency_cannot_silently_bypass_its_gate(self):
         changed = {**self.passed(), 'renamed_release': {'result': 'success'}}
@@ -365,7 +400,7 @@ class EngineChangeTests(unittest.TestCase):
         start = lines.index('  engine:') + 1
         end = next(i for i in range(start, len(lines)) if re.match(r'  \S', lines[i]))
         job = '\n'.join(lines[start:end])
-        self.assertIn("    needs: changes\n    if: needs.changes.outputs.engine == 'true'\n", job)
+        self.assertIn("    needs: plan\n    if: needs.plan.outputs.verified != 'true' && needs.plan.outputs.engine == 'true'\n", job)
         scripts = set(re.findall(r'LPMVault/Scripts/[\w./-]+\.(?:py|sh)', job))
         self.assertEqual(scripts, {path for path in engine.RUNNER if path.startswith('LPMVault/Scripts/')} - {'LPMVault/Scripts/engine-changes.py'})
         self.assertEqual(set(re.findall(r'LPMVault/Vendor/[\w./-]+', job)), {engine.ENGINE + 'provenance.json'})
@@ -442,7 +477,7 @@ class EngineChangeTests(unittest.TestCase):
         self.assertEqual(self.decision(root, 'merge_group', 'first'), 'needed=true\n')
         self.assertEqual(self.decision(root, 'pull_request'), 'needed=false\n')
 
-    def test_the_changes_job_reports_what_the_script_decides_for_the_runs_event(self):
+    def test_the_plan_job_reports_what_the_script_decides_for_the_runs_event(self):
         workflow = (self.ROOT / '.github/workflows/ci.yml').read_text()
         self.assertIn('      engine: ${{ steps.engine.outputs.needed }}\n', workflow)
         self.assertIn("          fetch-depth: ${{ github.event_name == 'merge_group' && 0 || 2 }}\n", workflow)
@@ -602,39 +637,363 @@ class UISuiteChangeTests(unittest.TestCase):
                          ['LPMVault/Tests/Old.swift', 'LPMVault/Tests/QuitTests.swift'])
 
 
+def job(workflow, name):
+    """The lines of the job `name` in a workflow's text."""
+    lines = workflow.splitlines()
+    start = lines.index(f'  {name}:') + 1
+    end = next((i for i in range(start, len(lines)) if re.match(r'  \S', lines[i])), len(lines))
+    return lines[start:end]
+
+
+def events(workflow):
+    """The events a workflow's text says start it."""
+    lines = workflow.splitlines()
+    start = lines.index('on:') + 1
+    end = next(i for i in range(start, len(lines)) if not lines[i].startswith(' '))
+    return {line.strip().rstrip(':') for line in lines[start:end] if re.fullmatch(r'  \w+:', line)}
+
+
 class MergeQueueTests(unittest.TestCase):
     WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+    BEFORE_MERGE = ['pull_request', 'merge_group']
 
     def test_the_required_checks_report_for_a_merge_group(self):
-        lines = (self.WORKFLOWS / 'ci.yml').read_text().splitlines()
-        start = lines.index('on:') + 1
-        events = [line.strip() for line in lines[start:next(i for i in range(start, len(lines)) if not lines[i].startswith(' '))]]
-        self.assertIn('merge_group:', events)
-        self.assertIn('pull_request:', events)
+        self.assertEqual(events((self.WORKFLOWS / 'ci.yml').read_text()), {'pull_request', 'merge_group', 'workflow_call'})
 
-    def test_a_pull_request_compiles_one_architecture_and_what_merges_compiles_both(self):
-        workflow = (self.WORKFLOWS / 'ci.yml').read_text()
-        setting = next(line.split(': ', 1)[1] for line in workflow.splitlines() if line.startswith('          ARCHITECTURES:'))
-        self.assertEqual(expanded(setting, {'event_name': 'pull_request'}), 'arm64')
-        for event in ['merge_group', 'push', 'schedule', 'workflow_dispatch']:
+    def test_a_pull_request_and_its_merge_group_compile_one_architecture_and_a_release_both(self):
+        release = job((self.WORKFLOWS / 'ci.yml').read_text(), 'release')
+        setting = next(line.split(': ', 1)[1] for line in release if line.startswith('      architectures:'))
+        name = next(line.split(': ', 1)[1] for line in release if line.startswith('    name:'))
+        for event in self.BEFORE_MERGE:
+            with self.subTest(event=event):
+                self.assertEqual(expanded(setting, {'event_name': event}), 'arm64')
+                self.assertEqual(expanded(name, {'event_name': event}), 'arm64 release bundle verification')
+        for event in ['push', 'schedule', 'workflow_dispatch']:
             with self.subTest(event=event):
                 self.assertEqual(expanded(setting, {'event_name': event}), 'arm64 x86_64')
-        self.assertEqual(len(re.findall(r'xcodebuild .* ARCHS="\$ARCHITECTURES" .* build\n', workflow)), 1)
-        name = next(line.split(': ', 1)[1] for line in workflow.splitlines() if line.startswith('    name:') and 'release bundle' in line)
-        self.assertEqual(expanded(name, {'event_name': 'pull_request'}), 'arm64 release bundle verification')
-        self.assertEqual(expanded(name, {'event_name': 'merge_group'}), 'Universal release bundle verification')
+                self.assertEqual(expanded(name, {'event_name': event}), 'Universal release bundle verification')
+        build = (self.WORKFLOWS / 'release-bundle.yml').read_text()
+        self.assertIn('          ARCHITECTURES: ${{ inputs.architectures }}\n', build)
+        self.assertEqual(len(re.findall(r'xcodebuild .* ARCHS="\$ARCHITECTURES" .* build\n', build)), 1)
 
     def test_a_merge_groups_run_restores_caches_and_saves_none(self):
-        for workflow, caches in [('ci.yml', 2), ('swift-tests.yml', 1)]:
+        for workflow in ['ci.yml', 'swift-tests.yml', 'release-bundle.yml']:
             with self.subTest(workflow=workflow):
                 lines = (self.WORKFLOWS / workflow).read_text().splitlines()
                 uses = [line.strip() for line in lines if 'actions/cache' in line]
-                self.assertEqual(sum('actions/cache/restore@' in line for line in uses), caches)
+                self.assertEqual(sum('actions/cache/restore@' in line for line in uses), 1)
                 saves = [index for index, line in enumerate(lines) if 'actions/cache/save@' in line]
-                self.assertEqual(len(saves), caches)
-                self.assertEqual(len(uses), 2 * caches)
+                self.assertEqual(len(saves), 1)
+                self.assertEqual(len(uses), 2)
                 for index in saves:
                     self.assertEqual(lines[index - 1].strip(), "if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'")
+
+
+class PassedTreeTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+    TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+    NAME = passed_tree.PREFIX + TREE
+
+    def artifact(self, run=1, **changes):
+        source = {'id': run, 'repository_id': 10, 'head_repository_id': 10, **changes.pop('workflow_run', {})}
+        return {'name': self.NAME, 'expired': False, 'workflow_run': source, **changes}
+
+    def run_record(self, **changes):
+        return {'id': 1, 'path': '.github/workflows/ci.yml', 'event': 'pull_request', 'status': 'completed', 'conclusion': 'success', **changes}
+
+    def found(self, artifacts, records=None):
+        """The ID of the run that counts among those `artifacts` name, with `records` by run ID, and the IDs asked about."""
+        asked = []
+
+        def run(identifier):
+            asked.append(identifier)
+            return (records or {}).get(identifier, self.run_record(id=identifier))
+
+        result = passed_tree.passing_run(self.NAME, artifacts, run)
+        return result and result['id'], asked
+
+    def test_a_successful_pull_request_run_of_the_ci_workflow_counts(self):
+        self.assertEqual(self.found([self.artifact()]), (1, [1]))
+        self.assertEqual(self.found([]), (None, []))
+
+    def test_a_run_that_did_not_pass_or_is_not_the_pull_request_checks_does_not(self):
+        for changes in [{'conclusion': 'failure'}, {'conclusion': 'cancelled'}, {'conclusion': None, 'status': 'in_progress'},
+                        {'status': 'in_progress'}, {'event': 'merge_group'}, {'event': 'pull_request_target'},
+                        {'event': 'workflow_dispatch'}, {'path': '.github/workflows/ui.yml'}, {'path': None}]:
+            with self.subTest(changes=changes):
+                self.assertEqual(self.found([self.artifact()], {1: self.run_record(**changes)}), (None, [1]))
+
+    def test_a_forks_run_is_not_even_asked_about(self):
+        for source in [{'head_repository_id': 11}, {'head_repository_id': None}, {'repository_id': None, 'head_repository_id': None},
+                       {'repository_id': 0, 'head_repository_id': 0}, {'id': None}]:
+            with self.subTest(source=source):
+                self.assertEqual(self.found([self.artifact(workflow_run=source)]), (None, []))
+        self.assertEqual(self.found([{'name': self.NAME, 'expired': False}]), (None, []))
+
+    def test_an_expired_artifact_or_one_named_for_another_tree_does_not_count(self):
+        for changes in [{'expired': True}, {'expired': None}, {'name': passed_tree.PREFIX + 'f' * 40}, {'name': self.TREE}]:
+            with self.subTest(changes=changes):
+                self.assertEqual(self.found([self.artifact(**changes)]), (None, []))
+
+    def test_a_later_artifact_counts_where_an_earlier_one_does_not(self):
+        artifacts = [self.artifact(run=1), self.artifact(run=2, workflow_run={'head_repository_id': 11}), self.artifact(run=3)]
+        self.assertEqual(self.found(artifacts, {1: self.run_record(id=1, conclusion='failure')}), (3, [1, 3]))
+
+    def test_a_lookup_that_fails_finds_nothing(self):
+        original = passed_tree.api, passed_tree.tree
+        self.addCleanup(lambda: (setattr(passed_tree, 'api', original[0]), setattr(passed_tree, 'tree', original[1])))
+        passed_tree.tree = lambda root: self.TREE
+        asked = []
+
+        def answers(pages):
+            def api(endpoint):
+                asked.append(endpoint)
+                answer = pages[len(asked) - 1]
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            return api
+
+        for pages in [[subprocess.CalledProcessError(1, 'gh')], [{}], [{'artifacts': None}], [[]],
+                      [{'artifacts': [self.artifact()]}, subprocess.TimeoutExpired('gh', 60)],
+                      [{'artifacts': [self.artifact()]}, []]]:
+            with self.subTest(pages=pages):
+                asked.clear()
+                passed_tree.api = answers(pages)
+                run, reason = passed_tree.find(Path('.'), 'owner/name')
+                self.assertIsNone(run)
+                self.assertIn('lookup failed', reason)
+        asked.clear()
+        passed_tree.api = answers([{'artifacts': [self.artifact(run=7)]}, self.run_record(id=7)])
+        self.assertEqual(passed_tree.find(Path('.'), 'owner/name'), (self.run_record(id=7), None))
+        self.assertEqual(asked, [f'repos/owner/name/actions/artifacts?name={self.NAME}&per_page=100', 'repos/owner/name/actions/runs/7'])
+        asked.clear()
+        passed_tree.api = answers([{'artifacts': []}])
+        self.assertEqual(passed_tree.find(Path('.'), 'owner/name')[0], None)
+
+    def repository(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        environment = {**os.environ, 'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+                       'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
+
+        def git(*arguments):
+            subprocess.run(['git', *arguments], cwd=root, env=environment, check=True, capture_output=True)
+
+        def commit(files, message):
+            for path, text in files.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(text)
+            git('add', '--all')
+            git('commit', '--quiet', '--message', message)
+
+        git('init', '--quiet', '--initial-branch', 'main')
+        return root, git, commit
+
+    def test_a_merge_group_has_its_pull_requests_tree_only_while_the_base_has_not_moved(self):
+        root, git, commit = self.repository()
+        commit({'LPMVault/Sources/App.swift': 'app\n', 'README.md': 'read\n'}, 'base')
+        git('switch', '--quiet', '--create', 'feature')
+        commit({'LPMVault/Sources/App.swift': 'changed\n'}, 'first')
+        commit({'LPMVault/Sources/New.swift': 'new\n'}, 'second')
+
+        def pull_request():
+            """The tree of the pull request's merge with main, as its run checks out."""
+            git('switch', '--quiet', '--detach', 'main')
+            git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
+            return passed_tree.tree(root)
+
+        def merge_group():
+            """The tree of the pull request squashed onto main, as the merge queue builds it."""
+            git('switch', '--quiet', '--detach', 'main')
+            git('merge', '--quiet', '--squash', 'feature')
+            git('commit', '--quiet', '--message', 'squashed')
+            return passed_tree.tree(root)
+
+        checked = pull_request()
+        self.assertEqual(merge_group(), checked)
+        git('switch', '--quiet', 'main')
+        commit({'README.md': 'another pull request landed\n'}, 'main moves')
+        self.assertNotEqual(merge_group(), checked)
+        self.assertEqual(merge_group(), pull_request())
+
+    def test_recording_names_the_checked_out_tree(self):
+        root, git, commit = self.repository()
+        (root / '.gitignore').write_text('output\nmarker\nLPMVault/Scripts/ci-passed-tree.py\n')
+        commit({'LPMVault/Sources/App.swift': 'app\n'}, 'base')
+        script = root / 'LPMVault/Scripts/ci-passed-tree.py'
+        script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(__file__).resolve().parents[1] / 'ci-passed-tree.py', script)
+        (root / 'output').write_text('')
+        subprocess.run(['python3', str(script), 'record', '--marker', str(root / 'marker'), '--github-output', str(root / 'output')],
+                       check=True, capture_output=True)
+        checked = passed_tree.tree(root)
+        self.assertRegex(checked, r'\A[0-9a-f]{40}\Z')
+        self.assertEqual((root / 'output').read_text(), f'name=ci-passed-tree-{checked}\n')
+        self.assertEqual((root / 'marker').read_text(), checked + '\n')
+
+    def test_only_a_merge_group_looks_for_a_run_and_only_a_pull_request_that_passed_records_one(self):
+        workflow = (self.WORKFLOWS / 'ci.yml').read_text()
+        plan = '\n'.join(job(workflow, 'plan'))
+        self.assertIn("        id: passed\n        if: github.event_name == 'merge_group'\n", plan)
+        self.assertIn('      verified: ${{ steps.passed.outputs.verified }}\n', plan)
+        self.assertEqual(len(re.findall(r'ci-passed-tree\.py find ', workflow)), 1)
+        gate = job(workflow, 'macos')
+        steps = [line.strip() for line in gate if line.startswith('      - ') or line.startswith('        if:')]
+        required = steps.index('- name: Require every macOS verification job')
+        self.assertEqual(steps[required + 1:], ['- name: Name the tree these checks passed', "if: github.event_name == 'pull_request'",
+                                                '- name: Record that these checks passed this tree', "if: github.event_name == 'pull_request'"])
+        self.assertIn('          name: ${{ steps.tree.outputs.name }}\n', '\n'.join(gate) + '\n')
+
+    def test_the_macos_jobs_wait_for_the_plan_and_run_unless_it_found_a_run(self):
+        workflow = (self.WORKFLOWS / 'ci.yml').read_text()
+        for name in sorted(results.MACOS):
+            with self.subTest(job=name):
+                lines = job(workflow, name)
+                self.assertIn('    needs: plan', lines)
+                condition = next(line for line in lines if line.startswith('    if:'))
+                self.assertTrue(condition.startswith("    if: needs.plan.outputs.verified != 'true'"), condition)
+        web = job(workflow, 'web')
+        self.assertFalse([line for line in web if line.startswith('    needs:') or line.startswith('    if:')])
+
+    def test_the_run_that_passed_checked_what_the_merge_group_would(self):
+        """Nothing but the lookup, the record and what a merge group's run can't save tells the two events apart."""
+        workflow = (self.WORKFLOWS / 'ci.yml').read_text()
+        apart = [line.strip() for line in workflow.splitlines() if not line.strip().startswith('#')
+                 and re.search(r"event_name [!=]= '(pull_request|merge_group)'", line)
+                 and not re.search(r"\(github\.event_name == 'pull_request' \|\| github\.event_name == 'merge_group'\)", line)]
+        self.assertEqual(sorted(set(apart)), sorted([
+            "group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            "fetch-depth: ${{ github.event_name == 'merge_group' && 0 || 2 }}",
+            "if: github.event_name == 'merge_group'",
+            "if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'",
+            "if: github.event_name == 'pull_request'",
+        ]))
+        for called in ['swift-tests.yml', 'release-bundle.yml']:
+            with self.subTest(workflow=called):
+                lines = [line.strip() for line in (self.WORKFLOWS / called).read_text().splitlines() if 'github.event' in line]
+                self.assertEqual(lines, ["if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'"])
+
+    def test_every_workflow_that_calls_the_checks_grants_what_the_plan_job_asks_for(self):
+        plan = '\n'.join(job((self.WORKFLOWS / 'ci.yml').read_text(), 'plan'))
+        self.assertIn('    permissions:\n      contents: read\n', plan)
+        self.assertIn('      actions: read\n', plan)
+        callers = [path for path in sorted(self.WORKFLOWS.glob('*.yml')) if 'uses: ./.github/workflows/ci.yml' in path.read_text()]
+        self.assertEqual([path.name for path in callers], ['release.yml', 'verify-release.yml'])
+        for path in callers:
+            with self.subTest(workflow=path.name):
+                self.assertIn('    permissions:\n      contents: read\n      actions: read\n    uses: ./.github/workflows/ci.yml\n', path.read_text())
+
+
+class PostMergeTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+
+    def test_only_the_post_merge_checks_follow_a_push_to_main(self):
+        started = {path.name for path in self.WORKFLOWS.glob('*.yml')
+                   if re.search(r'^  push:\n    branches:', path.read_text(), re.MULTILINE)}
+        self.assertEqual(started, {'post-merge.yml'})
+        workflow = (self.WORKFLOWS / 'post-merge.yml').read_text()
+        self.assertEqual(events(workflow), {'push'})
+        self.assertIn('  push:\n    branches: [main]\n', workflow)
+
+    def test_they_run_what_the_merge_queue_left_out_and_each_commit_keeps_its_result(self):
+        workflow = (self.WORKFLOWS / 'post-merge.yml').read_text()
+        self.assertNotIn('concurrency:', workflow)
+        self.assertEqual(re.findall(r'^  (\w+):$', workflow.split('jobs:\n', 1)[1], re.MULTILINE), ['ui', 'release'])
+        ui, release = '\n'.join(job(workflow, 'ui')), '\n'.join(job(workflow, 'release'))
+        self.assertIn('    uses: ./.github/workflows/swift-tests.yml\n    with:\n      shard: 1/1\n', ui)
+        self.assertNotIn('cooperative', ui)
+        self.assertIn('    uses: ./.github/workflows/release-bundle.yml\n    with:\n      architectures: arm64 x86_64', release)
+
+    def test_they_save_the_caches_a_pull_request_restores(self):
+        for called in ['swift-tests.yml', 'release-bundle.yml']:
+            with self.subTest(workflow=called):
+                self.assertIn("if: github.event_name != 'merge_group' && steps.cache.outputs.cache-hit != 'true'",
+                              (self.WORKFLOWS / called).read_text())
+
+
+class RunnerRetryTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+
+    def job(self, name, conclusion, runner=True):
+        """A job's record: one a runner took, or one GitHub gave up on, as its API reports it."""
+        if runner:
+            return {'name': name, 'conclusion': conclusion, 'runner_id': 1000050429, 'runner_name': 'GitHub Actions 1000050429',
+                    'steps': [{'name': 'Set up job', 'conclusion': 'success'}]}
+        return {'name': name, 'conclusion': conclusion, 'runner_id': 0, 'runner_name': '', 'steps': []}
+
+    def test_a_run_whose_only_failures_had_no_runner_is_run_again(self):
+        jobs = [self.job('Plan', 'success'), self.job('Swift tests / Run', 'success'),
+                self.job('Bundled env engine reproduction', 'cancelled', runner=False),
+                self.job('Universal release bundle verification / Build', 'cancelled', runner=False),
+                self.job('macOS tests and release bundle', 'failure'), self.job('Public update routes', 'success')]
+        self.assertEqual(retry.decision(jobs), (['Bundled env engine reproduction', 'Universal release bundle verification / Build'], []))
+        self.assertEqual(retry.decision([self.job('UI regressions / Run', 'failure', runner=False)]), (['UI regressions / Run'], []))
+
+    def test_a_job_that_ran_and_failed_keeps_the_run_as_it_is(self):
+        for conclusion in ['failure', 'cancelled', 'timed_out', None]:
+            with self.subTest(conclusion=conclusion):
+                jobs = [self.job('Swift tests / Run', conclusion), self.job('UI regressions / Run', 'cancelled', runner=False),
+                        self.job('macOS tests and release bundle', 'failure')]
+                self.assertEqual(retry.decision(jobs), (['UI regressions / Run'], ['Swift tests / Run']))
+
+    def test_a_run_whose_jobs_all_had_runners_has_none_to_run_again(self):
+        jobs = [self.job('Swift tests / Run', 'failure'), self.job('Engine', 'skipped', runner=False),
+                self.job('macOS tests and release bundle', 'failure')]
+        self.assertEqual(retry.decision(jobs), ([], ['Swift tests / Run']))
+        for field, value in [('runner_id', 7), ('runner_name', 'GitHub Actions 7'), ('steps', [{'name': 'Set up job'}])]:
+            with self.subTest(field=field):
+                taken = {**self.job('UI regressions / Run', 'cancelled', runner=False), field: value}
+                self.assertEqual(retry.decision([taken]), ([], ['UI regressions / Run']))
+
+    def run_script(self, jobs, attempt, dry_run=False):
+        """What the script prints and whether it asks for a rerun, for an attempt with these `jobs`."""
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'calls'
+            gh = Path(folder) / 'gh'
+            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_CALLS"\ncase "$*" in *jobs*) cat "$GH_JOBS";; esac\n')
+            gh.chmod(0o755)
+            (Path(folder) / 'jobs').write_text(json.dumps([{'jobs': jobs[:1]}, {'jobs': jobs[1:]}]))
+            result = subprocess.run(
+                ['python3', str(Path(__file__).resolve().parents[1] / 'ci-runner-retry.py'), '--repository', 'owner/name',
+                 '--run', '42', '--attempt', str(attempt), *(['--dry-run'] if dry_run else [])],
+                env={**os.environ, 'PATH': f'{folder}:{os.environ["PATH"]}', 'GH_CALLS': str(log), 'GH_JOBS': str(Path(folder) / 'jobs')},
+                capture_output=True, text=True, check=True)
+            calls = log.read_text().splitlines()
+        self.assertEqual(calls[0], f'api --paginate --slurp repos/owner/name/actions/runs/42/attempts/{attempt}/jobs?per_page=100')
+        self.assertIn(calls[1:], [[], ['api --method POST repos/owner/name/actions/runs/42/rerun-failed-jobs']])
+        return result.stdout, len(calls) == 2
+
+    def test_it_runs_the_jobs_again_until_the_last_attempt(self):
+        unrun = [self.job('Swift tests / Run', 'success'), self.job('UI regressions / Run', 'cancelled', runner=False)]
+        self.assertEqual(retry.LAST_ATTEMPT, 3)
+        for attempt in [1, 2]:
+            with self.subTest(attempt=attempt):
+                output, rerun = self.run_script(unrun, attempt)
+                self.assertTrue(rerun, output)
+                self.assertIn(f'attempt {attempt + 1} of 3', output)
+        for attempt in [3, 4]:
+            with self.subTest(attempt=attempt):
+                self.assertFalse(self.run_script(unrun, attempt)[1])
+        self.assertFalse(self.run_script(unrun, 1, dry_run=True)[1])
+        failed = [self.job('Swift tests / Run', 'failure'), self.job('UI regressions / Run', 'cancelled', runner=False)]
+        self.assertFalse(self.run_script(failed, 1)[1])
+        self.assertFalse(self.run_script([self.job('Swift tests / Run', 'failure'), self.job('Plan', 'success')], 1)[1])
+
+    def test_it_answers_the_workflows_whose_jobs_wait_for_macos_runners(self):
+        workflow = (self.WORKFLOWS / 'runner-retry.yml').read_text()
+        watched = re.search(r'^    workflows: \[(.*)\]$', workflow, re.MULTILINE).group(1).split(', ')
+        names = {path.name: re.search(r'^name: (.*)$', path.read_text(), re.MULTILINE).group(1) for path in self.WORKFLOWS.glob('*.yml')}
+        self.assertEqual(sorted(watched), sorted(names[file] for file in ['ci.yml', 'ui.yml', 'post-merge.yml']))
+        self.assertIn("    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event != 'merge_group'\n", workflow)
+        self.assertNotIn('workflow_run.head', workflow)
+        self.assertNotIn('ref:', workflow)
+
+    def test_the_job_that_reports_the_others_is_the_required_check(self):
+        gate = job((self.WORKFLOWS / 'ci.yml').read_text(), 'macos')
+        self.assertEqual({next(line.split(': ', 1)[1] for line in gate if line.startswith('    name:'))}, retry.REPORTS)
 
 
 class WebCheckTests(unittest.TestCase):
@@ -682,7 +1041,7 @@ class ReleaseBundleCheckTests(unittest.TestCase):
         return int(next(line.split(':', 1)[1] for line in lines[start:end] if line.startswith('    timeout-minutes:')))
 
     def test_the_universal_check_waits_as_long_as_the_release_build_does(self):
-        self.assertGreaterEqual(self.time_limit('ci.yml', 'release'), self.time_limit('release.yml', 'release'))
+        self.assertGreaterEqual(self.time_limit('release-bundle.yml', 'build'), self.time_limit('release.yml', 'release'))
 
 
 if __name__ == '__main__':

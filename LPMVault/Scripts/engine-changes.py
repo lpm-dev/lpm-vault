@@ -4,9 +4,9 @@
 A pull request does, and so does the merge queue's run of it, when it
 changes the bundled engine, or how the rebuild runs: nothing else it changes
 can alter what the rebuild compares, and each rebuild holds a macOS runner
-for minutes. Every other run does, so the engine is rebuilt after each merge
-to main, before each release and every night, which is where a change
-outside the repository, such as a new runner image, shows.
+for minutes. Every other run does, so the engine is rebuilt before each
+release and every night, which is where a change outside the repository,
+such as a new runner image, shows.
 
 BASE and HEAD default to HEAD^1 and HEAD, as in a pull request's checkout:
 its merge commit, whose first parent is the base branch. A merge group's

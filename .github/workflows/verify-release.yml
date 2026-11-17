@@ -24,6 +24,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
+    # The CI workflow's plan job asks for it, and a called workflow can't have
+    # more than its caller grants.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
   ui:
     uses: ./.github/workflows/ui.yml

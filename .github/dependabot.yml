@@ -9,9 +9,10 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 5
     labels: [dependencies, github-actions]
-    # Every update in one weekly pull request: main requires up-to-date
-    # branches, and ci-cache-key.py hashes ci.yml and swift-tests.yml, so each
-    # separate update would cost another full macOS run and cold caches.
+    # Every update in one weekly pull request: each pull request costs a run
+    # of its own, a merge queue run and a post-merge run on macOS, and
+    # ci-cache-key.py hashes the workflows that build, so an update to one
+    # starts its cache cold.
     groups:
       github-actions:
         applies-to: version-updates

@@ -1,0 +1,24 @@
+name: Post-merge checks
+# Every commit on main passed the merge queue's run of the CI workflow, as
+# that same commit, before it landed. So this runs only what that run left
+# out: the native UI suite, and the x86_64 half of the release bundle. Both
+# jobs also save the build caches that pull requests restore, which a merge
+# group's run can't. Neither is a required check, and each commit keeps its
+# own result.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  ui:
+    name: UI regressions
+    uses: ./.github/workflows/swift-tests.yml
+    with:
+      shard: 1/1
+      diagnostics: ui-test-diagnostics
+  release:
+    name: Universal release bundle verification
+    uses: ./.github/workflows/release-bundle.yml
+    with:
+      architectures: arm64 x86_64
