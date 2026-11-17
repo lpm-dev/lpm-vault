@@ -4404,13 +4404,20 @@ final class VaultStore {
   /// Writes `vaultId` into `folder`'s lpm.json, replacing `replacingVaultId`,
   /// then links the folder for the LPM CLI on this Mac, which uses a
   /// project's values only in a folder linked to it.
-  /// The folder is linked first and lpm.json written after, so a failure
-  /// leaves lpm.json as it was and the same request finishes the job.
+  /// lpm.json is checked as its write would check it, then the folder is
+  /// linked, then lpm.json is written. A folder whose lpm.json can't take
+  /// the ID is linked to nothing, and a failure after the check leaves
+  /// lpm.json as it was, so the same request finishes the job.
   func linkProjectFolder(vaultId: String, folder: String, replacingVaultId: String? = nil) async -> ProjectCLILinkError? {
     let write = writes.begin()
     defer { writes.end(write) }
     let session = vaultSessionGeneration
     let account = selectedAccount
+    if let failure = await ProjectCLILink.linkInBackground(
+      vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: lpmHome, checkOnly: true)
+    {
+      return failure
+    }
     if let failure = await linkCLIFolderOnThisMac(vaultId: vaultId, folder: folder, unlinkingFrom: replacingVaultId) {
       return failure
     }

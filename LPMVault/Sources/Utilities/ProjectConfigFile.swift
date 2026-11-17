@@ -94,9 +94,10 @@ enum ProjectConfigFile {
 		to url: URL,
 		policy: VaultWritePolicy = .replaceAny,
 		home: LPMHome = .current,
-		fileWriter: FileWriter = writeSecurely
+		fileWriter: FileWriter = writeSecurely,
+		beforeWrite: (() throws -> Void)? = nil
 	) throws {
-		try update(at: url, home: home, fileWriter: fileWriter) { document in
+		try update(at: url, home: home, fileWriter: fileWriter, beforeWrite: beforeWrite) { document in
 			if case .replaceAny = policy {} else {
 				let linked: String?
 				switch document["vault"] {

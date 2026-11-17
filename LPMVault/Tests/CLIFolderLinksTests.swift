@@ -33,8 +33,10 @@ struct CLIFolderLinksTests {
 
 	@Test("a record from a later version isn't read, and one that can't be read is damaged")
 	func unreadableRecords() {
-		#expect(throws: CLIFolderLinkRecordError.newerVersion) {
-			try CLIFolderLinkRecord.decode(Data(#"{"schemaVersion":2,"folders":[]}"#.utf8))
+		for later in [#"{"schemaVersion":2,"folders":[]}"#, #"{"schemaVersion":2,"folders":{}}"#, #"{"schemaVersion":2}"#] {
+			#expect(throws: CLIFolderLinkRecordError.newerVersion, "\(later)") {
+				try CLIFolderLinkRecord.decode(Data(later.utf8))
+			}
 		}
 		#expect(throws: CLIFolderLinkRecordError.damaged) {
 			try CLIFolderLinkRecord.decode(Data("{not json".utf8))
@@ -89,6 +91,16 @@ struct CLIFolderLinksTests {
 		#expect(try CLIFolderLinks.isLinked(folders[0], project: project(holdsValues: true, recordedFolder: folders[0]), in: store))
 		#expect(try !CLIFolderLinks.isLinked(folders[1], project: project(holdsValues: true, recordedFolder: folders[0]), in: store))
 		#expect(try !CLIFolderLinks.isLinked(folders[1], project: project(holdsValues: true), in: store))
+	}
+
+	@Test("a folder that no longer exists resolves through its nearest existing ancestor, as the CLI resolves it")
+	func missingFolderResolvesThroughAncestor() throws {
+		let (root, folders) = try temporaryFolders("parent")
+		defer { try? FileManager.default.removeItem(at: root) }
+		let alias = root.appendingPathComponent("alias").path
+		try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: folders[0])
+
+		#expect(CLIFolderLinks.realPath(alias + "/gone/deeper") == folders[0] + "/gone/deeper")
 	}
 
 	@Test("a project's first record keeps the folder its metadata records")
@@ -191,6 +203,21 @@ struct CLIFolderLinksTests {
 		#expect(try service.isCLIFolderLinkedResult(folders[1], vaultId: "absent").get(), "a project without values keeps no folder out")
 	}
 
+	@Test("the service resolves a recorded folder written through a symbolic link, for checking and for a first record")
+	func serviceResolvesTheRecordedFolder() throws {
+		let (root, folders) = try temporaryFolders("own", "new")
+		defer { try? FileManager.default.removeItem(at: root) }
+		let alias = root.appendingPathComponent("alias").path
+		try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: folders[0])
+		let links = MemoryCLIFolderLinks()
+		let service = service(links: links)
+		try create("vault", path: alias, in: service)
+
+		#expect(try service.isCLIFolderLinkedResult(folders[0], vaultId: "vault").get())
+		try service.linkCLIFolderResult(folders[1], vaultId: "vault", unlinkingFrom: nil).get()
+		#expect(try links.record(vaultId: "vault")?.folders == folders.sorted())
+	}
+
 	@Test("the service stores the CLI's bytes under the links service, one item per vault ID")
 	func serviceStoresTheCLIBytes() throws {
 		let backend = InMemoryKeychainBackend()
@@ -256,6 +283,22 @@ struct CLIFolderLinksTests {
 		#expect(await store.linkProjectFolder(vaultId: "vault", folder: folders[1]) == .notLinkedOnThisMac)
 		#expect(ProjectCLILink.status(vaultId: "vault", folder: folders[1]) == .notLinked)
 		#expect(await store.isCLIFolderLinkedOnThisMac(vaultId: "vault", folder: folders[0]) == nil)
+	}
+
+	@Test("a folder whose lpm.json can't take the vault ID is linked to nothing")
+	@MainActor
+	func unwritableConfigLinksNothing() async throws {
+		let (root, folders) = try temporaryFolders("project")
+		defer { try? FileManager.default.removeItem(at: root) }
+		let config = URL(fileURLWithPath: folders[0]).appendingPathComponent("lpm.json")
+		try Data("{not json".utf8).write(to: config)
+		let keychain = MockKeychainService()
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.isUnlocked = true
+
+		#expect(await store.linkProjectFolder(vaultId: "vault", folder: folders[0]) == .invalidJSON)
+		#expect(try keychain.cliFolderLinks.record(vaultId: "vault") == nil)
+		#expect(try Data(contentsOf: config) == Data("{not json".utf8))
 	}
 
 	@Test("a locked vault links no folder")

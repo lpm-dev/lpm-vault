@@ -175,7 +175,7 @@ struct ConnectCLISheet: View {
 					.font(.system(size: 12.5, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text(macLink == .unknown
-					? "LPM Vault couldn’t read which folders the LPM CLI may use this vault in. Linking the folder writes them again."
+					? "LPM Vault couldn’t read which folders the LPM CLI may use this vault in. Link Folder writes them again, unless a newer LPM CLI or LPM Vault wrote them."
 					: "The LPM CLI uses this vault only in folders linked to it on this Mac.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)

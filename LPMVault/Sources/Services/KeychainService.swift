@@ -3815,12 +3815,18 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}
 
+	/// A project's recorded folder is resolved outside the lock, which a
+	/// stalled volume could otherwise hold for every vault operation.
 	func isCLIFolderLinkedResult(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 		return folderLinkResult {
-			try VaultKeychainTransactionLock.withLock {
-				try CLIFolderLinks.isLinked(folder, project: cliProjectUnlocked(vaultId), in: folderLinks)
+			let (decided, recordedPath) = try VaultKeychainTransactionLock.withLock { () -> (Bool?, String?) in
+				let decided = try CLIFolderLinks.decidedWithoutRecordedFolder(
+					folder, vaultId: vaultId, holdsValues: { try store.listing()[vaultId] != nil }, in: folderLinks)
+				return (decided, decided == nil ? recordedPathUnlocked(vaultId: vaultId) : nil)
 			}
+			if let decided { return decided }
+			return CLIFolderLinks.isRecordedFolder(folder, recordedPath.map(CLIFolderLinks.realPath))
 		}
 	}
 
@@ -3833,34 +3839,54 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		// An ID the CLI can't use has no record to unlink the folder from.
 		let previous = previousVaultId.flatMap { EnvValidation.isSafeVaultId($0) ? $0 : nil }
 		return folderLinkResult {
+			// The folders the projects record are read under the lock, resolved
+			// outside it, and used under it again only for a project that still
+			// has no record.
+			let (recorded, previousRecorded) = try VaultKeychainTransactionLock.withLock {
+				(try unrecordedFolderUnlocked(vaultId), try previous.flatMap(unrecordedFolderUnlocked))
+			}
+			let resolved = recorded.map(CLIFolderLinks.realPath)
+			let previousResolved = previousRecorded.map(CLIFolderLinks.realPath)
 			try VaultKeychainTransactionLock.withLock {
 				try CLIFolderLinks.link(
-					folder, to: cliProjectUnlocked(vaultId),
-					unlinkingFrom: previous.map(cliProjectUnlocked), in: folderLinks)
+					folder, to: cliProject(vaultId, recordedFolder: resolved),
+					unlinkingFrom: previous.map { cliProject($0, recordedFolder: previousResolved) },
+					in: folderLinks)
 			}
 		}
 	}
 
-	/// What the CLI's rule reads of a project without a link record, read
-	/// only when it has none. Call it in the transaction lock.
-	private func cliProjectUnlocked(_ vaultId: String) -> CLIFolderLinkProject {
+	/// What the CLI's rule reads of a project without a link record, with its
+	/// recorded folder already resolved. Call it in the transaction lock.
+	///
+	/// Values count here only in the Keychain. The CLI also counts a vault
+	/// file it hasn't moved into the Keychain, which the app never reads or
+	/// lists, so a project held only that way isn't one the app links.
+	private func cliProject(_ vaultId: String, recordedFolder: String?) -> CLIFolderLinkProject {
 		CLIFolderLinkProject(
 			vaultId: vaultId,
 			holdsValues: { [store] in try store.listing()[vaultId] != nil },
-			recordedFolder: { [self] in recordedFolderUnlocked(vaultId: vaultId) }
+			recordedFolder: { recordedFolder }
 		)
 	}
 
-	/// The folder `vaultId`'s metadata records, at its real path, read without
+	/// The folder a project without a link record records, as written; nil
+	/// for one with a record, readable or not.
+	private func unrecordedFolderUnlocked(_ vaultId: String) throws -> String? {
+		guard try folderLinks.data(vaultId: vaultId) == nil else { return nil }
+		return recordedPathUnlocked(vaultId: vaultId)
+	}
+
+	/// The folder `vaultId`'s metadata records, as written, read without
 	/// creating the project index. A record that can't be read, or a folder
 	/// that isn't absolute, names none, as the CLI takes it.
-	private func recordedFolderUnlocked(vaultId: String) -> String? {
+	private func recordedPathUnlocked(vaultId: String) -> String? {
 		guard let marker = try? readItemThrowing(account: Self.projectIndexMarkerAccount),
 			let state = try? decodeProjectIndexMarker(marker),
 			let snapshot = try? readProjectMetadataRecordThrowing(vaultId: vaultId, state: state)
 		else { return nil }
 		let path = snapshot.record.metadata.path
-		return path.hasPrefix("/") ? CLIFolderLinks.realPath(path) : nil
+		return path.hasPrefix("/") ? path : nil
 	}
 
 	private func folderLinkResult<T>(_ body: () throws -> T) -> Result<T, KeychainError> {

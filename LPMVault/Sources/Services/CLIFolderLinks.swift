@@ -28,15 +28,15 @@ struct CLIFolderLinkRecord: Codable, Equatable, Sendable {
 
 	/// The record in `data`. A field a later version adds is read past, as
 	/// the CLI reads past it; a record from a later version isn't read.
+	/// The version is read first, so a later version's record, whatever
+	/// shape its other fields take, is never mistaken for a damaged one.
 	static func decode(_ data: Data) throws(CLIFolderLinkRecordError) -> CLIFolderLinkRecord {
-		let record: CLIFolderLinkRecord
-		do {
-			record = try JSONDecoder().decode(CLIFolderLinkRecord.self, from: data)
-		} catch {
-			throw .damaged
-		}
-		guard record.schemaVersion <= currentSchemaVersion else { throw .newerVersion }
-		guard record.schemaVersion == currentSchemaVersion else { throw .damaged }
+		struct Version: Decodable { let schemaVersion: Int }
+		guard let version = try? JSONDecoder().decode(Version.self, from: data) else { throw .damaged }
+		guard version.schemaVersion <= currentSchemaVersion else { throw .newerVersion }
+		guard version.schemaVersion == currentSchemaVersion,
+			let record = try? JSONDecoder().decode(CLIFolderLinkRecord.self, from: data)
+		else { throw .damaged }
 		return record
 	}
 
@@ -172,11 +172,31 @@ enum CLIFolderLinks {
 		project: CLIFolderLinkProject,
 		in store: any CLIFolderLinkStoring
 	) throws -> Bool {
-		if let record = try store.record(vaultId: project.vaultId) {
+		if let decided = try decidedWithoutRecordedFolder(
+			folder, vaultId: project.vaultId, holdsValues: project.holdsValues, in: store)
+		{
+			return decided
+		}
+		return isRecordedFolder(folder, project.recordedFolder())
+	}
+
+	/// The rule's answer from the project's record and whether this Mac
+	/// holds its values; nil when it turns on the folder the project records.
+	static func decidedWithoutRecordedFolder(
+		_ folder: String,
+		vaultId: String,
+		holdsValues: () throws -> Bool,
+		in store: any CLIFolderLinkStoring
+	) throws -> Bool? {
+		if let record = try store.record(vaultId: vaultId) {
 			return record.contains(folder)
 		}
-		guard try project.holdsValues() else { return true }
-		return project.recordedFolder().map { $0.utf8.elementsEqual(folder.utf8) } ?? false
+		return try holdsValues() ? nil : true
+	}
+
+	/// Whether `folder` is `recordedFolder`, both real paths.
+	static func isRecordedFolder(_ folder: String, _ recordedFolder: String?) -> Bool {
+		recordedFolder.map { $0.utf8.elementsEqual(folder.utf8) } ?? false
 	}
 
 	/// Unlinks `folder`, a real path, from `previous`, whose ID its lpm.json
@@ -233,11 +253,23 @@ enum CLIFolderLinks {
 		try store.write(CLIFolderLinkRecord(folders: []), vaultId: previous.vaultId)
 	}
 
-	/// `path` with symbolic links resolved, as the CLI keeps a folder; as
-	/// given when it doesn't exist. Blocking file work.
+	/// `path` with symbolic links resolved, as the CLI keeps a folder. A
+	/// folder that doesn't exist is resolved through its nearest existing
+	/// ancestor, as the CLI resolves it. Blocking file work.
 	static func realPath(_ path: String) -> String {
-		guard let resolved = Darwin.realpath(path, nil) else { return path }
-		defer { free(resolved) }
-		return String(cString: resolved)
+		var missing: [String] = []
+		var current = path
+		while true {
+			if let resolved = Darwin.realpath(current, nil) {
+				defer { free(resolved) }
+				return ([String(cString: resolved)] + missing.reversed())
+					.joined(separator: "/")
+					.replacingOccurrences(of: "//", with: "/")
+			}
+			let parent = (current as NSString).deletingLastPathComponent
+			guard !parent.isEmpty, parent != current else { return path }
+			missing.append((current as NSString).lastPathComponent)
+			current = parent
+		}
 	}
 }
