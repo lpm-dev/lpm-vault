@@ -3291,7 +3291,7 @@ final class VaultStore {
     else { return .failed }
 
     if !setup.folder.isEmpty {
-      let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: setup.folder, home: lpmHome)
+      let failure = await linkProjectFolder(vaultId: vaultId, folder: setup.folder)
       guard isUnlocked, selectedAccount == expectedAccount,
         sessionGeneration == vaultSessionGeneration
       else { return .failed }
@@ -4398,6 +4398,34 @@ final class VaultStore {
       descriptions.folder == keyDescriptionFolder(for: project)
     else { return [] }
     return descriptions.schema?.overview?.publicKeys ?? []
+  }
+
+  /// Writes `vaultId` into `folder`'s lpm.json, replacing `replacingVaultId`,
+  /// then links the folder for the LPM CLI on this Mac, which uses a
+  /// project's values only in a folder linked to it.
+  func linkProjectFolder(vaultId: String, folder: String, replacingVaultId: String? = nil) async -> ProjectCLILinkError? {
+    if let failure = await ProjectCLILink.linkInBackground(
+      vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: lpmHome)
+    {
+      return failure
+    }
+    return await linkCLIFolderOnThisMac(vaultId: vaultId, folder: folder, unlinkingFrom: replacingVaultId)
+  }
+
+  /// Links `folder`, whose lpm.json names `vaultId`, for the LPM CLI on this
+  /// Mac, and unlinks it from `previousVaultId`.
+  func linkCLIFolderOnThisMac(vaultId: String, folder: String, unlinkingFrom previousVaultId: String? = nil) async -> ProjectCLILinkError? {
+    if case .failure(let error) = await persistence.linkCLIFolder(folder, vaultId: vaultId, unlinkingFrom: previousVaultId) {
+      vaultStoreLogger.error("Couldn't link a folder for the CLI: \(error.description, privacy: .public)")
+      return .notLinkedOnThisMac
+    }
+    return nil
+  }
+
+  /// Whether the LPM CLI on this Mac uses `vaultId`'s values in `folder`;
+  /// nil when the Keychain can't tell.
+  func isCLIFolderLinkedOnThisMac(vaultId: String, folder: String) async -> Bool? {
+    try? await persistence.isCLIFolderLinked(folder, vaultId: vaultId).get()
   }
 
   /// Rereads the selected project's key descriptions from its `lpm.json`.

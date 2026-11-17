@@ -10,6 +10,11 @@ enum VaultConstants {
 	/// Keychain service for CLI auth tokens
 	static let cliAuthService = "lpm-cli"
 
+	/// Keychain service for the folders on this Mac that may use each
+	/// project's values through the LPM CLI, shared with the CLI, without
+	/// approval so the CLI checks a folder without asking.
+	static let cliFolderLinksKeychainService = "dev.lpm.vault.links"
+
 	/// The app's own Keychain group, named by its application identifier. The
 	/// signed CLI has a different identifier, so it can't read these items.
 	static let appKeychainAccessGroup = "823S8YKMRW.dev.lpm.vault"

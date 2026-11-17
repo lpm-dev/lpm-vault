@@ -486,6 +486,15 @@ protocol KeychainServiceProtocol: Sendable {
 	/// found from item attributes alone, so no value is read and no
 	/// approval is asked for. A project removed from the sidebar still counts.
 	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError>
+	/// Whether the LPM CLI lets `folder` use `vaultId`'s values on this Mac,
+	/// by the CLI's rule, where `recordedFolder` is the folder the project's
+	/// metadata records. Reads no values.
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String, recordedFolder: String?) -> Result<Bool, KeychainError>
+	/// Lets `folder` use `vaultId`'s values through the LPM CLI on this Mac,
+	/// and stops it using `previousVaultId`'s, which its lpm.json named.
+	func linkCLIFolderResult(
+		_ folder: String, vaultId: String, recordedFolder: String?, unlinkingFrom previousVaultId: String?
+	) -> Result<Void, KeychainError>
 	/// What local history made of each project's last values change since
 	/// the last call, for projects whose change it recorded or didn't.
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome]
@@ -3607,6 +3616,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
+	private let folderLinks: any CLIFolderLinkStoring
 
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
 		store.takeHistoryOutcomes()
@@ -3744,6 +3754,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	init() {
 		self.store = SharedKeychainStore(service: LPMHome.current.service(VaultConstants.keychainService))
+		self.folderLinks = KeychainCLIFolderLinks(home: .current)
 		self.appItemBackends = Dictionary(uniqueKeysWithValues: AppKeychainStore.allCases.map {
 			($0, AppKeychainBackend(service: $0.service(in: .current)))
 		})
@@ -3751,10 +3762,13 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	/// An app store without a backend in `appItemBackends` is unavailable,
 	/// so tests never reach the real Keychain through it.
+	/// Folder links default to memory, so tests never reach the Keychain
+	/// through them.
 	init(
 		testingService: String,
 		backend: any KeychainStoreBackend = SecurityKeychainStoreBackend(),
 		appItemBackends: [AppKeychainStore: any AppKeychainItemBackend] = [:],
+		folderLinks: any CLIFolderLinkStoring = MemoryCLIFolderLinks(),
 		performanceCounters: VaultKeychainPerformanceCounters? = nil
 	) {
 		self.store = SharedKeychainStore(
@@ -3762,6 +3776,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			backend: backend,
 			performanceCounters: performanceCounters
 		)
+		self.folderLinks = folderLinks
 		self.appItemBackends = appItemBackends
 	}
 
@@ -3799,6 +3814,44 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return .success(Set(vaultIds.lazy.filter { listing[$0] != nil }))
 		} catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String, recordedFolder: String?) -> Result<Bool, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		return folderLinkResult {
+			try VaultKeychainTransactionLock.withLock {
+				try CLIFolderLinks.isLinked(
+					folder, vaultId: vaultId, recordedFolder: recordedFolder,
+					holdsValues: { try store.listing()[vaultId] != nil }, in: folderLinks)
+			}
+		}
+	}
+
+	/// Runs in the transaction lock the CLI takes, so neither loses the
+	/// other's change to a record.
+	func linkCLIFolderResult(
+		_ folder: String, vaultId: String, recordedFolder: String?, unlinkingFrom previousVaultId: String?
+	) -> Result<Void, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId),
+			previousVaultId.map(EnvValidation.isSafeVaultId) ?? true
+		else { return .failure(.accessDenied) }
+		return folderLinkResult {
+			try VaultKeychainTransactionLock.withLock {
+				try CLIFolderLinks.link(
+					folder, vaultId: vaultId, recordedFolder: recordedFolder,
+					unlinkingFrom: previousVaultId, in: folderLinks)
+			}
+		}
+	}
+
+	private func folderLinkResult<T>(_ body: () throws -> T) -> Result<T, KeychainError> {
+		do {
+			return .success(try body())
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
 	}
 
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
@@ -4092,6 +4145,14 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 						deletePayload: deletePayload,
 						additionalMutations: mutations
 					)
+					if deletePayload {
+						// The project is gone; links left behind name no values.
+						do {
+							try folderLinks.delete(vaultId: vaultId)
+						} catch {
+							keychainLogger.error("Couldn't delete a deleted project's CLI folder links: \(error.localizedDescription, privacy: .public)")
+						}
+					}
 					warning = nil
 				case nil:
 					try store.applyVaultTransaction(mutations, history: nil)

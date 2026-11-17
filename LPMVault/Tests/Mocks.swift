@@ -491,6 +491,37 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		lock.withLock { existingVaultPayloadsPause = (entered, gate) }
 	}
 
+	/// The folders the CLI may use each project's values in, as the real
+	/// store keeps them.
+	let cliFolderLinks = MemoryCLIFolderLinks()
+	var failFolderLinks = false
+
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String, recordedFolder: String?) -> Result<Bool, KeychainError> {
+		let (failing, holdsValues) = lock.withLock { (shouldFail || failFolderLinks, environments[vaultId] != nil) }
+		if failing { return .failure(failureError) }
+		do {
+			return .success(try CLIFolderLinks.isLinked(
+				folder, vaultId: vaultId, recordedFolder: recordedFolder,
+				holdsValues: { holdsValues }, in: cliFolderLinks))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func linkCLIFolderResult(
+		_ folder: String, vaultId: String, recordedFolder: String?, unlinkingFrom previousVaultId: String?
+	) -> Result<Void, KeychainError> {
+		if lock.withLock({ shouldFail || failFolderLinks }) { return .failure(failureError) }
+		do {
+			try CLIFolderLinks.link(
+				folder, vaultId: vaultId, recordedFolder: recordedFolder,
+				unlinkingFrom: previousVaultId, in: cliFolderLinks)
+			return .success(())
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
 	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
 		let (result, pause) = lock.withLock { () -> (Result<Set<String>, KeychainError>, (entered: DispatchSemaphore, gate: DispatchSemaphore)?) in
 			existingVaultPayloadsCallCount += 1

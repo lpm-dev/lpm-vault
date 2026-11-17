@@ -460,6 +460,27 @@ actor VaultPersistenceCoordinator {
 		service.getProjectResult(vaultId: vaultId).map { $0 != nil }
 	}
 
+	/// Whether the LPM CLI lets `folder` use `vaultId`'s values on this Mac.
+	func isCLIFolderLinked(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
+		recordedFolder(vaultId: vaultId).flatMap {
+			service.isCLIFolderLinkedResult(folder, vaultId: vaultId, recordedFolder: $0)
+		}
+	}
+
+	/// Lets the LPM CLI use `vaultId`'s values in `folder` on this Mac, and
+	/// stops it using `previousVaultId`'s there.
+	func linkCLIFolder(_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?) -> Result<Void, KeychainError> {
+		recordedFolder(vaultId: vaultId).flatMap {
+			service.linkCLIFolderResult(folder, vaultId: vaultId, recordedFolder: $0, unlinkingFrom: previousVaultId)
+		}
+	}
+
+	/// The folder the project's metadata records, which the CLI links on its
+	/// own for a project from before folder links.
+	private func recordedFolder(vaultId: String) -> Result<String?, KeychainError> {
+		service.projectMetadataResult(vaultId: vaultId).map { $0?.path }
+	}
+
 	func loadOrgTrust(scope: OrgTrustScope) -> Result<OrgKeyTrust, KeychainError> {
 		switch service.readDataResult(account: scope.storageAccount) {
 		case .success(nil): return .success(OrgKeyTrust())

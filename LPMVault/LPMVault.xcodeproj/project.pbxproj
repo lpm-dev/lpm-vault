@@ -319,6 +319,7 @@
 		D3CCA5F863C9FCB583CC9049 /* EmptyEnvironmentSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D1C40E7E961D8CEC22A477 /* EmptyEnvironmentSyncTests.swift */; };
 		D42341EC65081FAF89FA560B /* VaultSchemaRemoveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A7E71F6BD229A4826782EC4 /* VaultSchemaRemoveSheet.swift */; };
 		D44B6234FB9249BB58D85966 /* ExactText.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA106BFCE1ECC2B0A3AC4809 /* ExactText.swift */; };
+		D47737DEAE7812811ED431B1 /* CLIFolderLinksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 993F1F4D18B457D8CFF2054D /* CLIFolderLinksTests.swift */; };
 		D4EB92B9275AB9A5F82DCEF7 /* ProjectConfigWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F081BA9831B63073D2F4BF /* ProjectConfigWatcherTests.swift */; };
 		D512FD7BB8153530BF75A37D /* ProjectEnvSchemaOverviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9198E040EEBC0EC72052477 /* ProjectEnvSchemaOverviewTests.swift */; };
 		D57A9A951590ECE8AB1D260F /* NewProjectDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC87EFF5F3B5C1F3B6189D5A /* NewProjectDraft.swift */; };
@@ -379,6 +380,7 @@
 		F96532FA20358135BF9072D0 /* ProjectEnvSchemaFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0215A91F1A80E56B5A6DFB1B /* ProjectEnvSchemaFileTests.swift */; };
 		FA4DEF51394119E89AF0B36E /* ProjectEnvSchemaRuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 606A4D6D619C63A269BDD1D1 /* ProjectEnvSchemaRuleTests.swift */; };
 		FACB80DACEE686DECB8B4B33 /* AuditRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABA50696ECCA4608639D0C28 /* AuditRegressionTests.swift */; };
+		FB2E78A174B5460CC2D6F979 /* CLIFolderLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937F4226AD42972992F2E44D /* CLIFolderLinks.swift */; };
 		FC121E25188D9AE430A40675 /* PublishDestinationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E914551BC84B4D97373CA2B /* PublishDestinationTests.swift */; };
 		FCA0025A2C6AF7CBAF2DF0AD /* LoopbackHTTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = E193FA88E1F59BB173A56569 /* LoopbackHTTP.swift */; };
 		FE4319ED0F3BAD337DBE41A7 /* VaultHistoryText.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4672E76D5FD3407AA244004 /* VaultHistoryText.swift */; };
@@ -630,6 +632,7 @@
 		927DA22422A9B05018EDB3E8 /* PlatformsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformsView.swift; sourceTree = "<group>"; };
 		928F7EC25905ABD41EAD3431 /* VaultSheetChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSheetChrome.swift; sourceTree = "<group>"; };
 		9322CE39D2436817423A53ED /* VaultKeySortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultKeySortTests.swift; sourceTree = "<group>"; };
+		937F4226AD42972992F2E44D /* CLIFolderLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIFolderLinks.swift; sourceTree = "<group>"; };
 		93BA6E62ECE5801212D6A2C6 /* CompanionBannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionBannerTests.swift; sourceTree = "<group>"; };
 		9441FBED8241DB5E18E4374A /* SyncConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConfirmationSheet.swift; sourceTree = "<group>"; };
 		95700F2BFD11A848B52BF0B3 /* BackupPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupPayload.swift; sourceTree = "<group>"; };
@@ -639,6 +642,7 @@
 		983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaEditorFooter.swift; sourceTree = "<group>"; };
 		98580AC2C140CBEBB957A12E /* ConfirmDialogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmDialogTests.swift; sourceTree = "<group>"; };
 		993E0246B284D7F1AC0DBCAC /* VaultHistoryParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultHistoryParts.swift; sourceTree = "<group>"; };
+		993F1F4D18B457D8CFF2054D /* CLIFolderLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIFolderLinksTests.swift; sourceTree = "<group>"; };
 		9A6C0913E37707D0F8A373B1 /* BackupRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupRestoreTests.swift; sourceTree = "<group>"; };
 		9C7F580906FEE1F330D9AC18 /* GitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClient.swift; sourceTree = "<group>"; };
 		9D2B5D52C25E20909157D918 /* ProjectIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIcon.swift; sourceTree = "<group>"; };
@@ -1005,6 +1009,7 @@
 				9A6C0913E37707D0F8A373B1 /* BackupRestoreTests.swift */,
 				7D8376BD6FF29FCF39180BD0 /* BackupTestGate.swift */,
 				BC1454DBB5C406F654AA9519 /* BlockingWorkTests.swift */,
+				993F1F4D18B457D8CFF2054D /* CLIFolderLinksTests.swift */,
 				66FB19C101D595F17AD790CB /* CloudflareClientTests.swift */,
 				3641AF2727E3A5032DA8AD5E /* CloudflareConnectionTests.swift */,
 				424C32604575F65BEF4E4366 /* CloudflarePlatformsTests.swift */,
@@ -1196,6 +1201,7 @@
 				DF5DAF608B7E928B4E9DA472 /* BackupKeyStore.swift */,
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
 				266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */,
+				937F4226AD42972992F2E44D /* CLIFolderLinks.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
 				DBC286E274ECE32DCB1DA016 /* CloudflareClient.swift */,
 				5C8D763AC89B67160C1E2386 /* CloudflareConnector.swift */,
@@ -1370,6 +1376,7 @@
 				BE8E86927C25AED412700179 /* BackupRestoreTests.swift in Sources */,
 				28E8FC0ABDEE1A7E845C761D /* BackupTestGate.swift in Sources */,
 				DD91B85B21E7B169BB79EB04 /* BlockingWorkTests.swift in Sources */,
+				D47737DEAE7812811ED431B1 /* CLIFolderLinksTests.swift in Sources */,
 				6ADBB5A09CA615BF7CDDAF33 /* CloudflareClientTests.swift in Sources */,
 				57DAF191901AC84D531626A6 /* CloudflareConnectionTests.swift in Sources */,
 				EE6F7BFE1577F3AE5EF9C2BA /* CloudflarePlatformsTests.swift in Sources */,
@@ -1534,6 +1541,7 @@
 				B5698C32AC0DD87892CE5A02 /* BoundedHTTPResponse.swift in Sources */,
 				613EDF78FC1B9CFC1E22F759 /* BrowserAuthorization.swift in Sources */,
 				B6EBC420BA8919D322A2AD09 /* CLIFiles.swift in Sources */,
+				FB2E78A174B5460CC2D6F979 /* CLIFolderLinks.swift in Sources */,
 				1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */,
 				0AE7F8802E0EAB9364630CBC /* CloudVaultsSheet.swift in Sources */,
 				72028FA9E5E2BF02C929F58F /* CloudflareClient.swift in Sources */,
