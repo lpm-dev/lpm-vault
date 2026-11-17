@@ -3843,38 +3843,59 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			// outside it, and used under it again only for a project that still
 			// has no record.
 			let (recorded, previousRecorded) = try VaultKeychainTransactionLock.withLock {
-				(try unrecordedFolderUnlocked(vaultId), try previous.flatMap(unrecordedFolderUnlocked))
+				(try unrecordedFolderUnlocked(vaultId), try previous.map(unrecordedFolderUnlocked))
 			}
-			let resolved = recorded.map(CLIFolderLinks.realPath)
-			let previousResolved = previousRecorded.map(CLIFolderLinks.realPath)
+			let resolved = recorded.resolved()
+			let previousResolved = previousRecorded?.resolved()
 			try VaultKeychainTransactionLock.withLock {
 				try CLIFolderLinks.link(
 					folder, to: cliProject(vaultId, recordedFolder: resolved),
-					unlinkingFrom: previous.map { cliProject($0, recordedFolder: previousResolved) },
+					unlinkingFrom: previous.map { cliProject($0, recordedFolder: previousResolved ?? .hadRecord) },
 					in: folderLinks)
 			}
 		}
 	}
 
+	/// What a first pass under the lock found of a project's recorded folder.
+	private enum RecordedFolder {
+		/// The project had a link record, so its recorded folder wasn't read.
+		case hadRecord
+		/// The project had none; the folder it records, as written.
+		case unrecorded(String?)
+
+		/// Resolves the folder, outside the lock.
+		func resolved() -> RecordedFolder {
+			guard case .unrecorded(let path) = self else { return self }
+			return .unrecorded(path.map(CLIFolderLinks.realPath))
+		}
+	}
+
 	/// What the CLI's rule reads of a project without a link record, with its
-	/// recorded folder already resolved. Call it in the transaction lock.
+	/// recorded folder resolved by a first pass. Call it in the transaction
+	/// lock. A project whose record was deleted since that pass has its
+	/// folder read and resolved here, in the lock, which only that race asks.
 	///
 	/// Values count here only in the Keychain. The CLI also counts a vault
 	/// file it hasn't moved into the Keychain, which the app never reads or
 	/// lists, so a project held only that way isn't one the app links.
-	private func cliProject(_ vaultId: String, recordedFolder: String?) -> CLIFolderLinkProject {
+	private func cliProject(_ vaultId: String, recordedFolder: RecordedFolder) -> CLIFolderLinkProject {
 		CLIFolderLinkProject(
 			vaultId: vaultId,
 			holdsValues: { [store] in try store.listing()[vaultId] != nil },
-			recordedFolder: { recordedFolder }
+			recordedFolder: { [self] in
+				switch recordedFolder {
+				case .unrecorded(let folder): folder
+				case .hadRecord: recordedPathUnlocked(vaultId: vaultId).map(CLIFolderLinks.realPath)
+				}
+			}
 		)
 	}
 
-	/// The folder a project without a link record records, as written; nil
-	/// for one with a record, readable or not.
-	private func unrecordedFolderUnlocked(_ vaultId: String) throws -> String? {
-		guard try folderLinks.data(vaultId: vaultId) == nil else { return nil }
-		return recordedPathUnlocked(vaultId: vaultId)
+	/// The folder a project without a link record records, as written, read
+	/// in the lock.
+	private func unrecordedFolderUnlocked(_ vaultId: String) throws -> RecordedFolder {
+		guard try folderLinks.data(vaultId: vaultId) == nil else { return .hadRecord }
+		return .unrecorded(recordedPathUnlocked(vaultId: vaultId))
 	}
 
 	/// The folder `vaultId`'s metadata records, as written, read without
