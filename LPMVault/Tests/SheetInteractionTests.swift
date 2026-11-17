@@ -992,6 +992,61 @@ struct SheetInteractionTests {
 		#expect(!FileManager.default.fileExists(atPath: source.appendingPathComponent("lpm.json").path))
 	}
 
+	/// A checkout whose lpm.json links the project, apart from the folder the
+	/// project records, which the CLI would link on its own.
+	private func checkoutOfAProjectWithValues(defaults: UserDefaults) throws -> (store: VaultStore, keychain: MockKeychainService, checkout: URL, cleanup: () -> Void) {
+		let recorded = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		let checkout = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		for folder in [recorded, checkout] {
+			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		}
+		try Data(#"{"vault":"sheet-regression"}"#.utf8).write(to: checkout.appendingPathComponent("lpm.json"))
+		let (store, keychain) = makeStore(path: recorded.path, preferences: defaults)
+		ProjectCLILink.rememberFolder(checkout.path, vaultId: "sheet-regression", defaults: defaults)
+		return (store, keychain, checkout, {
+			for folder in [recorded, checkout] { try? FileManager.default.removeItem(at: folder) }
+		})
+	}
+
+	@Test("a checkout this Mac hasn't linked offers to link it, and says why a link failed")
+	func checkoutNotLinkedOnThisMac() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let (store, keychain, checkout, cleanup) = try checkoutOfAProjectWithValues(defaults: defaults)
+		defer { cleanup() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		try #require(try await host.waitForText("Not linked on this Mac yet"))
+
+		keychain.failFolderLinks = true
+		try await host.click("Link Folder")
+		#expect(try await host.waitForText("Try again, or run lpm env link in the folder."))
+		keychain.failFolderLinks = false
+		try await host.click("Link Folder")
+
+		#expect(try await host.waitForText("Linked in lpm.json"))
+		#expect(try keychain.cliFolderLinks.record(vaultId: "sheet-regression")?
+			.contains(CLIFolderLinks.realPath(checkout.path)) == true)
+	}
+
+	@Test("a link this Mac can't check isn't shown as linked")
+	func uncheckedLinkIsNotShownLinked() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let (store, keychain, _, cleanup) = try checkoutOfAProjectWithValues(defaults: defaults)
+		defer { cleanup() }
+		keychain.failFolderLinks = true
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+
+		try #require(try await host.waitForText("Couldn’t check this Mac’s link"))
+		#expect(try await !host.text().contains("Linked in lpm.json"))
+	}
+
 	@Test("the folder whose .lpm is the LPM home can't be chosen")
 	func homeFolderIsRefused() async throws {
 		let domain = "lpm-sheet-test-" + UUID().uuidString

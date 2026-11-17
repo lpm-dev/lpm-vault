@@ -18,9 +18,10 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 	case vaultChanged
 	case unsafeStateDirectory
 	case folderIsLPMHome
-	/// lpm.json names the project, but the folder isn't linked for the LPM
-	/// CLI on this Mac.
+	/// The folder couldn't be linked for the LPM CLI on this Mac.
 	case notLinkedOnThisMac
+	/// The vault locked, or its account changed, before the folder was linked.
+	case interrupted
 
 	var errorDescription: String? {
 		switch self {
@@ -41,7 +42,9 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 		case .folderIsLPMHome:
 			"This folder’s .lpm is where LPM keeps your login and env secrets, so it can’t hold a project. Choose the folder that contains your project’s package.json."
 		case .notLinkedOnThisMac:
-			"lpm.json links this project, but LPM Vault couldn’t link the folder for the LPM CLI on this Mac. Try again, or run lpm env link in the folder."
+			"The LPM CLI on this Mac uses the project’s values only in folders linked to it. Try again, or run lpm env link in the folder."
+		case .interrupted:
+			"LPM Vault locked before it finished linking the folder. Unlock it and try again."
 		}
 	}
 }

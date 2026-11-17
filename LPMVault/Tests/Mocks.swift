@@ -496,29 +496,40 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	let cliFolderLinks = MemoryCLIFolderLinks()
 	var failFolderLinks = false
 
-	func isCLIFolderLinkedResult(_ folder: String, vaultId: String, recordedFolder: String?) -> Result<Bool, KeychainError> {
-		let (failing, holdsValues) = lock.withLock { (shouldFail || failFolderLinks, environments[vaultId] != nil) }
-		if failing { return .failure(failureError) }
+	/// What the CLI's rule reads of a stored project: whether it has values,
+	/// and its folder at its real path when that's absolute.
+	private func cliProject(_ vaultId: String) -> CLIFolderLinkProject {
+		let stored = lock.withLock { environments[vaultId] }
+		return CLIFolderLinkProject(
+			vaultId: vaultId,
+			holdsValues: { stored != nil },
+			recordedFolder: {
+				guard let path = stored?.path, path.hasPrefix("/") else { return nil }
+				return CLIFolderLinks.realPath(path)
+			}
+		)
+	}
+
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
+		if lock.withLock({ shouldFail || failFolderLinks }) { return .failure(failureError) }
 		do {
-			return .success(try CLIFolderLinks.isLinked(
-				folder, vaultId: vaultId, recordedFolder: recordedFolder,
-				holdsValues: { holdsValues }, in: cliFolderLinks))
+			return .success(try CLIFolderLinks.isLinked(folder, project: cliProject(vaultId), in: cliFolderLinks))
 		} catch {
-			return .failure(.unexpectedStatus(errSecInternalComponent))
+			return .failure(.encodingFailed)
 		}
 	}
 
 	func linkCLIFolderResult(
-		_ folder: String, vaultId: String, recordedFolder: String?, unlinkingFrom previousVaultId: String?
+		_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?
 	) -> Result<Void, KeychainError> {
 		if lock.withLock({ shouldFail || failFolderLinks }) { return .failure(failureError) }
 		do {
 			try CLIFolderLinks.link(
-				folder, vaultId: vaultId, recordedFolder: recordedFolder,
-				unlinkingFrom: previousVaultId, in: cliFolderLinks)
+				folder, to: cliProject(vaultId),
+				unlinkingFrom: previousVaultId.map(cliProject), in: cliFolderLinks)
 			return .success(())
 		} catch {
-			return .failure(.unexpectedStatus(errSecInternalComponent))
+			return .failure(.encodingFailed)
 		}
 	}
 

@@ -125,6 +125,7 @@ struct LPMHomeTests {
 		keychain.store("wrapping", service: "dev.lpm.vault-key", account: "wrapping-key")
 		keychain.store("root", service: "dev.lpm.env-personal-root-v2", account: "account")
 		keychain.store("token", service: "lpm-cli", account: "auth-token:abc")
+		keychain.store(#"{"folders":["/work/app"],"schemaVersion":1}"#, service: "dev.lpm.vault.links", account: "vault-a")
 		keychain.store("unrelated", service: "dev.lpm.vault.platforms", account: "connection")
 		try FileManager.default.createDirectory(at: source.url, withIntermediateDirectories: true)
 		for name in [".credential-authority.json", "device-id", ".env-project-key-floor-abc", "store-notes"] {
@@ -133,7 +134,7 @@ struct LPMHomeTests {
 		}
 		let move = LPMHomeMove(shared: keychain, app: keychain)
 		let held = try move.contents(of: source)
-		#expect(held.projects == 1 && held.signedIn && held.items == 5)
+		#expect(held.projects == 1 && held.signedIn && held.items == 6)
 		#expect(held.files == [".credential-authority.json", ".env-project-key-floor-abc", "device-id"])
 		var adopted = false
 
@@ -144,6 +145,9 @@ struct LPMHomeTests {
 		#expect(try keychain.read(service: target.service("dev.lpm.vault"), account: "vault-a") == Data("{}".utf8))
 		#expect(try keychain.accounts(service: target.service("dev.lpm.vault"))["vault-a"] == .requireApproval)
 		#expect(try keychain.read(service: target.service("lpm-cli"), account: "auth-token:abc") == Data("token".utf8))
+		#expect(target.service("dev.lpm.vault.links") != "dev.lpm.vault.links")
+		#expect(try keychain.read(service: target.service("dev.lpm.vault.links"), account: "vault-a")
+			== Data(#"{"folders":["/work/app"],"schemaVersion":1}"#.utf8))
 		#expect(try move.contents(of: source).isEmpty)
 		#expect(try keychain.read(service: "dev.lpm.vault.platforms", account: "connection") != nil, "Items no home owns stay")
 		for name in [".credential-authority.json", "device-id", ".env-project-key-floor-abc"] {

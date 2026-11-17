@@ -461,24 +461,16 @@ actor VaultPersistenceCoordinator {
 	}
 
 	/// Whether the LPM CLI lets `folder` use `vaultId`'s values on this Mac.
+	/// The folder is resolved before the Keychain lock is taken.
 	func isCLIFolderLinked(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
-		recordedFolder(vaultId: vaultId).flatMap {
-			service.isCLIFolderLinkedResult(folder, vaultId: vaultId, recordedFolder: $0)
-		}
+		service.isCLIFolderLinkedResult(CLIFolderLinks.realPath(folder), vaultId: vaultId)
 	}
 
-	/// Lets the LPM CLI use `vaultId`'s values in `folder` on this Mac, and
-	/// stops it using `previousVaultId`'s there.
+	/// Stops the LPM CLI using `previousVaultId`'s values in `folder` on this
+	/// Mac, then lets it use `vaultId`'s there.
 	func linkCLIFolder(_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?) -> Result<Void, KeychainError> {
-		recordedFolder(vaultId: vaultId).flatMap {
-			service.linkCLIFolderResult(folder, vaultId: vaultId, recordedFolder: $0, unlinkingFrom: previousVaultId)
-		}
-	}
-
-	/// The folder the project's metadata records, which the CLI links on its
-	/// own for a project from before folder links.
-	private func recordedFolder(vaultId: String) -> Result<String?, KeychainError> {
-		service.projectMetadataResult(vaultId: vaultId).map { $0?.path }
+		service.linkCLIFolderResult(
+			CLIFolderLinks.realPath(folder), vaultId: vaultId, unlinkingFrom: previousVaultId)
 	}
 
 	func loadOrgTrust(scope: OrgTrustScope) -> Result<OrgKeyTrust, KeychainError> {

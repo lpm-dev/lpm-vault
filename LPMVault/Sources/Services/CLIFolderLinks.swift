@@ -1,38 +1,43 @@
 import Foundation
 
 /// The folders on this Mac that may use a project's values through the LPM
-/// CLI. A project's `lpm.json` names it by vault ID, which is committed and
-/// public, so the CLI gives a folder the values only once the folder is
-/// linked here. Each project keeps its own record, apart from its values and
-/// readable without approval, so the CLI checks a folder without asking.
+/// CLI, which uses a project's values only in folders linked to it. Each
+/// project keeps its own record, apart from its values and readable without
+/// approval, so the CLI checks a folder without asking.
 ///
 /// The record is the CLI's: `{"schemaVersion":1,"folders":[…]}`, with each
-/// folder at its real path.
+/// folder at its real path. The CLI compares folders by their bytes, so
+/// this does too.
 struct CLIFolderLinkRecord: Codable, Equatable, Sendable {
 	static let currentSchemaVersion = 1
 
 	let schemaVersion: Int
-	/// Sorted and unique, as the CLI keeps them.
+	/// Unique and sorted by their UTF-8 bytes, as the CLI keeps them.
 	private(set) var folders: [String]
 
 	init(folders: some Sequence<String>) {
 		schemaVersion = Self.currentSchemaVersion
-		self.folders = Array(Set(folders)).sorted()
+		self.folders = Self.sortedUnique(folders)
 	}
 
 	init(from decoder: any Decoder) throws {
 		let container = try decoder.container(keyedBy: CodingKeys.self)
 		schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-		guard schemaVersion == Self.currentSchemaVersion else {
-			throw DecodingError.dataCorruptedError(
-				forKey: .schemaVersion, in: container,
-				debugDescription: "Folder links use schema version \(schemaVersion), which LPM Vault doesn't support")
-		}
-		folders = Array(Set(try container.decode([String].self, forKey: .folders))).sorted()
+		folders = Self.sortedUnique(try container.decode([String].self, forKey: .folders))
 	}
 
-	static func decode(_ data: Data) throws -> CLIFolderLinkRecord {
-		try JSONDecoder().decode(CLIFolderLinkRecord.self, from: data)
+	/// The record in `data`. A field a later version adds is read past, as
+	/// the CLI reads past it; a record from a later version isn't read.
+	static func decode(_ data: Data) throws(CLIFolderLinkRecordError) -> CLIFolderLinkRecord {
+		let record: CLIFolderLinkRecord
+		do {
+			record = try JSONDecoder().decode(CLIFolderLinkRecord.self, from: data)
+		} catch {
+			throw .damaged
+		}
+		guard record.schemaVersion <= currentSchemaVersion else { throw .newerVersion }
+		guard record.schemaVersion == currentSchemaVersion else { throw .damaged }
+		return record
 	}
 
 	func encoded() throws -> Data {
@@ -41,31 +46,53 @@ struct CLIFolderLinkRecord: Codable, Equatable, Sendable {
 		return try encoder.encode(self)
 	}
 
-	func contains(_ folder: String) -> Bool { folders.contains(folder) }
+	func contains(_ folder: String) -> Bool {
+		folders.contains { $0.utf8.elementsEqual(folder.utf8) }
+	}
 
 	/// Whether it added `folder`.
 	@discardableResult
 	mutating func insert(_ folder: String) -> Bool {
-		guard !folders.contains(folder) else { return false }
-		folders.append(folder)
-		folders.sort()
+		guard !contains(folder) else { return false }
+		folders = Self.sortedUnique(folders + [folder])
 		return true
 	}
 
 	/// Whether it removed `folder`.
 	@discardableResult
 	mutating func remove(_ folder: String) -> Bool {
-		guard let index = folders.firstIndex(of: folder) else { return false }
-		folders.remove(at: index)
-		return true
+		let before = folders.count
+		folders.removeAll { $0.utf8.elementsEqual(folder.utf8) }
+		return folders.count != before
 	}
+
+	private static func sortedUnique(_ folders: some Sequence<String>) -> [String] {
+		var seen = Set<[UInt8]>()
+		return folders
+			.filter { seen.insert(Array($0.utf8)).inserted }
+			.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+	}
+}
+
+enum CLIFolderLinkRecordError: Error, Equatable, Sendable {
+	/// The record can't be read; linking a folder replaces it.
+	case damaged
+	/// A later LPM CLI or LPM Vault wrote it; it's left as it is.
+	case newerVersion
 }
 
 /// Where the projects' link records live.
 protocol CLIFolderLinkStoring: Sendable {
-	func record(vaultId: String) throws -> CLIFolderLinkRecord?
+	/// The raw record, so a caller can tell a damaged one from none.
+	func data(vaultId: String) throws -> Data?
 	func write(_ record: CLIFolderLinkRecord, vaultId: String) throws
 	func delete(vaultId: String) throws
+}
+
+extension CLIFolderLinkStoring {
+	func record(vaultId: String) throws -> CLIFolderLinkRecord? {
+		try data(vaultId: vaultId).map { data throws in try CLIFolderLinkRecord.decode(data) }
+	}
 }
 
 /// The records as the CLI keeps them: one item per project in the group the
@@ -79,13 +106,8 @@ struct KeychainCLIFolderLinks: CLIFolderLinkStoring {
 		self.backend = backend
 	}
 
-	func record(vaultId: String) throws -> CLIFolderLinkRecord? {
-		guard let data = try backend.read(service: service, account: vaultId) else { return nil }
-		do {
-			return try CLIFolderLinkRecord.decode(data)
-		} catch {
-			throw KeychainStoreError.status(operation: "read folder links", code: errSecDecode)
-		}
+	func data(vaultId: String) throws -> Data? {
+		try backend.read(service: service, account: vaultId)
 	}
 
 	func write(_ record: CLIFolderLinkRecord, vaultId: String) throws {
@@ -100,72 +122,119 @@ struct KeychainCLIFolderLinks: CLIFolderLinkStoring {
 /// Records in memory, so tests never reach the Keychain through them.
 final class MemoryCLIFolderLinks: CLIFolderLinkStoring, @unchecked Sendable {
 	private let lock = NSLock()
-	private var records: [String: CLIFolderLinkRecord] = [:]
+	private var stored: [String: Data] = [:]
+	/// Makes writes fail, as a Keychain that refuses them would.
+	var failWrites = false
 
 	init(_ records: [String: CLIFolderLinkRecord] = [:]) {
-		self.records = records
+		stored = records.compactMapValues { try? $0.encoded() }
 	}
 
-	func record(vaultId: String) throws -> CLIFolderLinkRecord? {
-		lock.withLock { records[vaultId] }
+	func data(vaultId: String) throws -> Data? {
+		lock.withLock { stored[vaultId] }
+	}
+
+	func setData(_ data: Data?, vaultId: String) {
+		lock.withLock { stored[vaultId] = data }
 	}
 
 	func write(_ record: CLIFolderLinkRecord, vaultId: String) throws {
-		lock.withLock { records[vaultId] = record }
+		let data = try record.encoded()
+		try lock.withLock {
+			if failWrites { throw KeychainStoreError.status(operation: "write", code: errSecNotAvailable) }
+			stored[vaultId] = data
+		}
 	}
 
 	func delete(vaultId: String) throws {
-		_ = lock.withLock { records.removeValue(forKey: vaultId) }
+		_ = lock.withLock { stored.removeValue(forKey: vaultId) }
 	}
 }
 
+/// What the LPM CLI knows of a project without a link record: whether this
+/// Mac holds its values, and the folder its metadata records. Both are read
+/// only when the project has no record.
+struct CLIFolderLinkProject {
+	let vaultId: String
+	let holdsValues: () throws -> Bool
+	/// The recorded folder at its real path; nil when there's none, or it
+	/// isn't absolute.
+	let recordedFolder: () -> String?
+}
+
 enum CLIFolderLinks {
-	/// Whether the LPM CLI lets `folder` use `vaultId`'s values, by the CLI's
-	/// rule. A project without a record predates links: with no values on
-	/// this Mac nothing is kept from any folder, and otherwise only the
-	/// folder its metadata records, `recordedFolder`, is linked.
+	/// Whether the LPM CLI lets `folder`, a real path, use the project's
+	/// values, by the CLI's rule. A project without a record predates links:
+	/// with no values on this Mac nothing is kept from any folder, and
+	/// otherwise only the folder its metadata records is linked.
 	static func isLinked(
 		_ folder: String,
-		vaultId: String,
-		recordedFolder: String?,
-		holdsValues: () throws -> Bool,
+		project: CLIFolderLinkProject,
 		in store: any CLIFolderLinkStoring
 	) throws -> Bool {
-		let folder = realPath(folder)
-		if let record = try store.record(vaultId: vaultId) {
+		if let record = try store.record(vaultId: project.vaultId) {
 			return record.contains(folder)
 		}
-		guard try holdsValues() else { return true }
-		return recordedFolder.map(realPath) == folder
+		guard try project.holdsValues() else { return true }
+		return project.recordedFolder().map { $0.utf8.elementsEqual(folder.utf8) } ?? false
 	}
 
-	/// Links `folder` to `vaultId`, and unlinks it from `previousVaultId`,
-	/// whose ID its `lpm.json` no longer names. A project's first record
-	/// keeps the folder its metadata records, which the CLI links on its own.
+	/// Unlinks `folder`, a real path, from `previous`, whose ID its lpm.json
+	/// named, then links it to `project`. Unlinking comes first, so a
+	/// failure leaves the folder linked to no more than it was, and doing it
+	/// again finishes the job. A project's first record keeps the folder its
+	/// metadata records, which the CLI links on its own; a record that can't
+	/// be read is replaced, as the CLI's `lpm env link` replaces it.
 	static func link(
 		_ folder: String,
-		vaultId: String,
-		recordedFolder: String?,
-		unlinkingFrom previousVaultId: String?,
+		to project: CLIFolderLinkProject,
+		unlinkingFrom previous: CLIFolderLinkProject?,
 		in store: any CLIFolderLinkStoring
 	) throws {
-		let folder = realPath(folder)
-		let existing = try store.record(vaultId: vaultId)
-		var record = existing ?? CLIFolderLinkRecord(
-			folders: [recordedFolder].compactMap { $0 }.filter { !$0.isEmpty }.map(realPath))
+		if let previous, previous.vaultId != project.vaultId {
+			try unlink(folder, from: previous, in: store)
+		}
+		let existing: CLIFolderLinkRecord?
+		do {
+			existing = try store.record(vaultId: project.vaultId)
+		} catch CLIFolderLinkRecordError.damaged {
+			existing = CLIFolderLinkRecord(folders: [])
+		}
+		var record = existing ?? CLIFolderLinkRecord(folders: [project.recordedFolder()].compactMap { $0 })
 		if record.insert(folder) || existing == nil {
-			try store.write(record, vaultId: vaultId)
+			try store.write(record, vaultId: project.vaultId)
 		}
-		guard let previousVaultId, previousVaultId != vaultId,
-			var previous = try store.record(vaultId: previousVaultId)
+	}
+
+	/// A project whose record can't be read keeps its folders refused by the
+	/// CLI, so it's left as it is.
+	private static func unlink(
+		_ folder: String,
+		from previous: CLIFolderLinkProject,
+		in store: any CLIFolderLinkStoring
+	) throws {
+		let existing: CLIFolderLinkRecord?
+		do {
+			existing = try store.record(vaultId: previous.vaultId)
+		} catch is CLIFolderLinkRecordError {
+			return
+		}
+		if var record = existing {
+			if record.remove(folder) {
+				try store.write(record, vaultId: previous.vaultId)
+			}
+			return
+		}
+		// Without a record the CLI links the recorded folder of a project with
+		// values; an empty record keeps it from linking this one.
+		guard try previous.holdsValues(),
+			previous.recordedFolder().map({ $0.utf8.elementsEqual(folder.utf8) }) == true
 		else { return }
-		if previous.remove(folder) {
-			try store.write(previous, vaultId: previousVaultId)
-		}
+		try store.write(CLIFolderLinkRecord(folders: []), vaultId: previous.vaultId)
 	}
 
 	/// `path` with symbolic links resolved, as the CLI keeps a folder; as
-	/// given when it doesn't exist.
+	/// given when it doesn't exist. Blocking file work.
 	static func realPath(_ path: String) -> String {
 		guard let resolved = Darwin.realpath(path, nil) else { return path }
 		defer { free(resolved) }
