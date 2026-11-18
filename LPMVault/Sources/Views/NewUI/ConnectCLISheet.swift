@@ -13,6 +13,9 @@ struct ConnectCLISheet: View {
 
 	@State private var setupMode: SetupMode = .copyJSON
 	@State private var status: ProjectCLILinkStatus?
+	/// Whether the LPM CLI on this Mac uses the vault in a folder whose
+	/// lpm.json links it.
+	@State private var macLink = MacLink.notApplicable
 	@State private var chosenFolder: String?
 	@State private var linkError: ProjectCLILinkError?
 	/// The folder chosen in the panel when the project around it was taken instead.
@@ -26,6 +29,17 @@ struct ConnectCLISheet: View {
 	@State var showsTaskExample = false
 	/// Shows every terminal command, not just the first.
 	@State private var showsAllCommands = false
+
+	enum MacLink: Equatable {
+		/// lpm.json doesn't link this vault, so there's nothing to check.
+		case notApplicable
+		case checking
+		case linked
+		case notLinked
+		/// The Keychain couldn't tell, as when it's locked or the link record
+		/// can't be read.
+		case unknown
+	}
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
@@ -57,6 +71,12 @@ struct ConnectCLISheet: View {
 	/// Tall enough for what's open, so nothing needs scrolling: the task example and the other commands add their own room.
 	private var preferredHeight: CGFloat {
 		min(640 + (showsTaskExample ? 120 : 0) + (showsAllCommands ? 68 : 0), availableHeight)
+	}
+
+	/// lpm.json links this vault, but the LPM CLI on this Mac may not use it
+	/// there.
+	private var needsMacLink: Bool {
+		status == .linked && (macLink == .notLinked || macLink == .unknown)
 	}
 
 	private var configJSON: String {
@@ -147,6 +167,39 @@ struct ConnectCLISheet: View {
 		.accessibilityElement(children: .contain)
 	}
 
+	private var macLinkNotice: some View {
+		HStack(spacing: 12) {
+			VaultCardIcon(systemImage: "link", size: 28)
+			VStack(alignment: .leading, spacing: 1) {
+				Text(macLink == .unknown ? "Couldn’t check this Mac’s link" : "Not linked on this Mac yet")
+					.font(.system(size: 12.5, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text(macLink == .unknown
+					? "LPM Vault couldn’t read which folders the LPM CLI may use this vault in. Link Folder writes them again, unless a newer LPM CLI or LPM Vault wrote them."
+					: "The LPM CLI uses this vault only in folders linked to it on this Mac.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+				if let linkError {
+					Text(linkError.localizedDescription)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.redText)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+			Spacer(minLength: 8)
+			VaultBarButton(systemImage: "link", title: isLinking ? "Linking…" : "Link Folder", filled: true, disabled: isLinking) {
+				linkOnThisMac()
+			}
+		}
+		.padding(.leading, 12)
+		.padding(.trailing, 10)
+		.padding(.vertical, 10)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+		.accessibilityElement(children: .contain)
+	}
+
 	private var vaultIDSection: some View {
 		// A labeled value, with what it is under it: the ID is in the JSON below too, so it needs no box of its own.
 		VStack(alignment: .leading, spacing: 3) {
@@ -209,8 +262,11 @@ struct ConnectCLISheet: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.codeBlock))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
 			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
+			if needsMacLink {
+				macLinkNotice
+			}
 			if setupMode == .copyJSON {
-				Text("Create lpm.json if it’s missing, and keep any fields it has.")
+				Text("Create lpm.json if it’s missing, and keep any fields it has. The LPM CLI asks to link the folder the first time it runs there, or run lpm env link in it.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -279,9 +335,11 @@ struct ConnectCLISheet: View {
 			}
 			switch status {
 			case .linked:
-				Label("Linked", systemImage: "checkmark")
-					.font(.system(size: 11, weight: .semibold))
-					.foregroundStyle(VaultPalette.greenTintText)
+				if macLink == .linked {
+					Label("Linked", systemImage: "checkmark")
+						.font(.system(size: 11, weight: .semibold))
+						.foregroundStyle(VaultPalette.greenTintText)
+				}
 			case .noFolder:
 				EmptyView()
 			case .linkedToOtherVault(let other):
@@ -313,7 +371,7 @@ struct ConnectCLISheet: View {
 				Text("Using the project folder around \(choiceInsideProject.lastPathComponent), as the LPM CLI does.")
 					.foregroundStyle(VaultPalette.textSecondary)
 			}
-			if let linkError {
+			if let linkError, !needsMacLink {
 				Text(linkError.localizedDescription)
 					.foregroundStyle(VaultPalette.redText)
 			}
@@ -437,7 +495,13 @@ struct ConnectCLISheet: View {
 
 	private var statusText: String {
 		switch status {
-		case .linked: "Linked in lpm.json"
+		case .linked:
+			switch macLink {
+			case .linked, .notApplicable: "Linked in lpm.json"
+			case .checking: "Checking this Mac’s link…"
+			case .notLinked: "Not linked on this Mac yet"
+			case .unknown: "Couldn’t check this Mac’s link"
+			}
 		case .notLinked: "Not linked to a project folder yet"
 		case .linkedToOtherVault: "lpm.json links another vault"
 		case .unreadable: "Cannot read lpm.json"
@@ -449,7 +513,12 @@ struct ConnectCLISheet: View {
 	/// Only a state worth noticing gets a dot.
 	private var statusColor: Color? {
 		switch status {
-		case .linked: VaultPalette.green
+		case .linked:
+			switch macLink {
+			case .linked, .notApplicable: VaultPalette.green
+			case .notLinked, .unknown: VaultPalette.orange
+			case .checking: nil
+			}
 		case .linkedToOtherVault, .unreadable: VaultPalette.orange
 		case .notLinked, .noFolder, nil: nil
 		}
@@ -501,6 +570,7 @@ struct ConnectCLISheet: View {
 		statusGeneration += 1
 		let generation = statusGeneration
 		status = nil
+		macLink = .notApplicable
 		configuration = .pending
 		let vaultId = projectId
 		let folder = folder
@@ -512,6 +582,13 @@ struct ConnectCLISheet: View {
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
 			configuration = config
+			// lpm.json shows at once; the Keychain check waits for the lock the
+			// CLI holds while it reads values.
+			guard resolved == .linked else { return }
+			macLink = .checking
+			let linked = await store.isCLIFolderLinkedOnThisMac(vaultId: vaultId, folder: folder)
+			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
+			macLink = linked.map { $0 ? .linked : .notLinked } ?? .unknown
 		}
 	}
 
@@ -520,13 +597,26 @@ struct ConnectCLISheet: View {
 		isLinking = true
 		linkError = nil
 		let vaultId = projectId
-		let home = store.lpmHome
 		Task {
-			let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId, home: home)
+			let failure = await store.linkProjectFolder(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId)
 			isLinking = false
 			linkError = failure
 			refreshStatus()
 			store.reloadKeyDescriptions()
+		}
+	}
+
+	private func linkOnThisMac() {
+		guard !isLinking else { return }
+		isLinking = true
+		linkError = nil
+		let vaultId = projectId
+		let folder = folder
+		Task {
+			let failure = await store.linkCLIFolderOnThisMac(vaultId: vaultId, folder: folder)
+			isLinking = false
+			linkError = failure
+			refreshStatus()
 		}
 	}
 

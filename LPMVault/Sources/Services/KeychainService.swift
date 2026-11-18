@@ -486,6 +486,14 @@ protocol KeychainServiceProtocol: Sendable {
 	/// found from item attributes alone, so no value is read and no
 	/// approval is asked for. A project removed from the sidebar still counts.
 	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError>
+	/// Whether the LPM CLI lets `folder`, a real path, use `vaultId`'s values
+	/// on this Mac, by the CLI's rule. Reads no values.
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String) -> Result<Bool, KeychainError>
+	/// Stops `folder`, a real path, using `previousVaultId`'s values through
+	/// the LPM CLI on this Mac, then lets it use `vaultId`'s.
+	func linkCLIFolderResult(
+		_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?
+	) -> Result<Void, KeychainError>
 	/// What local history made of each project's last values change since
 	/// the last call, for projects whose change it recorded or didn't.
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome]
@@ -3607,6 +3615,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
+	private let folderLinks: any CLIFolderLinkStoring
 
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
 		store.takeHistoryOutcomes()
@@ -3744,6 +3753,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	init() {
 		self.store = SharedKeychainStore(service: LPMHome.current.service(VaultConstants.keychainService))
+		self.folderLinks = KeychainCLIFolderLinks(home: .current)
 		self.appItemBackends = Dictionary(uniqueKeysWithValues: AppKeychainStore.allCases.map {
 			($0, AppKeychainBackend(service: $0.service(in: .current)))
 		})
@@ -3751,10 +3761,13 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	/// An app store without a backend in `appItemBackends` is unavailable,
 	/// so tests never reach the real Keychain through it.
+	/// Folder links default to memory, so tests never reach the Keychain
+	/// through them.
 	init(
 		testingService: String,
 		backend: any KeychainStoreBackend = SecurityKeychainStoreBackend(),
 		appItemBackends: [AppKeychainStore: any AppKeychainItemBackend] = [:],
+		folderLinks: any CLIFolderLinkStoring = MemoryCLIFolderLinks(),
 		performanceCounters: VaultKeychainPerformanceCounters? = nil
 	) {
 		self.store = SharedKeychainStore(
@@ -3762,6 +3775,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			backend: backend,
 			performanceCounters: performanceCounters
 		)
+		self.folderLinks = folderLinks
 		self.appItemBackends = appItemBackends
 	}
 
@@ -3799,6 +3813,113 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return .success(Set(vaultIds.lazy.filter { listing[$0] != nil }))
 		} catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	/// A project's recorded folder is resolved outside the lock, which a
+	/// stalled volume could otherwise hold for every vault operation.
+	func isCLIFolderLinkedResult(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		return folderLinkResult {
+			let (decided, recordedPath) = try VaultKeychainTransactionLock.withLock { () -> (Bool?, String?) in
+				let decided = try CLIFolderLinks.decidedWithoutRecordedFolder(
+					folder, vaultId: vaultId, holdsValues: { try store.listing()[vaultId] != nil }, in: folderLinks)
+				return (decided, decided == nil ? recordedPathUnlocked(vaultId: vaultId) : nil)
+			}
+			if let decided { return decided }
+			return CLIFolderLinks.isRecordedFolder(folder, recordedPath.map(CLIFolderLinks.realPath))
+		}
+	}
+
+	/// Runs in the transaction lock the CLI takes, so neither loses the
+	/// other's change to a record.
+	func linkCLIFolderResult(
+		_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?
+	) -> Result<Void, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		// An ID the CLI can't use has no record to unlink the folder from.
+		let previous = previousVaultId.flatMap { EnvValidation.isSafeVaultId($0) ? $0 : nil }
+		return folderLinkResult {
+			// The folders the projects record are read under the lock, resolved
+			// outside it, and used under it again only for a project that still
+			// has no record.
+			let (recorded, previousRecorded) = try VaultKeychainTransactionLock.withLock {
+				(try unrecordedFolderUnlocked(vaultId), try previous.map(unrecordedFolderUnlocked))
+			}
+			let resolved = recorded.resolved()
+			let previousResolved = previousRecorded?.resolved()
+			try VaultKeychainTransactionLock.withLock {
+				try CLIFolderLinks.link(
+					folder, to: cliProject(vaultId, recordedFolder: resolved),
+					unlinkingFrom: previous.map { cliProject($0, recordedFolder: previousResolved ?? .hadRecord) },
+					in: folderLinks)
+			}
+		}
+	}
+
+	/// What a first pass under the lock found of a project's recorded folder.
+	private enum RecordedFolder {
+		/// The project had a link record, so its recorded folder wasn't read.
+		case hadRecord
+		/// The project had none; the folder it records, as written.
+		case unrecorded(String?)
+
+		/// Resolves the folder, outside the lock.
+		func resolved() -> RecordedFolder {
+			guard case .unrecorded(let path) = self else { return self }
+			return .unrecorded(path.map(CLIFolderLinks.realPath))
+		}
+	}
+
+	/// What the CLI's rule reads of a project without a link record, with its
+	/// recorded folder resolved by a first pass. Call it in the transaction
+	/// lock. A project whose record was deleted since that pass has its
+	/// folder read and resolved here, in the lock, which only that race asks.
+	///
+	/// Values count here only in the Keychain. The CLI also counts a vault
+	/// file it hasn't moved into the Keychain, which the app never reads or
+	/// lists, so a project held only that way isn't one the app links.
+	private func cliProject(_ vaultId: String, recordedFolder: RecordedFolder) -> CLIFolderLinkProject {
+		CLIFolderLinkProject(
+			vaultId: vaultId,
+			holdsValues: { [store] in try store.listing()[vaultId] != nil },
+			recordedFolder: { [self] in
+				switch recordedFolder {
+				case .unrecorded(let folder): folder
+				case .hadRecord: recordedPathUnlocked(vaultId: vaultId).map(CLIFolderLinks.realPath)
+				}
+			}
+		)
+	}
+
+	/// The folder a project without a link record records, as written, read
+	/// in the lock.
+	private func unrecordedFolderUnlocked(_ vaultId: String) throws -> RecordedFolder {
+		guard try folderLinks.data(vaultId: vaultId) == nil else { return .hadRecord }
+		return .unrecorded(recordedPathUnlocked(vaultId: vaultId))
+	}
+
+	/// The folder `vaultId`'s metadata records, as written, read without
+	/// creating the project index. A record that can't be read, or a folder
+	/// that isn't absolute, names none, as the CLI takes it.
+	private func recordedPathUnlocked(vaultId: String) -> String? {
+		guard let marker = try? readItemThrowing(account: Self.projectIndexMarkerAccount),
+			let state = try? decodeProjectIndexMarker(marker),
+			let snapshot = try? readProjectMetadataRecordThrowing(vaultId: vaultId, state: state)
+		else { return nil }
+		let path = snapshot.record.metadata.path
+		return path.hasPrefix("/") ? path : nil
+	}
+
+	private func folderLinkResult<T>(_ body: () throws -> T) -> Result<T, KeychainError> {
+		do {
+			return .success(try body())
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch is CLIFolderLinkRecordError {
+			return .failure(.encodingFailed)
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
 	}
 
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
@@ -4086,6 +4207,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				case .delete(let vaultId, let deletePayload):
 					guard EnvValidation.isSafeVaultId(vaultId) else {
 						return .failure(.accessDenied)
+					}
+					// Links go first: a project that comes back under this ID,
+					// as a pull brings it back, starts without its old folders.
+					if deletePayload {
+						try folderLinks.delete(vaultId: vaultId)
 					}
 					try removeProjectRecordsThrowing(
 						vaultId: vaultId,

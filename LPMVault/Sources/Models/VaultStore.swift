@@ -3291,12 +3291,13 @@ final class VaultStore {
     else { return .failed }
 
     if !setup.folder.isEmpty {
-      let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: setup.folder, home: lpmHome)
+      let failure = await linkProjectFolder(vaultId: vaultId, folder: setup.folder)
       guard isUnlocked, selectedAccount == expectedAccount,
         sessionGeneration == vaultSessionGeneration
       else { return .failed }
       if let failure {
-        noteCreationProblem("\(normalizedName.escapingDirectionControls) was created, but LPM Vault couldn’t link its folder. \(failure.localizedDescription) Link it from Connect CLI.")
+        let remedy = [.notLinkedOnThisMac, .interrupted].contains(failure) ? "" : " Link it from Connect CLI."
+        noteCreationProblem("\(normalizedName.escapingDirectionControls) was created, but LPM Vault couldn’t link its folder. \(failure.localizedDescription)\(remedy)")
       }
       reloadKeyDescriptions()
     }
@@ -4398,6 +4399,53 @@ final class VaultStore {
       descriptions.folder == keyDescriptionFolder(for: project)
     else { return [] }
     return descriptions.schema?.overview?.publicKeys ?? []
+  }
+
+  /// Writes `vaultId` into `folder`'s lpm.json, replacing `replacingVaultId`,
+  /// then links the folder for the LPM CLI on this Mac, which uses a
+  /// project's values only in a folder linked to it.
+  /// lpm.json is checked as its write would check it, then the folder is
+  /// linked, then lpm.json is written. A folder whose lpm.json can't take
+  /// the ID is linked to nothing, and a failure after the check leaves
+  /// lpm.json as it was, so the same request finishes the job.
+  func linkProjectFolder(vaultId: String, folder: String, replacingVaultId: String? = nil) async -> ProjectCLILinkError? {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    let session = vaultSessionGeneration
+    let account = selectedAccount
+    if let failure = await ProjectCLILink.linkInBackground(
+      vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: lpmHome, checkOnly: true)
+    {
+      return failure
+    }
+    // The check can wait out the CLI's config lock; a request from a session
+    // that ended meanwhile changes nothing.
+    guard isUnlocked, session == vaultSessionGeneration, account == selectedAccount else { return .interrupted }
+    if let failure = await linkCLIFolderOnThisMac(vaultId: vaultId, folder: folder, unlinkingFrom: replacingVaultId) {
+      return failure
+    }
+    guard isUnlocked, session == vaultSessionGeneration, account == selectedAccount else { return .interrupted }
+    return await ProjectCLILink.linkInBackground(
+      vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: lpmHome)
+  }
+
+  /// Links `folder` for the LPM CLI on this Mac, after unlinking it from
+  /// `previousVaultId`, whose ID its lpm.json named.
+  func linkCLIFolderOnThisMac(vaultId: String, folder: String, unlinkingFrom previousVaultId: String? = nil) async -> ProjectCLILinkError? {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    guard isUnlocked else { return .interrupted }
+    if case .failure(let error) = await persistence.linkCLIFolder(folder, vaultId: vaultId, unlinkingFrom: previousVaultId) {
+      vaultStoreLogger.error("Couldn't link a folder for the CLI: \(error.description, privacy: .public)")
+      return .notLinkedOnThisMac
+    }
+    return nil
+  }
+
+  /// Whether the LPM CLI on this Mac uses `vaultId`'s values in `folder`;
+  /// nil when the Keychain can't tell.
+  func isCLIFolderLinkedOnThisMac(vaultId: String, folder: String) async -> Bool? {
+    try? await persistence.isCLIFolderLinked(folder, vaultId: vaultId).get()
   }
 
   /// Rereads the selected project's key descriptions from its `lpm.json`.

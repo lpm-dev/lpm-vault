@@ -89,6 +89,7 @@ struct LPMHomeMove: Sendable {
 		VaultCrypto.wrappingKeyService,
 		PersonalProjectCrypto.rootService,
 		VaultConstants.cliAuthService,
+		VaultConstants.cliFolderLinksKeychainService,
 	]
 	/// The app's own services that belong to a home's env projects.
 	static let appServices = [VaultConstants.publishingKeychainService]

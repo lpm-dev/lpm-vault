@@ -18,6 +18,10 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 	case vaultChanged
 	case unsafeStateDirectory
 	case folderIsLPMHome
+	/// The folder couldn't be linked for the LPM CLI on this Mac.
+	case notLinkedOnThisMac
+	/// The vault locked, or its account changed, before the folder was linked.
+	case interrupted
 
 	var errorDescription: String? {
 		switch self {
@@ -37,6 +41,10 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 			".lpm in this folder is a symbolic link or not a folder, so the CLI won’t use it. Remove it or copy the JSON instead."
 		case .folderIsLPMHome:
 			"This folder’s .lpm is where LPM keeps your login and env secrets, so it can’t hold a project. Choose the folder that contains your project’s package.json."
+		case .notLinkedOnThisMac:
+			"The LPM CLI on this Mac uses the project’s values only in folders linked to it. Try again, or run lpm env link in the folder."
+		case .interrupted:
+			"LPM Vault locked before it finished linking the folder. Unlock it and try again."
 		}
 	}
 }
@@ -97,15 +105,26 @@ enum ProjectCLILink {
 		inspect(vaultId: vaultId, folder: folder).status
 	}
 
-	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping other settings.
-	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current) throws(ProjectCLILinkError) {
+	/// Stops a check-only link just before it would write.
+	private struct CheckedOnly: Error {}
+
+	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping
+	/// other settings. With `checkOnly`, makes every check the write makes and
+	/// stops before writing.
+	static func link(
+		vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current,
+		checkOnly: Bool = false
+	) throws(ProjectCLILinkError) {
 		guard folderExists(folder) else { throw .noFolder }
 		do {
 			try ProjectConfigFile.writeVaultID(
 				vaultId, to: configURL(inFolder: folder),
 				policy: replacingVaultId.map(ProjectConfigFile.VaultWritePolicy.replacing) ?? .unlinked,
-				home: home
+				home: home,
+				beforeWrite: checkOnly ? { throw CheckedOnly() } : nil
 			)
+		} catch is CheckedOnly {
+			return
 		} catch let error as ProjectConfigFile.FileError {
 			switch error {
 			case .invalidJSON, .duplicateJSONKey: throw .invalidJSON
@@ -123,11 +142,16 @@ enum ProjectCLILink {
 
 	/// `link(vaultId:folder:replacingVaultId:)` on the queue that orders the app's
 	/// `lpm.json` edits, returning why it failed.
-	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current) async -> ProjectCLILinkError? {
+	static func linkInBackground(
+		vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current,
+		checkOnly: Bool = false
+	) async -> ProjectCLILinkError? {
 		await withCheckedContinuation { continuation in
 			ProjectConfigFile.editQueue.async {
 				do throws(ProjectCLILinkError) {
-					try link(vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: home)
+					try link(
+						vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: home,
+						checkOnly: checkOnly)
 					continuation.resume(returning: nil)
 				} catch {
 					continuation.resume(returning: error)

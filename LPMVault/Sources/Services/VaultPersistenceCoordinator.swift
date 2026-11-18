@@ -460,6 +460,19 @@ actor VaultPersistenceCoordinator {
 		service.getProjectResult(vaultId: vaultId).map { $0 != nil }
 	}
 
+	/// Whether the LPM CLI lets `folder` use `vaultId`'s values on this Mac.
+	/// The folder is resolved before the Keychain lock is taken.
+	func isCLIFolderLinked(_ folder: String, vaultId: String) -> Result<Bool, KeychainError> {
+		service.isCLIFolderLinkedResult(CLIFolderLinks.realPath(folder), vaultId: vaultId)
+	}
+
+	/// Stops the LPM CLI using `previousVaultId`'s values in `folder` on this
+	/// Mac, then lets it use `vaultId`'s there.
+	func linkCLIFolder(_ folder: String, vaultId: String, unlinkingFrom previousVaultId: String?) -> Result<Void, KeychainError> {
+		service.linkCLIFolderResult(
+			CLIFolderLinks.realPath(folder), vaultId: vaultId, unlinkingFrom: previousVaultId)
+	}
+
 	func loadOrgTrust(scope: OrgTrustScope) -> Result<OrgKeyTrust, KeychainError> {
 		switch service.readDataResult(account: scope.storageAccount) {
 		case .success(nil): return .success(OrgKeyTrust())
