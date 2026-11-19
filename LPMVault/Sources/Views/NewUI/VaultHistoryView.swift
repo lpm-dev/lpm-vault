@@ -4,6 +4,7 @@ import SwiftUI
 struct VaultHistoryView: View {
 	let store: VaultStore
 	let project: VaultProject
+	var onProjectSettings: () -> Void = {}
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
 	@State private var keySearch = ""
@@ -57,15 +58,19 @@ struct VaultHistoryView: View {
 	// MARK: - Header and filters
 
 	private var header: some View {
-		HStack(alignment: .firstTextBaseline, spacing: 10) {
-			Text("History")
-				.vaultPageTitle()
-				.accessibilityAddTraits(.isHeader)
-			Text("Changes to \(project.name)’s values on this Mac")
-				.font(.system(size: 12.5))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
-			Spacer(minLength: 0)
+		HStack(spacing: 10) {
+			HStack(alignment: .firstTextBaseline, spacing: 10) {
+				Text("History")
+					.vaultPageTitle()
+					.accessibilityAddTraits(.isHeader)
+				Text("Changes to \(project.name)’s values on this Mac")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+			}
+			Spacer(minLength: 8)
+			VaultOutlineButton(systemImage: "gearshape", title: "Project Settings", help: "Project Settings (⌘I)", label: "Project Settings",
+				borderless: true, action: onProjectSettings)
 		}
 		.padding(.horizontal, 20)
 		.frame(height: 60)

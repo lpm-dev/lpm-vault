@@ -24,9 +24,9 @@ struct SettingsPageStoreTests {
 	func overlayGeometry() {
 		let regular = VaultSettingsOverlay.panelFrame(in: CGSize(width: 1280, height: 800))
 		#expect(regular.minY == VaultMetrics.titleBar + 40 && regular.maxY == 800 - 40, "40 points below the title bar and above the bottom")
-		#expect(regular.width == 977 && abs(regular.midX - 640) < 0.5,
-			"Centered, at its widest: a 200-point menu, its hairline, and 720 points of cards inset 28 on each side")
-		#expect(VaultSettingsOverlay.panelFrame(in: CGSize(width: 1280, height: 800), scrollBar: 15).width == 992,
+		#expect(regular.width == 1017 && abs(regular.midX - 640) < 0.5,
+			"Centered, at its widest: a 240-point menu, its hairline, and 720 points of cards inset 28 on each side")
+		#expect(VaultSettingsOverlay.panelFrame(in: CGSize(width: 1280, height: 800), scrollBar: 15).width == 1032,
 			"Where scroll bars always show, wider by one, so the cards keep their width")
 		let small = VaultSettingsOverlay.panelFrame(in: CGSize(width: 1040, height: 640))
 		#expect(small.minX == 40 && small.maxX == 1000, "At least 40 points on each side")
@@ -47,6 +47,21 @@ struct SettingsPageStoreTests {
 		#expect(store.shownSettingsCategory == nil && !store.isShowingAccountPage)
 		store.showSettings()
 		#expect(store.shownSettingsCategory == .cli, "Where it was left, as Platforms is a page of its own")
+	}
+
+	@Test("closing the project leaves it, its environment and any Settings page, for the start page")
+	func closeProject() {
+		let store = makeStore()
+		store.projects = [VaultProject(id: "closing", name: "closing-app", path: "", environments: ["default": [:], "staging": [:]])]
+		store.openProject(id: "closing", environment: "staging")
+		store.showSettings(.cli)
+		#expect(store.selectedProjectId == "closing" && store.selectedEnvironment == "staging" && store.isShowingAccountPage)
+		store.closeProject()
+		#expect(store.selectedProjectId == nil && store.selectedProject == nil)
+		#expect(store.selectedEnvironment == "default")
+		#expect(!store.isShowingAccountPage)
+		store.openProject(id: "closing")
+		#expect(store.selectedProjectId == "closing" && store.selectedEnvironment == "default", "Opened again, it starts at its first environment")
 	}
 
 	@Test("⌘, while locked unlocks first, then shows Settings")

@@ -14,6 +14,8 @@ struct VaultSchemaView: View {
 	/// The rules with the draft applied; nil while they're evaluated or rejected.
 	var draftOverview: ProjectEnvSchemaOverview? = nil
 	var selection: VaultSchemaSelection? = nil
+	/// The key the page points out a moment, brought into view.
+	var mark: Mark? = nil
 	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
 	/// The rules can be edited: lpm.json is read from the project's folder.
 	var canEdit = false
@@ -65,12 +67,21 @@ struct VaultSchemaView: View {
 	/// The project's smart views, which the status bar links to once its keys are read.
 	var smartViews: VaultSmartViewCounts? = nil
 	var onOpenSmartView: (VaultSmartView) -> Void = { _ in }
+	var onProjectSettings: () -> Void = {}
+	/// Copies text that isn't secret, such as lpm.json's path.
+	var onCopy: (String) -> Void = { _ in }
 	let onConnectCLI: () -> Void
 	let onRecheck: () -> Void
 
 	@State private var showsClientPrefixes = false
 	/// Discarding while lpm.json can't be read, which can't be undone, waits for confirmation.
 	@State private var confirmsDiscard = false
+
+	/// A request to point out a key's row, such as one just added; each is new.
+	struct Mark: Equatable {
+		let key: String
+		let id = UUID()
+	}
 
 	/// How a row differs from lpm.json in the draft.
 	enum RowState: Equatable {
@@ -154,27 +165,44 @@ struct VaultSchemaView: View {
 				.help("lpm.json › envSchema, in plain text, shared with the team through the repository")
 			}
 			Spacer(minLength: 8)
+			// A narrow header keeps one row: Project Settings gives up its title first, then Open lpm.json, then Client Prefixes.
+			ViewThatFits(in: .horizontal) {
+				headerActions(compact: [])
+				headerActions(compact: [.projectSettings])
+				headerActions(compact: [.projectSettings, .configFile])
+				headerActions(compact: [.projectSettings, .configFile, .clientPrefixes])
+			}
+			.layoutPriority(1)
+		}
+		.padding(.horizontal, 20)
+		.frame(height: 60)
+	}
+
+	private enum HeaderAction { case configFile, projectSettings, clientPrefixes }
+
+	/// lpm.json, then the project it belongs to, then what the rules make public, then a new key.
+	private func headerActions(compact: Set<HeaderAction>) -> some View {
+		HStack(spacing: 4) {
+			if state != nil {
+				VaultConfigFileMenu(file: configFile, compact: compact.contains(.configFile), onCopyPath: onCopy)
+			}
+			VaultOutlineButton(systemImage: "gearshape", title: compact.contains(.projectSettings) ? nil : "Project Settings",
+				help: "Project Settings (⌘I)", label: "Project Settings", borderless: true, action: onProjectSettings)
 			if state != nil {
 				// Shown in every state, and off while they can't be used, so the page keeps its shape.
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
 				// A count of none reads as a stray number, so the title only counts what there is.
-				VaultOutlineButton(systemImage: "globe", title: clientPrefixCount == 0 ? "Client Prefixes" : "Client Prefixes · \(clientPrefixCount)",
-					help: "Prefixes that make keys public",
+				let prefixesTitle = clientPrefixCount == 0 ? "Client Prefixes" : "Client Prefixes · \(clientPrefixCount)"
+				VaultOutlineButton(systemImage: "globe", title: compact.contains(.clientPrefixes) ? nil : prefixesTitle,
+					help: "Prefixes that make keys public", label: prefixesTitle,
 					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
-					.fixedSize()
 					.vaultPopover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil,
-					borderless: true) {
-					if let configFile { ProjectConfigOpener.open(configFile) }
-				}
-				.fixedSize()
 				VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, disabled: !canEdit, action: onAddKey)
 					.padding(.leading, 4)
 					.help(editingUnavailable ?? "Declare a new key in lpm.json")
 			}
 		}
-		.padding(.horizontal, 20)
-		.frame(height: 60)
+		.fixedSize()
 	}
 
 	private func location(path: String, note: String?) -> some View {
@@ -455,6 +483,9 @@ struct VaultSchemaView: View {
 				.onChange(of: selection) { _, selection in
 					if let selection { scroller.scrollTo(selection) }
 				}
+				.onChange(of: mark) { _, mark in
+					if let mark { scroller.scrollTo(VaultSchemaSelection.key(mark.key)) }
+				}
 			}
 		}
 	}
@@ -665,6 +696,7 @@ struct VaultSchemaView: View {
 		}
 		.padding(.vertical, 8)
 		.vaultRowBackground(selected: selected)
+		.vaultMomentaryMark(mark?.key == rule.key ? mark?.id : nil)
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}

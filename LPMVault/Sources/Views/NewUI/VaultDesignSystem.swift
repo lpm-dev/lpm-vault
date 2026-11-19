@@ -625,6 +625,11 @@ struct VaultBarButton: View {
 		return hovering ? VaultPalette.controlHover : VaultPalette.control
 	}
 
+	private var shortcutColor: Color {
+		guard filled else { return VaultPalette.textFaint }
+		return disabled ? VaultPalette.accentOffText.opacity(0.75) : .white.opacity(0.75)
+	}
+
 	private var border: Color {
 		if filled { return .clear }
 		if active { return VaultPalette.selectedBorder }
@@ -644,13 +649,12 @@ struct VaultBarButton: View {
 					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : (borderless ? .regular : .medium)))
 				}
 				if let shortcut {
-					// A default button's shortcut shows once it works, in the room it keeps, so turning on doesn't move it.
-					let hidden = filled && disabled
+					// Drawn while off too, faded as a menu's shortcut is, so turning on neither moves the button nor
+					// leaves a gap in it. VoiceOver hears it once it works: a dimmed button's shortcut does nothing.
 					Text(shortcut)
 						.font(VaultTypography.tabular(10.5))
-						.foregroundStyle(filled && !disabled ? .white.opacity(0.75) : VaultPalette.textFaint)
-						.opacity(hidden ? 0 : 1)
-						.accessibilityHidden(hidden)
+						.foregroundStyle(shortcutColor)
+						.accessibilityHidden(filled && disabled)
 				}
 			}
 			.foregroundStyle(foreground)
@@ -1065,6 +1069,46 @@ extension View {
 	/// pointer, and `resting` otherwise.
 	func vaultRowBackground(selected: Bool, resting: Color = .clear) -> some View {
 		modifier(VaultRowBackground(selected: selected, resting: resting))
+	}
+}
+
+extension View {
+	/// Tints the view a moment whenever `request` names a new request, as a
+	/// row just added is pointed out, then lets the tint fade.
+	func vaultMomentaryMark(_ request: UUID?) -> some View {
+		modifier(VaultMomentaryMark(request: request))
+	}
+}
+
+struct VaultMomentaryMark: ViewModifier {
+	let request: UUID?
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+	@State private var marked = false
+
+	/// How long the tint stays before it fades, as a setting search found stays tinted.
+	static let duration: Duration = .milliseconds(1600)
+	private static let fade: Duration = .milliseconds(500)
+	/// How long a request takes to show and fade, after which it can end.
+	static var lifetime: Duration { duration + fade }
+
+	func body(content: Content) -> some View {
+		content
+			.background {
+				VaultPalette.accentTint
+					.opacity(marked ? 1 : 0)
+					.allowsHitTesting(false)
+					.accessibilityHidden(true)
+			}
+			.task(id: request) {
+				guard request != nil else {
+					if marked { marked = false }
+					return
+				}
+				marked = true
+				try? await Task.sleep(for: Self.duration)
+				guard !Task.isCancelled else { return }
+				withAnimation(reduceMotion ? nil : .easeOut(duration: Self.fade / .seconds(1))) { marked = false }
+			}
 	}
 }
 

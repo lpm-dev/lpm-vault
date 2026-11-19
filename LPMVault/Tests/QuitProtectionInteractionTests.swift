@@ -325,7 +325,8 @@ extension SheetInteractionTests {
 			let defaults = try #require(UserDefaults(suiteName: domain))
 			defer { defaults.removePersistentDomain(forName: domain) }
 			let page = SheetTestHost(VaultSettingsOverlay(store: store, category: .general).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
-				.environment(VaultQuitSettings(defaults: defaults)), size: NSSize(width: 700, height: 900), keepsRequestedSize: true)
+								// The narrowest the app's window gets.
+				.environment(VaultQuitSettings(defaults: defaults)), size: NSSize(width: 1040, height: 900), keepsRequestedSize: true)
 			defer { page.window.close() }
 			#expect(try await page.waitForText("Settings", exactly: true))
 			#expect(try await page.waitForText("Quit shortcut"))

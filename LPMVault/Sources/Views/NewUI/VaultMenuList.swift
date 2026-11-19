@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension View {
@@ -48,6 +49,10 @@ struct VaultMenuList<ID: Hashable>: View {
 		var isChecked = false
 		/// A symbol before the title.
 		var systemImage: String?
+		/// An image before the title in place of a symbol, such as an app's icon.
+		var image: NSImage?
+		/// What VoiceOver calls the row, when its title leans on its section's label.
+		var accessibilityLabel: String?
 		/// Draws the title in red, for a row that deletes or removes.
 		var destructive = false
 		/// Sets the title in the code font, for a row that names exact text, such as a format.
@@ -176,7 +181,13 @@ struct VaultMenuList<ID: Hashable>: View {
 						.frame(width: 12)
 						.accessibilityHidden(true)
 				}
-				if let systemImage = row.systemImage {
+				if let image = row.image {
+					Image(nsImage: image)
+						.resizable()
+						.interpolation(.high)
+						.frame(width: 16, height: 16)
+						.accessibilityHidden(true)
+				} else if let systemImage = row.systemImage {
 					Image(systemName: systemImage)
 						.font(.system(size: 11))
 						.foregroundStyle(row.isEnabled ? VaultPalette.textSecondary : VaultPalette.textFaint)
@@ -217,7 +228,7 @@ struct VaultMenuList<ID: Hashable>: View {
 			}
 		}
 		.id(row.id)
-		.accessibilityLabel(row.title)
+		.accessibilityLabel(row.accessibilityLabel ?? row.title)
 		.accessibilityHint(row.detail ?? "")
 		.accessibilityAddTraits(row.isChecked ? .isSelected : [])
 	}

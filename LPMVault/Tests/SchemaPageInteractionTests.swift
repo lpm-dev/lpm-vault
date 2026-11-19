@@ -49,6 +49,51 @@ extension SheetInteractionTests {
 			#expect(!AccessibleText(inspector.map(\.text)).contains("VALUES"), "The inspector stays closed on the Schema page")
 		}
 
+		@Test("the header reads Open lpm.json, Project Settings, Client Prefixes, then Declare Key, and Project Settings goes back to Schema")
+		func headerOrderAndProjectSettings() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let store = makeStore(path: folder)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.click("Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+			let header = CGRect(x: 0.2, y: 0.8, width: 0.8, height: 0.15)
+			var edges: [CGFloat] = []
+			for control in ["Open lpm.json", "Project Settings", "Client Prefixes", "Declare Key"] {
+				edges.append(try await host.labelFrame(control, region: header).minX)
+			}
+			#expect(edges == edges.sorted(), "Left to right: \(edges)")
+
+			try await host.click("Project Settings", region: header)
+			#expect(try await host.waitForText("Back to Schema"))
+			try await host.click("Back to Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+		}
+
+		@Test("Open lpm.json offers the apps that open it, Show in Finder and Copy Path, which copies lpm.json's path")
+		func openConfigMenu() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let store = makeStore(path: folder)
+			defer { store.lock(); store.clipboard.pasteboard.releaseGlobally() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.click("Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+			try await host.click("Open lpm.json")
+			let menu = try await host.popoverWindow()
+			if let editor = ProjectConfigOpener.editors().first {
+				#expect(try await host.waitForText("Open in \(editor.name)", in: menu))
+			}
+			#expect(try await host.waitForText("Show in Finder", in: menu))
+			try await host.click("Copy Path", in: menu)
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) != nil })
+			let copied = try #require(store.clipboard.pasteboard.string(forType: .string))
+			#expect(URL(filePath: copied).resolvingSymlinksInPath() == URL(filePath: folder + "/lpm.json").resolvingSymlinksInPath())
+		}
+
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")
 		func noFolderState() async throws {
 			let store = makeStore(path: "/nonexistent-\(UUID().uuidString)")
@@ -164,7 +209,7 @@ extension SheetInteractionTests {
 			let project = VaultProject(id: "schema-page", name: "billing-app", path: path, environments: ["default": values])
 			keychain.envStorage[project.id] = (name: project.name, path: path, environments: project.environments)
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project]
 			store.openProject(id: project.id)

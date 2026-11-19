@@ -1838,6 +1838,16 @@ final class VaultStore {
     resetAutoLock()
   }
 
+  /// Closes the selected project for the start page, which lists what can
+  /// be opened or created, and leaves the Settings or Platforms page.
+  func closeProject() {
+    if selectedProjectId != nil { cancelExports() }
+    accountPage = nil
+    selectedProjectId = nil
+    selectedEnvironment = "default"
+    resetAutoLock()
+  }
+
   /// The page on lpm.dev that manages the signed-in account, for the server in use.
   var accountManagementURL: URL? {
     URL(string: "/dashboard/settings", relativeTo: appEnvironment.baseURL)?.absoluteURL

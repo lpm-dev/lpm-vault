@@ -227,12 +227,13 @@ struct VaultSchemaGroupEditor: View {
 				VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 			}
 			Spacer(minLength: 4)
+			// A line sets the group's actions apart from closing, so none without them.
 			if removalAvailable(mode) {
 				VaultRowIconButton(systemImage: "trash", help: "Remove the group \(name.escapingDirectionControls) from the schema (⌘⌫)", destructive: true,
 					label: "Remove the group \(name.escapingDirectionControls) from the schema") { remove(mode) }
 					.disabled(!canEdit)
+				Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			}
-			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			VaultRowIconButton(systemImage: "xmark", help: "Close") { onSelect(nil) }
 		}
 		.padding(.leading, 16)

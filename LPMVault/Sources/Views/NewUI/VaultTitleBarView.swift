@@ -21,6 +21,7 @@ struct VaultTitleBarView: View {
 
 	@State private var showsSyncMenu = false
 	@State private var syncHovering = false
+	@State private var appHovering = false
 	@State private var projectHovering = false
 
 	private enum SyncChoice: Hashable { case pull, push, signIn }
@@ -144,19 +145,26 @@ struct VaultTitleBarView: View {
 		}
 	}
 
-	/// Where the window is: the app, then the project, which opens its All
-	/// Keys, then the page shown in it.
+	/// Where the window is: the app, which closes the project for the start
+	/// page, then the project, which opens its All Keys, then the page shown in it.
 	private var breadcrumb: some View {
 		HStack(spacing: 4) {
-			HStack(spacing: 7) {
-				VaultAppMark(size: 18)
-				Text("LPM Vault")
-					.font(.system(size: 13, weight: .semibold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.fixedSize()
+			if let project {
+				Button { store.closeProject() } label: {
+					appName
+						.background(RoundedRectangle(cornerRadius: 6).fill(appHovering ? VaultPalette.controlHover : .clear))
+						.vaultHoverAnimation(appHovering)
+						.contentShape(Rectangle())
+				}
+				.buttonStyle(VaultPressStyle(cornerRadius: 6))
+				.onHover { appHovering = $0 }
+				.help("Close \(project.name) and show the start page")
+				.accessibilityLabel("LPM Vault")
+				.accessibilityHint("Closes the project and shows the start page")
+			} else {
+				// The start page is where the window is without a project, so the name is only a name there.
+				appName
 			}
-			.padding(.leading, 6)
-			.padding(.trailing, project == nil ? 6 : 0)
 
 			if let project {
 				pathMark
@@ -191,6 +199,18 @@ struct VaultTitleBarView: View {
 			}
 		}
 		.fixedSize(horizontal: false, vertical: true)
+	}
+
+	private var appName: some View {
+		HStack(spacing: 7) {
+			VaultAppMark(size: 18)
+			Text("LPM Vault")
+				.font(.system(size: 13, weight: .semibold))
+				.foregroundStyle(VaultPalette.textPrimary)
+				.fixedSize()
+		}
+		.padding(.horizontal, 6)
+		.frame(height: 26)
 	}
 
 	/// The chevron Settings' header draws between the parts of its path.

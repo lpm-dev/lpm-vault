@@ -320,8 +320,12 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 4) {
 				Text("KEY").vaultSectionLabel()
 				Spacer(minLength: 4)
-				deleteControl(saved: saved)
-				Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14).padding(.horizontal, 2)
+				// A line sets deleting apart from closing, so none when there's nothing to delete.
+				let deletable = deletionTargets(saved: saved)
+				if !deletable.isEmpty {
+					deleteControl(targets: deletable)
+					Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14).padding(.horizontal, 2)
+				}
 				VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", compact: true, action: onClose)
 			}
 			nameField(draft, issue: issue)
@@ -401,9 +405,13 @@ private struct VaultKeyEditor: View {
 		}
 	}
 
+	/// The environments the header's trash deletes the key from: the one shown, or each that stores it.
+	private func deletionTargets(saved: [String]) -> [String] {
+		singleEnvironment.map { environment in saved.filter { $0 == environment } } ?? saved
+	}
+
 	@ViewBuilder
-	private func deleteControl(saved: [String]) -> some View {
-		let targets = singleEnvironment.map { environment in saved.filter { $0 == environment } } ?? saved
+	private func deleteControl(targets: [String]) -> some View {
 		if targets.count == 1, let environment = targets.first {
 			VaultRowIconButton(systemImage: "trash", help: "Delete from \(VaultProject.displayName(for: environment))", destructive: true, compact: true) {
 				onDelete(key, environment)

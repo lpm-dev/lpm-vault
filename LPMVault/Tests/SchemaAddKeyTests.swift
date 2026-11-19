@@ -265,6 +265,52 @@ extension SheetInteractionTests {
 			#expect(store.schemaDraft(for: "schema-add")?.changedItems == [.key("MAIL_HOST")])
 		}
 
+		@Test("a new key's panel header has nothing between where it's kept and Close, which no action stands beside")
+		func newKeyHeaderHasNoStrayDivider() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Declare Key")
+			#expect(try await host.waitForText("NEW KEY", exactly: true))
+			try await host.settle()
+			let header = CGRect(x: 0.6, y: 0.75, width: 0.4, height: 0.25)
+			let close = try await host.labelFrame("Close", region: header)
+			let source = try await host.labelFrame("lpm.json", region: header)
+			let points = stride(from: source.maxX + 4, to: close.minX - 2, by: 0.5).map { NSPoint(x: $0, y: close.midY) }
+			try #require(points.count > 8, "Room between \(source) and \(close)")
+			let colors = try host.colors(at: points)
+			let background = try #require(colors.last)
+			let drawn = zip(points, colors).filter { abs($1.0 - background.0) + abs($1.1 - background.1) + abs($1.2 - background.2) > 12 }
+			#expect(drawn.isEmpty, "Drawn at \(drawn.map { $0.0.x }) in the space before Close")
+		}
+
+		@Test("saving a key the panel adds ends adding it: the panel closes and the key's row shows; a key saved while it's edited keeps its panel")
+		func savingAnAddedKeyClosesThePanel() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Declare Key")
+			#expect(try await host.waitForText("NEW KEY", exactly: true))
+			try host.enterText("SMTP_HOST", placeholder: "KEY_NAME")
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.adds(.key("SMTP_HOST")) == true })
+			try await host.click("Review & Save")
+			try await saveReview(in: host)
+			#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains("SMTP_HOST"))
+			#expect(try await host.waitForTextToDisappear("Remove SMTP_HOST from the schema"), "The panel closed")
+			#expect(!host.hasField(placeholder: "KEY_NAME"))
+			#expect(try await host.waitForText("SMTP_HOST"), "The key's row shows in the table")
+
+			try await host.click("PORT")
+			#expect(try await host.waitForText("Remove PORT from the schema"))
+			store.editSchemaDraft(in: "schema-add") {
+				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("8080"))])), for: .key("PORT"))
+			}
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.hasChange(to: .key("PORT")) == true })
+			try await host.click("Review & Save")
+			try await saveReview(in: host)
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add") == nil })
+			try await host.settle()
+			#expect(try await host.waitForText("Remove PORT from the schema"), "An edited key stays in its panel")
+		}
+
 		@Test("a public prefix makes the new key public")
 		func publicNewKey() async throws {
 			let (store, host, folder) = try await workspace()
@@ -431,6 +477,18 @@ extension SheetInteractionTests {
 			// A row's Declare, at the right end of the list, not the button that declares them all.
 			try await host.click("Declare", region: CGRect(x: 0.72, y: 0, width: 0.14, height: 0.55))
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems.isEmpty == false })
+		}
+
+		/// Saves the review sheet once its check is done and Save works, as a person would.
+		private func saveReview(in host: SheetTestHost<some View>) async throws {
+			#expect(try await host.waitUntil { host.window.attachedSheet != nil })
+			let review = try #require(host.window.attachedSheet)
+			let content = try #require(review.contentView)
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: review, of: content).contains { $0.role == .button && $0.says("Save to lpm.json", as: .leading) && $0.isEnabledNow }
+			}, "Save works once the review is checked")
+			try await host.click("Save to lpm.json", in: review)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
 		}
 
 		private func workspace(

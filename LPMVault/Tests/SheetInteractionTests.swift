@@ -1154,6 +1154,29 @@ struct SheetInteractionTests {
 		#expect(try await !host.text().contains("Added TOKEN"))
 	}
 
+	@Test("a key just added closes the sheet as it was submitted, never saying the key it added already exists")
+	func addedKeyClosesAsSubmitted() async throws {
+		let (store, keychain) = makeStore()
+		// The host keeps the sheet showing after it asks to close, as each frame of its closing animation does.
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "DATABASE_URL"),
+			size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.enterValue("postgres://fixture")
+		try await host.waitUntil { host.value == "postgres://fixture" }
+		try await host.click("Add to")
+		try await host.waitUntil { store.projects.first?.environments["default"]?["DATABASE_URL"] == "postgres://fixture" }
+		#expect(stored(keychain, "default", "DATABASE_URL") == "postgres://fixture")
+		try await host.settle()
+		#expect(try await !host.text().contains("Already exists"), "The key it just added isn't a conflict")
+		#expect(host.value == "postgres://fixture", "The value stays as it was added while the sheet closes")
+		let writes = OSAllocatedUnfairLock(initialState: 0)
+		keychain.beforeKeychainTransaction = { writes.withLock { $0 += 1 } }
+		try host.returnWhileEditing("secure value", modifiers: [])
+		try await host.settle()
+		#expect(writes.withLock { $0 } == 0, "Return while it closes doesn't add the key again")
+	}
+
 	@Test("a typed value's hidden characters are said in words, a fix is the person's choice, and the value still adds as given")
 	func addVariableHiddenCharacters() async throws {
 		let (store, keychain) = makeStore()

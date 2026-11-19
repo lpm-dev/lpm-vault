@@ -302,6 +302,50 @@ struct ProjectConfigOpenerTests {
 	}
 }
 
+@Suite("Apps that open lpm.json")
+struct ProjectConfigEditorTests {
+	private static func app(_ name: String, in folder: String = "/Applications") -> URL {
+		URL(filePath: "\(folder)/\(name).app", directoryHint: .isDirectory)
+	}
+
+	private static let bundles: [String: String] = [
+		"/Applications/Cursor.app": "com.todesktop.cursor", "/Applications/TextEdit.app": "com.apple.TextEdit",
+		"/Applications/Xcode.app": "com.apple.dt.Xcode", "/Volumes/Old/Xcode.app": "com.apple.dt.Xcode",
+		"/Applications/Visual Studio Code.app": "com.microsoft.VSCode",
+	]
+
+	private func editors(_ capable: [URL], systemDefault: URL?, chosen: URL?) -> [String] {
+		ProjectConfigOpener.editors(capable: capable, systemDefault: systemDefault, chosen: chosen,
+			bundleID: { Self.bundles[$0.path] }, name: { $0.deletingPathExtension().lastPathComponent }).map(\.name)
+	}
+
+	@Test("the app chosen last comes first, then the Mac's default, then the rest by name, each app once")
+	func order() {
+		let capable = [Self.app("Xcode"), Self.app("TextEdit"), Self.app("Visual Studio Code"), Self.app("Cursor"), Self.app("Xcode", in: "/Volumes/Old")]
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: nil) == ["TextEdit", "Cursor", "Visual Studio Code", "Xcode"])
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: Self.app("Cursor")) == ["Cursor", "TextEdit", "Visual Studio Code", "Xcode"])
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: Self.app("Xcode", in: "/Volumes/Old")).prefix(1) == ["Xcode"],
+			"The copy chosen, not another of the same app")
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: Self.app("Zed")).first == "TextEdit",
+			"An app chosen that can't open JSON any more, or is gone, gives way to the default")
+		#expect(editors(capable, systemDefault: nil, chosen: nil) == ["Cursor", "TextEdit", "Visual Studio Code", "Xcode"])
+		#expect(editors([], systemDefault: nil, chosen: Self.app("Cursor")).isEmpty)
+	}
+
+	@Test("the menu opens lpm.json in the first app listed, lists the others under Open With, then Finder and the path")
+	@MainActor
+	func menuRows() {
+		let editors = ["Cursor", "TextEdit"].map { ProjectConfigOpener.Editor(url: Self.app($0), name: $0) }
+		let rows = VaultConfigFileMenu.rows(editors: editors, icon: { _ in nil })
+		#expect(rows.map(\.title) == ["Open in Cursor", "TextEdit", "Show in Finder", "Copy Path"])
+		#expect(rows[1].section == "Open With" && rows[1].accessibilityLabel == "Open in TextEdit")
+		#expect(rows[2].separated)
+		#expect(rows.map(\.id) == [.open(Self.app("Cursor")), .open(Self.app("TextEdit")), .reveal, .copyPath])
+		#expect(VaultConfigFileMenu.rows(editors: [], icon: { _ in nil }).map(\.title) == ["Show in Finder", "Copy Path"],
+			"With no app for JSON, it can still be found and named")
+	}
+}
+
 @Suite("Opening imported schemas")
 struct ProjectConfigOpenerImportTests {
 	@Test("only a JSON file inside the project opens, not another type or one reached through a link out of the folder")

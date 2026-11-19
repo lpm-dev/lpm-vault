@@ -93,6 +93,21 @@ extension SheetInteractionTests {
 			#expect(capture.isOn == true)
 		}
 
+		@Test("under the menu, a nightly's version takes one line below the app's name, in the smallest window")
+		func nightlyVersionFitsTheMenu() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let nightly = VaultBuildInfo(info: ["CFBundleShortVersionString": "1.13.0", "CFBundleVersion": "51",
+				"LPMReleaseChannel": "nightly", "LPMReleaseDate": "2026-11-17", "LPMReleaseCommit": "3b2736b0123456789"])
+			let host = try await overlay(fixture, .general, updates: UpdateChecker(defaults: fixture.defaults, buildInfo: nightly),
+				size: NSSize(width: 1040, height: 640))
+			defer { host.window.close() }
+			let name = try await host.labelFrame("LPM Vault", region: CGRect(x: 0, y: 0, width: 0.4, height: 0.25))
+			let version = try await host.labelFrame(nightly.displayVersion)
+			#expect(version.height < name.height * 1.5, "One line, as tall as the name's \(name.height): \(version.height)")
+			#expect(version.maxY <= name.minY + 1, "Below the name")
+		}
+
 		@Test("in a wide window, Settings is only as wide as its cards: they reach its trailing side, with no empty strip beside them")
 		func panelFitsItsCards() async throws {
 			let fixture = try makeFixture()

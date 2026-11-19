@@ -983,6 +983,27 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("All Keys"))
 		}
 
+		@Test("the app's name in the title bar closes the project, from any of its pages, for the start page, where it's only a name")
+		func appNameShowsTheStartPage() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.clickSidebarEnvironment(".env")
+			#expect(try await host.waitUntil { store.selectedEnvironment == "default" })
+			let titleBar = CGRect(x: 0, y: 0.9, width: 0.4, height: 0.1)
+			let name = try await host.waitForElement(saying: "LPM Vault", region: titleBar)
+			#expect(name.role == .button && name.says("LPM Vault"), "A button named for what it shows")
+			try await host.click("LPM Vault", region: titleBar)
+			#expect(try await host.waitForText("Select an env project"))
+			#expect(store.selectedProjectId == nil && store.selectedEnvironment == "default")
+			try await host.settle()
+			#expect(try await host.waitForElement(saying: "LPM Vault", region: titleBar).role != .button,
+				"On the start page there's nowhere for it to go")
+			try await host.click("Workspace")
+			#expect(try await host.waitForText("All Keys"), "The project opens again at All Keys")
+		}
+
 		@Test("Settings shows over the workspace, which keeps its project and environment, and closing it returns to them as they were", arguments: [false, true])
 		func settingsOverTheWorkspace(environmentSelected: Bool) async throws {
 			let (store, _) = makeStore()
