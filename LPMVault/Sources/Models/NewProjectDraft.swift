@@ -120,8 +120,7 @@ final class NewProjectDraft {
 		guard generation == folderGeneration, !isDiscarded else { return }
 		switch chosen {
 		case .success(let choice):
-			// lpm.json that links a project already names it; one that links none can still be another's here.
-			let user = choice.status == .notLinked ? await store.project(usingFolder: choice.path, except: vaultId) : nil
+			let user = await store.folderUser(choice, for: vaultId)
 			guard generation == folderGeneration, !isDiscarded else { return }
 			folderUser = user
 			await setFolder(choice, generation: generation)

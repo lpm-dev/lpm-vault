@@ -11,6 +11,7 @@ struct VaultProjectSettingsView: View {
 	var nameFocusRequest: UUID?
 	/// The page the settings were opened from, which the way back names.
 	var backTitle = "All Keys"
+	var folderPicker: @MainActor () -> URL? = VaultOpenPanel.projectFolder
 	let onBack: () -> Void
 	let onDelete: () -> Void
 
@@ -24,6 +25,11 @@ struct VaultProjectSettingsView: View {
 	@State private var historyFailure: String?
 	@State private var confirmsHistoryOff = false
 	@State private var changingHistory = false
+	@State private var isChoosingFolder = false
+	/// Why the folder last chosen wasn't taken.
+	@State private var folderRefusal: ProjectFolderRefusal?
+	/// Another project that uses this one's folder, whose lpm.json links none.
+	@State private var sharedFolder: ProjectFolderUser?
 
 	private var settings: ProjectSettingsValues { store.projectSettings(for: project) }
 	private var isImporting: Bool { store.projectIcons.isImporting(project.id) }
@@ -58,6 +64,7 @@ struct VaultProjectSettingsView: View {
 		}
 		.background(VaultPalette.content)
 		.onAppear { store.projectIcons.beginDetailing(project.id) }
+		.task(id: folder) { sharedFolder = await store.folderUser(of: folder, for: project.id) }
 		.onDisappear { store.projectIcons.endDetailing(project.id) }
 		.task(id: project.id) { await readHistory() }
 		.vaultConfirmation(isPresented: $confirmsHistoryOff) {
@@ -238,12 +245,19 @@ struct VaultProjectSettingsView: View {
 
 	private var folderRow: some View {
 		row("Folder") {
-			if folderExists {
-				Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-					.help(folder)
-			} else {
-				Text(folder.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
-					.foregroundStyle(VaultPalette.redText)
+			VStack(alignment: .leading, spacing: 6) {
+				if folderExists {
+					Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+						.help(folder)
+				} else {
+					Text(folder.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
+						.foregroundStyle(VaultPalette.redText)
+				}
+				switch folderRefusal {
+				case .usedBy(let user)?: VaultInlineWarning(text: user.explanation)
+				case .unusable(let error)?: Text(error.localizedDescription).foregroundStyle(VaultPalette.redText)
+				case nil: if let sharedFolder { VaultInlineWarning(text: sharedFolder.explanation) }
+				}
 			}
 		} controls: {
 			HStack(spacing: 6) {
@@ -251,6 +265,8 @@ struct VaultProjectSettingsView: View {
 					store.clipboard.copyText(folder)
 				}
 				VaultBarButton(systemImage: "folder", title: "Show in Finder", disabled: !folderExists, height: 28) { showInFinder() }
+				VaultBarButton(title: "Change Folder…", disabled: isChoosingFolder, height: 28) { chooseFolder() }
+					.help("Choose the folder that holds the project’s package.json")
 			}
 		}
 	}
@@ -391,6 +407,18 @@ struct VaultProjectSettingsView: View {
 		guard isEdited, nameIsValid, !isSaving else { return }
 		nameFocused = false
 		Task { await store.saveProjectSettings(of: project.id) }
+	}
+
+	/// Takes the folder chosen as the project's, as Connect CLI does.
+	private func chooseFolder() {
+		guard !isChoosingFolder, let url = folderPicker() else { return }
+		isChoosingFolder = true
+		let projectID = project.id
+		Task {
+			let result = await store.chooseProjectFolder(at: url, for: projectID)
+			isChoosingFolder = false
+			if case .failure(let refusal) = result { folderRefusal = refusal } else { folderRefusal = nil }
+		}
 	}
 
 	private func showInFinder() {

@@ -128,6 +128,40 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText((next.path as NSString).abbreviatingWithTildeInPath), "A new choice shows at once")
 		}
 
+		@Test("Change Folder… replaces a chosen folder that's gone, here as with the one first recorded, which then needs no choice kept")
+		func changeFolderReplacesAStaleChoice() async throws {
+			let recorded = try ProjectIconFixture.folder()
+			defer { try? FileManager.default.removeItem(at: recorded) }
+			let fixture = try makeFixture(path: recorded.path, chosenFolder: "/nonexistent/checkout-\(UUID().uuidString)")
+			defer { fixture.tearDown() }
+			let project = try #require(fixture.store.projects.first)
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { recorded }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("can’t be found"), "The folder last chosen is the project's, and it's gone")
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText((recorded.path as NSString).abbreviatingWithTildeInPath))
+			#expect(try await host.waitForTextToDisappear("can’t be found"))
+			#expect(ProjectCLILink.folder(vaultId: "demo", projectPath: "", defaults: fixture.preferences) == "", "The folder recorded needs no choice kept")
+		}
+
+		@Test("Change Folder… refuses a folder another project uses, saying which, and the project keeps its folder")
+		func changeFolderRefusesAnotherProjectsFolder() async throws {
+			let own = try ProjectIconFixture.folder(), shared = try ProjectIconFixture.folder()
+			defer { for folder in [own, shared] { try? FileManager.default.removeItem(at: folder) } }
+			let fixture = try makeFixture(path: own.path, otherProject: true)
+			defer { fixture.tearDown() }
+			fixture.store.chooseProjectFolder(shared.path, for: "other")
+			let project = try #require(fixture.store.projects.first { $0.id == "demo" })
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { shared }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText("web-dashboard uses \(shared.lastPathComponent), and a folder’s lpm.json links one project."))
+			#expect(fixture.store.projectFolder(for: project) == own.path)
+		}
+
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {
 			let host = SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: fixture.preferences)),

@@ -1727,20 +1727,68 @@ struct VaultStoreTests {
 		let (defaults, domain) = try isolatedPreferences()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		let shared = try ProjectIconFixture.folder()
-		defer { try? FileManager.default.removeItem(at: shared) }
-		// The temporary folder is under /var, a link to /private/var.
-		let resolved = ProjectCLILink.resolvedFolder(shared.path)
-		#expect(resolved != shared.path && resolved.hasPrefix("/private/"))
+		let link = FileManager.default.temporaryDirectory.appending(path: "folder-link-\(UUID().uuidString)")
+		try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+		defer { for item in [shared, link] { try? FileManager.default.removeItem(at: item) } }
+		let resolved = ProjectCLILink.resolvedFolder(link.path)
+		#expect(resolved == ProjectCLILink.resolvedFolder(shared.path) && resolved != link.path, "A link resolves to the folder it names")
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "n2proj", name: "n2proj", path: "/nonexistent/n2/proj", secrets: [:]),
 			(id: "example1", name: "example1", path: "", secrets: [:]),
 		], preferences: defaults)
 		store.isUnlocked = true
 		#expect(await store.project(usingFolder: resolved, except: "example1") == nil)
-		ProjectCLILink.rememberFolder(shared.path + "/", vaultId: "n2proj", defaults: defaults)
+		ProjectCLILink.rememberFolder(link.path + "/", vaultId: "n2proj", defaults: defaults)
 		#expect(await store.project(usingFolder: resolved, except: "example1") == ProjectFolderUser(id: "n2proj", name: "n2proj", folder: resolved))
 		#expect(await store.project(usingFolder: resolved, except: "n2proj") == nil, "A project's own folder is its own")
 		#expect(await store.project(usingFolder: shared.appending(path: "nested").path, except: "example1") == nil)
+		store.lock()
+	}
+
+	@Test("writing a vault ID into, or creating a project in, a folder another project uses, whose lpm.json links none, is refused and changes nothing")
+	func folderAnotherProjectUsesIsNotTaken() async throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let shared = try ProjectIconFixture.folder()
+		defer { try? FileManager.default.removeItem(at: shared) }
+		try Data(#"{"envSchema":{}}"#.utf8).write(to: shared.appending(path: "lpm.json"))
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "n2proj", name: "n2proj", path: shared.path, secrets: [:]),
+			(id: "example1", name: "example1", path: "", secrets: [:]),
+		], preferences: defaults)
+		store.isUnlocked = true
+		let failure = await store.linkProjectFolder(vaultId: "example1", folder: shared.path)
+		#expect(failure == .usedByAnotherProject(ProjectFolderUser(id: "n2proj", name: "n2proj", folder: shared.path).explanation))
+		#expect(ProjectCLILink.status(vaultId: "example1", folder: shared.path) == .notLinked, "lpm.json still links no project")
+
+		let created = await store.createVault(name: "example2", setup: NewProjectSetup(folder: shared.path))
+		#expect(created == .failed)
+		#expect(store.error?.contains("n2proj uses") == true)
+		#expect(!store.projects.contains { $0.name == "example2" }, "No project is made")
+		store.lock()
+	}
+
+	@Test("choosing the folder recorded, through a link to it, forgets the choice; choosing the same folder again reads its rules again")
+	func choosingTheRecordedFolderThroughALink() async throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let recorded = try ProjectIconFixture.folder(), checkout = try ProjectIconFixture.folder()
+		let link = FileManager.default.temporaryDirectory.appending(path: "recorded-link-\(UUID().uuidString)")
+		try FileManager.default.createSymbolicLink(at: link, withDestinationURL: recorded)
+		defer { for item in [recorded, checkout, link] { try? FileManager.default.removeItem(at: item) } }
+		let (store, _, _, _) = makeStore(projects: [(id: "n2proj", name: "n2proj", path: ProjectCLILink.resolvedFolder(recorded.path), secrets: [:])],
+			preferences: defaults)
+		store.isUnlocked = true
+		store.openProject(id: "n2proj")
+		#expect(try await store.chooseProjectFolder(at: checkout, for: "n2proj").get().path == ProjectCLILink.resolvedFolder(checkout.path))
+		#expect(ProjectCLILink.folder(vaultId: "n2proj", projectPath: "", defaults: defaults) == ProjectCLILink.resolvedFolder(checkout.path))
+		_ = try await store.chooseProjectFolder(at: link, for: "n2proj").get()
+		#expect(ProjectCLILink.folder(vaultId: "n2proj", projectPath: "", defaults: defaults) == "", "The folder recorded, however spelled, needs no choice kept")
+		#expect(try await waitUntil { store.keyDescriptions["n2proj"]?.folder == ProjectCLILink.resolvedFolder(recorded.path) })
+		try Data(#"{"envSchema":{"vars":{"SMTP_HOST":{}}}}"#.utf8).write(to: recorded.appending(path: "lpm.json"))
+		_ = try await store.chooseProjectFolder(at: recorded, for: "n2proj").get()
+		#expect(try await waitUntil { store.keyDescriptions["n2proj"]?.schema?.overview?.rule(for: "SMTP_HOST") != nil },
+			"Choosing it again reads its rules again")
 		store.lock()
 	}
 

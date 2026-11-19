@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import LPMVault
@@ -31,5 +33,32 @@ struct VaultProjectHoverCardTests {
 		let now = Date(timeIntervalSinceReferenceDate: 815_000_000)
 		#expect(VaultProjectHoverCard.relative(now.addingTimeInterval(-20), now: now) == "just now")
 		#expect(VaultProjectHoverCard.relative(now.addingTimeInterval(-2 * 3600), now: now).contains("2 hours"))
+	}
+}
+
+extension SheetInteractionTests {
+	@Suite("Project hover card, rendered", .serialized)
+	@MainActor
+	struct VaultProjectHoverCardRenderingTests {
+		@Test("a project with no folder recorded, whose folder Connect CLI chose, has a folder on this Mac")
+		func folderChosenInConnectCLI() async throws {
+			let domain = "hover-card-\(UUID().uuidString)"
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let folder = try ProjectIconFixture.folder()
+			defer { try? FileManager.default.removeItem(at: folder) }
+			let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+				preferences: defaults, authTokenProvider: { _, _ in nil })
+			let project = VaultProject(id: "hover", name: "hover-app", path: "", environments: ["default": [:]])
+			store.projects = [project]
+			store.isUnlocked = true
+			defer { store.lock() }
+			let host = SheetTestHost(VaultProjectHoverCard(store: store, project: project), size: NSSize(width: 320, height: 320))
+			defer { host.window.close() }
+			#expect(try await host.waitForText("No project folder on this Mac"))
+			store.chooseProjectFolder(folder.path, for: "hover")
+			#expect(try await host.waitForText("lpm.json not read yet"))
+			#expect(try await !host.text().contains("No project folder"))
+		}
 	}
 }

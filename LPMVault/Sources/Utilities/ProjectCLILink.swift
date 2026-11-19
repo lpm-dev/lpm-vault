@@ -22,6 +22,8 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 	case notLinkedOnThisMac
 	/// The vault locked, or its account changed, before the folder was linked.
 	case interrupted
+	/// Another project here uses the folder, whose lpm.json links none; it says why.
+	case usedByAnotherProject(String)
 
 	var errorDescription: String? {
 		switch self {
@@ -45,6 +47,8 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 			"The LPM CLI on this Mac uses the project’s values only in folders linked to it. Try again, or run lpm env link in the folder."
 		case .interrupted:
 			"LPM Vault locked before it finished linking the folder. Unlock it and try again."
+		case .usedByAnotherProject(let explanation):
+			explanation
 		}
 	}
 }
@@ -220,13 +224,20 @@ struct ProjectFolderUser: Equatable, Sendable {
 	/// The folder chosen, as it was asked about.
 	let folder: String
 
-	/// Why the folder can't be another project's too: lpm.json names one
-	/// project, whose rules it holds.
+	/// Why the folder can't be another project's too: its lpm.json, there
+	/// already or once one is written, links one project.
 	var explanation: String {
-		let name = name.escapingDirectionControls
 		let folder = (folder as NSString).lastPathComponent.escapingDirectionControls
-		return "\(name) uses \(folder), so its lpm.json and rules are \(name)’s. Choose another folder, or open \(name)."
+		return "\(escapedName) uses \(folder), and a folder’s lpm.json links one project. Choose another folder, or open \(escapedName)."
 	}
+
+	var escapedName: String { name.escapingDirectionControls }
+}
+
+/// Why a folder chosen for a project wasn't taken.
+enum ProjectFolderRefusal: Error, Equatable, Sendable {
+	case unusable(ProjectCLILinkError)
+	case usedBy(ProjectFolderUser)
 }
 
 /// What the CLI reads from the linked folder's `lpm.json` when it resolves environment names.

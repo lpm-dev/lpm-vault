@@ -152,7 +152,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try host.enterText("example1", placeholder: "my-api-server")
 			try await host.click("Choose Folder…")
-			#expect(try await host.waitForText("n2proj uses shared, so its lpm.json and rules are n2proj’s. Choose another folder, or open n2proj."))
+			#expect(try await host.waitForText("n2proj uses shared, and a folder’s lpm.json links one project. Choose another folder, or open n2proj."))
 			#expect(try await !host.waitForElement(saying: "Create Project").isEnabledNow)
 			try await host.click("Open n2proj")
 			#expect(try await host.waitUntil { fixture.store.selectedProjectId == "n2proj" })
