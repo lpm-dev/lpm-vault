@@ -14,8 +14,10 @@ struct VaultSchemaView: View {
 	/// The rules with the draft applied; nil while they're evaluated or rejected.
 	var draftOverview: ProjectEnvSchemaOverview? = nil
 	var selection: VaultSchemaSelection? = nil
-	/// The key the page points out a moment, brought into view.
+	/// The row the page points out a moment, brought into view.
 	var mark: Mark? = nil
+	/// The row pointed out has faded.
+	var onMarkEnd: () -> Void = {}
 	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
 	/// The rules can be edited: lpm.json is read from the project's folder.
 	var canEdit = false
@@ -77,9 +79,9 @@ struct VaultSchemaView: View {
 	/// Discarding while lpm.json can't be read, which can't be undone, waits for confirmation.
 	@State private var confirmsDiscard = false
 
-	/// A request to point out a key's row, such as one just added; each is new.
+	/// A request to point out a row, such as one just added; each is new.
 	struct Mark: Equatable {
-		let key: String
+		let selection: VaultSchemaSelection
 		let id = UUID()
 	}
 
@@ -193,8 +195,9 @@ struct VaultSchemaView: View {
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
 				// A count of none reads as a stray number, so the title only counts what there is.
 				let prefixesTitle = clientPrefixCount == 0 ? "Client Prefixes" : "Client Prefixes · \(clientPrefixCount)"
-				VaultOutlineButton(systemImage: "globe", title: compact.contains(.clientPrefixes) ? nil : prefixesTitle,
-					help: "Prefixes that make keys public", label: prefixesTitle,
+				let iconOnly = compact.contains(.clientPrefixes)
+				VaultOutlineButton(systemImage: "globe", title: iconOnly ? nil : prefixesTitle,
+					help: iconOnly ? "\(prefixesTitle): prefixes that make keys public" : "Prefixes that make keys public", label: prefixesTitle,
 					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
 					.vaultPopover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
 				VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, disabled: !canEdit, action: onAddKey)
@@ -484,7 +487,7 @@ struct VaultSchemaView: View {
 					if let selection { scroller.scrollTo(selection) }
 				}
 				.onChange(of: mark) { _, mark in
-					if let mark { scroller.scrollTo(VaultSchemaSelection.key(mark.key)) }
+					if let mark { scroller.scrollTo(mark.selection) }
 				}
 			}
 		}
@@ -696,7 +699,7 @@ struct VaultSchemaView: View {
 		}
 		.padding(.vertical, 8)
 		.vaultRowBackground(selected: selected)
-		.vaultMomentaryMark(mark?.key == rule.key ? mark?.id : nil)
+		.vaultMomentaryMark(mark?.selection == .key(rule.key) ? mark?.id : nil, onEnd: onMarkEnd)
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}
@@ -839,6 +842,7 @@ struct VaultSchemaView: View {
 			.padding(.horizontal, 20)
 			.frame(minHeight: 40)
 			.vaultRowBackground(selected: selected)
+			.vaultMomentaryMark(mark?.selection == .group(group.name) ? mark?.id : nil, onEnd: onMarkEnd)
 			.contentShape(Rectangle())
 			.accessibilityElement(children: .combine)
 		}

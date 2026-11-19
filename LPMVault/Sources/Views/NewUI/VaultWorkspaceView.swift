@@ -122,32 +122,31 @@ struct VaultWorkspaceView: View {
 		return true
 	}
 
-	/// Opens the review of the project's schema draft, noting the key the side
-	/// panel adds, if it shows one.
+	/// Opens the review of the project's schema draft, noting the key or group
+	/// the side panel adds, if it shows one.
 	private func reviewSchema(in project: VaultProject) {
-		var added: String?
-		if schemaPanelVisible, case .key(let key)? = schemaSelection, store.schemaDraft(for: project.id)?.adds(.key(key)) == true {
-			added = key
+		let item: ProjectEnvSchemaDraft.Item? = switch schemaSelection {
+		case .key(let key)?: .key(key)
+		case .group(let name)?: .group(name)
+		case .newKey?, .newGroup?, nil: nil
 		}
-		schemaReview = SchemaReviewTarget(projectID: project.id, addedKey: added)
+		let adds = schemaPanelVisible && item.map { store.schemaDraft(for: project.id)?.adds($0) == true } == true
+		schemaReview = SchemaReviewTarget(projectID: project.id, added: adds ? schemaSelection : nil)
 	}
 
-	/// A key the side panel added is saved: adding it is done, as a new key's
-	/// sheet closes once it adds one, so the panel closes and its row is marked
-	/// a moment. A key saved while it's edited stays in the panel.
+	/// A key or group the side panel added is saved: adding it is done, as a
+	/// new key's sheet closes once it adds one, so the panel closes and its row
+	/// is marked a moment. One saved while it's edited stays in the panel.
 	private func schemaSaved(_ target: SchemaReviewTarget) {
-		guard let added = target.addedKey, store.selectedProjectId == target.projectID, mode == .schema,
-			schemaSelection == .key(added)
-		else { return }
+		guard let added = target.added, store.selectedProjectId == target.projectID, mode == .schema, schemaSelection == added else { return }
 		selectSchema(nil)
-		let mark = VaultSchemaView.Mark(key: added)
-		schemaMark = mark
-		AccessibilityNotification.Announcement("\(added) saved to lpm.json").post()
-		// Once shown, so the row doesn't tint again when the page is opened again.
-		Task { @MainActor in
-			try? await Task.sleep(for: VaultMomentaryMark.lifetime)
-			if schemaMark == mark { schemaMark = nil }
+		schemaMark = VaultSchemaView.Mark(selection: added)
+		let name = switch added {
+		case .key(let key): key
+		case .group(let group): "The group \(group.escapingDirectionControls)"
+		case .newKey, .newGroup: ""
 		}
+		AccessibilityNotification.Announcement("\(name) saved to lpm.json").post()
 	}
 
 	/// Whether the page can open the review: there's a draft, nothing blocks
@@ -327,6 +326,8 @@ struct VaultWorkspaceView: View {
 		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
 			onPull: presentPullConfirmation, onPush: presentPushConfirmation))
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		// A row is pointed out on its page; it isn't again once the page is left.
+		.onChange(of: mode) { _, mode in if mode != .schema { schemaMark = nil } }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
 		.task(id: iconWatch) {
@@ -422,7 +423,7 @@ struct VaultWorkspaceView: View {
 								store: store,
 								project: project,
 								nameFocusRequest: projectNameFocusRequest,
-								backTitle: VaultTitleBarView.pageName(for: projectSettingsReturn) ?? "All Keys",
+								backTitle: VaultTitleBarView.pageName(for: projectSettingsReturn.synchronized(to: store.selectedEnvironment)) ?? "All Keys",
 								onBack: { mode = projectSettingsReturn.synchronized(to: store.selectedEnvironment) },
 								onDelete: { projectToDelete = project }
 							)
@@ -449,6 +450,7 @@ struct VaultWorkspaceView: View {
 								draftOverview: draft == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.overview,
 								selection: schemaSelection,
 								mark: schemaMark,
+								onMarkEnd: { schemaMark = nil },
 								onSelect: selectSchema,
 								canEdit: store.canEditSchema(of: project.id),
 								onAddKey: { selectSchema(.newKey) },
@@ -1747,8 +1749,8 @@ struct VaultWorkspaceView: View {
 /// project is no longer the one shown.
 private struct SchemaReviewTarget: Identifiable {
 	let projectID: String
-	/// The key the side panel adds to lpm.json, which saving ends the adding of.
-	var addedKey: String?
+	/// The key or group the side panel adds to lpm.json, which saving ends the adding of.
+	var added: VaultSchemaSelection?
 	var id: String { projectID }
 }
 

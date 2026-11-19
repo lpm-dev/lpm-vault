@@ -324,8 +324,8 @@ extension SheetInteractionTests {
 			let domain = "quit-settings-page-\(UUID().uuidString)"
 			let defaults = try #require(UserDefaults(suiteName: domain))
 			defer { defaults.removePersistentDomain(forName: domain) }
+			// As wide as the app's window gets at its narrowest.
 			let page = SheetTestHost(VaultSettingsOverlay(store: store, category: .general).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
-								// The narrowest the app's window gets.
 				.environment(VaultQuitSettings(defaults: defaults)), size: NSSize(width: 1040, height: 900), keepsRequestedSize: true)
 			defer { page.window.close() }
 			#expect(try await page.waitForText("Settings", exactly: true))

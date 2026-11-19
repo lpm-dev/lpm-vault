@@ -1074,22 +1074,18 @@ extension View {
 
 extension View {
 	/// Tints the view a moment whenever `request` names a new request, as a
-	/// row just added is pointed out, then lets the tint fade.
-	func vaultMomentaryMark(_ request: UUID?) -> some View {
-		modifier(VaultMomentaryMark(request: request))
+	/// row just added is pointed out, then lets the tint fade and calls `onEnd`.
+	func vaultMomentaryMark(_ request: UUID?, onEnd: @escaping () -> Void = {}) -> some View {
+		modifier(VaultMomentaryMark(request: request, onEnd: onEnd))
 	}
 }
 
-struct VaultMomentaryMark: ViewModifier {
+private struct VaultMomentaryMark: ViewModifier {
 	let request: UUID?
+	let onEnd: () -> Void
 	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+	@Environment(\.vaultMarkTimer) private var timer
 	@State private var marked = false
-
-	/// How long the tint stays before it fades, as a setting search found stays tinted.
-	static let duration: Duration = .milliseconds(1600)
-	private static let fade: Duration = .milliseconds(500)
-	/// How long a request takes to show and fade, after which it can end.
-	static var lifetime: Duration { duration + fade }
 
 	func body(content: Content) -> some View {
 		content
@@ -1105,9 +1101,9 @@ struct VaultMomentaryMark: ViewModifier {
 					return
 				}
 				marked = true
-				try? await Task.sleep(for: Self.duration)
-				guard !Task.isCancelled else { return }
-				withAnimation(reduceMotion ? nil : .easeOut(duration: Self.fade / .seconds(1))) { marked = false }
+				do { try await timer.wait() } catch { return }
+				withAnimation(reduceMotion ? nil : .easeOut(duration: 0.5)) { marked = false }
+				onEnd()
 			}
 	}
 }

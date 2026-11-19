@@ -22,7 +22,7 @@ struct VaultSettingsOverlay: View {
 
 	/// How far the panel stays from the title bar, the window's bottom and its sides.
 	static let margin: CGFloat = 40
-	/// Wide enough for a nightly's version, "1.13.0 Nightly · 2026-11-17 · 3b2736b", on one line under the app's name.
+	/// Wide enough for a nightly's version, with its date and short commit, on one line under the app's name.
 	static let menuWidth: CGFloat = 240
 	/// The space between a page's column of cards and the panel's sides.
 	static let contentInset: CGFloat = 28

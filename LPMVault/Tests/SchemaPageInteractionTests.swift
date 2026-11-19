@@ -94,6 +94,37 @@ extension SheetInteractionTests {
 			#expect(URL(filePath: copied).resolvingSymlinksInPath() == URL(filePath: folder + "/lpm.json").resolvingSymlinksInPath())
 		}
 
+		@Test("the header's controls stay as they were as it narrows: an open menu stays open, and every control keeps its name, only giving up titles")
+		func headerNarrowsInPlace() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let overview = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
+			let file = URL(filePath: folder + "/lpm.json")
+			let host = SheetTestHost(VaultSchemaView(state: .loaded(overview, file: file), folder: folder, descriptions: [:], sortOrder: .constant(.ascending),
+				canEdit: true, clientPrefixes: AnyView(Text("Prefixes")), onConnectCLI: {}, onRecheck: {}),
+				size: NSSize(width: 1000, height: 400), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(try await host.waitForText("Project Settings"))
+			try await host.click("Open lpm.json")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Copy Path", in: menu))
+			host.window.setContentSize(NSSize(width: 560, height: 400))
+			try await host.settle()
+			let header = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .button }
+			for control in ["Open lpm.json", "Project Settings", "Client Prefixes", "Declare Key"] {
+				#expect(header.contains { $0.says(control, as: .leading) }, "\(control) is still named")
+			}
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.role == .staticText && $0.says("Project Settings") },
+				"Narrow, Project Settings shows its symbol alone")
+			#expect(menu.isVisible && !SheetTestHost<AnyView>.isClosing(menu), "The menu stays open")
+			try host.sendEscape()
+			#expect(try await host.waitUntil { !menu.isVisible || SheetTestHost<AnyView>.isClosing(menu) })
+			try await host.click("Client Prefixes")
+			let prefixes = try await host.popoverWindow()
+			#expect(try await host.waitForText("Prefixes", in: prefixes), "One popover, from the control shown")
+		}
+
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")
 		func noFolderState() async throws {
 			let store = makeStore(path: "/nonexistent-\(UUID().uuidString)")

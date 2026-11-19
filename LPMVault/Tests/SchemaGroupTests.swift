@@ -341,6 +341,49 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-groups")?.rejection == nil && store.currentSchemaDraftEvaluation(for: "schema-groups") != nil })
 		}
 
+		@Test("a new group's panel header has nothing between where it's kept and Close, which no action stands beside")
+		func newGroupHeaderHasNoStrayDivider() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Add Group")
+			#expect(try await host.waitForText("NEW GROUP", exactly: true))
+			try await host.settle()
+			let header = CGRect(x: 0.6, y: 0.75, width: 0.4, height: 0.25)
+			let close = try await host.labelFrame("Close", region: header)
+			let source = try await host.labelFrame("lpm.json", region: header)
+			let points = stride(from: source.maxX + 4, to: close.minX - 2, by: 0.5).map { NSPoint(x: $0, y: close.midY) }
+			try #require(points.count > 8, "Room between \(source) and \(close)")
+			let colors = try host.colors(at: points)
+			let background = try #require(colors.last)
+			let drawn = zip(points, colors).filter { abs($1.0 - background.0) + abs($1.1 - background.1) + abs($1.2 - background.2) > 12 }
+			#expect(drawn.isEmpty, "Drawn at \(drawn.map { $0.0.x }) in the space before Close")
+		}
+
+		@Test("saving a group the panel adds ends adding it, as for a key: the panel closes and the group's row shows")
+		func savingAnAddedGroupClosesThePanel() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Add Group")
+			#expect(try await host.waitForText("NEW GROUP", exactly: true))
+			try host.enterText("smtp", placeholder: "group_name")
+			try await host.click("Add a key to the group")
+			try await host.click("PORT", in: try await host.popoverWindow())
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.adds(.group("smtp")) == true })
+			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-groups") != nil })
+			try await host.click("Review & Save")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: sheet, of: sheet.contentView!).contains { $0.role == .button && $0.says("Save to lpm.json", as: .leading) && $0.isEnabledNow }
+			})
+			try await host.click("Save to", in: sheet)
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups") == nil })
+			#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains("smtp"))
+			#expect(try await host.waitForTextToDisappear("MEMBERS"), "The panel closed")
+			#expect(!host.hasField(placeholder: "group_name"))
+			#expect(try await host.waitForText("smtp"), "The group's row shows")
+		}
+
 		@Test("a group's mode changes in the draft, which the review shows and Save writes to lpm.json")
 		func editAndSave() async throws {
 			let (store, host, folder) = try await workspace()

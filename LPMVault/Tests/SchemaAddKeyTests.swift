@@ -285,7 +285,8 @@ extension SheetInteractionTests {
 
 		@Test("saving a key the panel adds ends adding it: the panel closes and the key's row shows; a key saved while it's edited keeps its panel")
 		func savingAnAddedKeyClosesThePanel() async throws {
-			let (store, host, folder) = try await workspace()
+			let markTimer = ManualFeedbackTimer()
+			let (store, host, folder) = try await workspace(markTimer: markTimer)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Declare Key")
 			#expect(try await host.waitForText("NEW KEY", exactly: true))
@@ -297,6 +298,17 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("Remove SMTP_HOST from the schema"), "The panel closed")
 			#expect(!host.hasField(placeholder: "KEY_NAME"))
 			#expect(try await host.waitForText("SMTP_HOST"), "The key's row shows in the table")
+			// The row is tinted until its mark ends, unlike the row under it.
+			let added = try await host.labelFrame("SMTP_HOST")
+			let other = try await host.labelFrame("PORT")
+			func tinted() throws -> Bool {
+				let colors = try host.colors(at: [NSPoint(x: added.minX + 4, y: added.midY), NSPoint(x: other.minX + 4, y: other.midY)])
+				return abs(colors[0].0 - colors[1].0) + abs(colors[0].1 - colors[1].1) + abs(colors[0].2 - colors[1].2) > 6
+			}
+			#expect(try await host.waitUntilRendered { try tinted() }, "The key's row is pointed out")
+			#expect(try await host.waitUntil { markTimer.started > 0 })
+			markTimer.expire()
+			#expect(try await host.waitUntilRendered { try !tinted() }, "Then the tint fades")
 
 			try await host.click("PORT")
 			#expect(try await host.waitForText("Remove PORT from the schema"))
@@ -493,7 +505,7 @@ extension SheetInteractionTests {
 
 		private func workspace(
 			_ sample: String = Self.sample, values: [String: [String: String]]? = nil, order: VaultKeySortOrder = .ascending,
-			shows: String = "by LPM CLI", editClock: ManualClock = ManualClock()
+			shows: String = "by LPM CLI", editClock: ManualClock = ManualClock(), markTimer: ManualFeedbackTimer = ManualFeedbackTimer()
 		) async throws -> (VaultStore, SheetTestHost<some View>, String) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-add-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
@@ -515,7 +527,8 @@ extension SheetInteractionTests {
 			let defaults = try #require(UserDefaults(suiteName: "schema-add-interaction"))
 			defaults.set(order.rawValue, forKey: VaultKeySortOrder.defaultsKey)
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
-				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
+				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults)
+				.environment(\.vaultMarkTimer, markTimer.timer),
 				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			try await host.click("Schema")

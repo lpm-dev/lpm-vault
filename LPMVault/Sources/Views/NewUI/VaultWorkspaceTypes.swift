@@ -523,12 +523,15 @@ struct VaultFeedbackTimer: Sendable {
   static let undoSeconds = 30
 
   static let copyConfirmation = VaultFeedbackTimer { try await Task.sleep(for: .seconds(2)) }
+  /// How long a row pointed out stays tinted, as a setting search found does.
+  static let mark = VaultFeedbackTimer { try await Task.sleep(for: .milliseconds(1600)) }
   static let importUndo = VaultFeedbackTimer { try await Task.sleep(for: .seconds(undoSeconds)) }
 }
 
 extension EnvironmentValues {
   @Entry var vaultCopyFeedbackTimer = VaultFeedbackTimer.copyConfirmation
   @Entry var vaultImportUndoTimer = VaultFeedbackTimer.importUndo
+  @Entry var vaultMarkTimer = VaultFeedbackTimer.mark
   /// The time history's pages say things relative to, such as "Today".
   @Entry var vaultClock = VaultClock.system
 }

@@ -67,11 +67,11 @@ struct VaultConfigFileMenu: View {
 	static func rows(editors: [ProjectConfigOpener.Editor], icon: (URL) -> NSImage? = { NSWorkspace.shared.icon(forFile: $0.path) }) -> [VaultMenuList<Choice>.Row] {
 		var rows: [VaultMenuList<Choice>.Row] = []
 		if let first = editors.first {
-			rows.append(.init(id: .open(first.url), title: "Open in \(first.name)", image: icon(first.url)))
+			rows.append(.init(id: .open(first.url), title: "Open in \(first.name)", detail: first.version, image: icon(first.url)))
 		}
 		for (index, editor) in editors.dropFirst().enumerated() {
-			rows.append(.init(id: .open(editor.url), title: editor.name, section: index == 0 ? "Open With" : nil, image: icon(editor.url),
-				accessibilityLabel: "Open in \(editor.name)"))
+			rows.append(.init(id: .open(editor.url), title: editor.name, detail: editor.version, section: index == 0 ? "Open With" : nil,
+				image: icon(editor.url), accessibilityLabel: "Open in \(editor.name)" + (editor.version.map { " \($0)" } ?? "")))
 		}
 		rows.append(.init(id: .reveal, title: "Show in Finder", separated: true, systemImage: "folder"))
 		rows.append(.init(id: .copyPath, title: "Copy Path", systemImage: "doc.on.doc"))

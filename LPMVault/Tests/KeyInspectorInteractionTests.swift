@@ -27,6 +27,25 @@ extension SheetInteractionTests {
 			#expect(keychain.applyVaultTransactionCallCount == 1)
 		}
 
+		@Test("with nothing to delete in the environment shown, the header has nothing between KEY and Hide inspector")
+		func headerWithoutDeleteHasNoStrayDivider() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "dev"], "staging": [:]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store, mode: .environment("staging")), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			let close = try await host.labelFrame("Hide inspector")
+			let title = try await host.labelFrame("KEY")
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.role == .button && $0.says("Delete", as: .leading) },
+				"TOKEN isn't stored in staging, so there's nothing to delete there")
+			let points = stride(from: title.maxX + 4, to: close.minX - 2, by: 0.5).map { NSPoint(x: $0, y: close.midY) }
+			try #require(points.count > 8, "Room between \(title) and \(close)")
+			let colors = try host.colors(at: points)
+			let background = try #require(colors.last)
+			let drawn = zip(points, colors).filter { abs($1.0 - background.0) + abs($1.1 - background.1) + abs($1.2 - background.2) > 12 }
+			#expect(drawn.isEmpty, "Drawn at \(drawn.map { $0.0.x }) in the space before Hide inspector")
+		}
+
 		@Test("a stored value's hidden characters are said in words, and each fix is an edit saved like any other")
 		func storedValueHiddenCharacters() async throws {
 			let (store, keychain) = makeStore(["default": ["TOKEN": "dev\u{200B}"], "staging": ["TOKEN": " stg"]])
