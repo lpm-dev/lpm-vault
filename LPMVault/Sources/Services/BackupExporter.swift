@@ -45,11 +45,13 @@ struct BackupExporter: Sendable {
 		var withNewerData: [String] = []
 	}
 
-	/// LPM Vault's settings and each project's chosen icon, as the store holds
-	/// them on the main actor.
+	/// LPM Vault's settings, each project's chosen icon, and the folder it
+	/// uses where Connect CLI chose another than the Keychain records, as the
+	/// store holds them on the main actor.
 	struct AppState: Sendable {
 		let settings: BackupAppSection.Settings
 		let iconChoices: [String: ProjectIconChoice]
+		var folders: [String: String] = [:]
 	}
 
 	enum Failure: Error, Equatable, Sendable {
@@ -131,7 +133,10 @@ struct BackupExporter: Sendable {
 			BackupPayload.Project(
 				vaultId: project.vaultId,
 				name: project.listing?.name ?? project.vaultId,
-				folder: project.listing.flatMap { $0.folder.isEmpty ? nil : $0.folder },
+				folder: project.listing.flatMap { listing in
+					let folder = appState.folders[project.vaultId] ?? listing.folder
+					return folder.isEmpty ? nil : folder
+				},
 				hidden: project.listing == nil,
 				cliAccess: project.cliAccess,
 				environments: project.environments,

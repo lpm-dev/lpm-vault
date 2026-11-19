@@ -133,5 +133,30 @@ extension SheetInteractionTests {
 			#expect(try await waitUntil { try await host.waitForElement(saying: "Create Project").isEnabledNow })
 			#expect(try Data(contentsOf: taken.appending(path: "lpm.json")) == original)
 		}
+
+		@Test("a folder another project uses, though its lpm.json names none, stays that project's: the sheet names it and holds Create back",
+			arguments: [false, true])
+		func folderAnotherProjectUses(chosenInConnectCLI: Bool) async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let shared = fixture.root.appending(path: "shared", directoryHint: .isDirectory)
+			try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+			let original = Data(#"{"envSchema":{"vars":{"DATABASE_URL":{"required":true}}}}"#.utf8)
+			try original.write(to: shared.appending(path: "lpm.json"))
+			// Through /var's link, unresolved, as a folder recorded for a project may be spelled.
+			let spelled = shared.path.hasPrefix("/private/") ? String(shared.path.dropFirst("/private".count)) : shared.path
+			fixture.store.projects = [VaultProject(id: "n2proj", name: "n2proj", path: chosenInConnectCLI ? "/nonexistent/n2/proj" : spelled,
+				environments: ["default": [:]])]
+			if chosenInConnectCLI { ProjectCLILink.rememberFolder(spelled, vaultId: "n2proj", defaults: fixture.preferences) }
+			let host = try await host(fixture, folder: shared)
+			defer { host.window.close() }
+			try host.enterText("example1", placeholder: "my-api-server")
+			try await host.click("Choose Folder…")
+			#expect(try await host.waitForText("n2proj uses shared, so its lpm.json and rules are n2proj’s. Choose another folder, or open n2proj."))
+			#expect(try await !host.waitForElement(saying: "Create Project").isEnabledNow)
+			try await host.click("Open n2proj")
+			#expect(try await host.waitUntil { fixture.store.selectedProjectId == "n2proj" })
+			#expect(try Data(contentsOf: shared.appending(path: "lpm.json")) == original, "lpm.json stays as it was")
+		}
 	}
 }

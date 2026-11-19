@@ -89,7 +89,7 @@ struct VaultProjectHoverCard: View {
 	}
 
 	private var schema: Line {
-		Self.schemaLine(state: store.keyDescriptions[project.id]?.schema, check: store.valueChecks[project.id], hasFolder: !project.path.isEmpty)
+		Self.schemaLine(state: store.keyDescriptions[project.id]?.schema, check: store.valueChecks[project.id], hasFolder: !store.projectFolder(for: project).isEmpty)
 	}
 
 	/// What the project's lpm.json says of its values, from what's been read.

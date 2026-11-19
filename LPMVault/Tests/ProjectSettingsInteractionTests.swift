@@ -23,7 +23,8 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func makeFixture(path: String, otherProject: Bool = false) throws -> Fixture {
+		/// `chosenFolder` is a folder Connect CLI chose for the project before the app last launched.
+		private func makeFixture(path: String, otherProject: Bool = false, chosenFolder: String? = nil) throws -> Fixture {
 			let domain = "project-settings-ui-\(UUID().uuidString)"
 			let preferences = try #require(UserDefaults(suiteName: domain))
 			let images = FileManager.default.temporaryDirectory.appending(path: "project-settings-ui-images-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -32,6 +33,7 @@ extension SheetInteractionTests {
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				preferences: preferences, authTokenProvider: { _, _ in nil }, projectIconsDirectory: images,
 				clipboard: ClipboardManager(pasteboard: .withUniqueName()))
+			if let chosenFolder { ProjectCLILink.rememberFolder(chosenFolder, vaultId: "demo", defaults: preferences) }
 			store.projects = [VaultProject(id: "demo", name: "demo-api", path: path, environments: ["default": ["TOKEN": "x"]])]
 			if otherProject {
 				keychain.envStorage["other"] = (name: "web-dashboard", path: "", environments: ["default": [:]])
@@ -103,6 +105,27 @@ extension SheetInteractionTests {
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			try await host.click("Copy Path")
 			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == folder.path })
+		}
+
+		@Test("the folder chosen in Connect CLI is the project's: its row shows, copies and finds it, not the one first recorded, and follows a new choice")
+		func folderChosenInConnectCLI() async throws {
+			let chosen = try ProjectIconFixture.folder()
+			let next = try ProjectIconFixture.folder()
+			defer { for folder in [chosen, next] { try? FileManager.default.removeItem(at: folder) } }
+			let fixture = try makeFixture(path: "/nonexistent/recorded-\(UUID().uuidString)", chosenFolder: chosen.path)
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+			let shown = (chosen.path as NSString).abbreviatingWithTildeInPath
+			#expect(try await host.waitForText(shown))
+			#expect(try await !host.text().contains("can’t be found"), "The folder first recorded is gone, but it isn't the project's now")
+			#expect(try await host.waitForElement(saying: "Show in Finder").isEnabledNow)
+			try await host.click("Copy Path")
+			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == chosen.path })
+
+			fixture.store.chooseProjectFolder(next.path, for: "demo")
+			#expect(try await host.waitForText((next.path as NSString).abbreviatingWithTildeInPath), "A new choice shows at once")
 		}
 
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {

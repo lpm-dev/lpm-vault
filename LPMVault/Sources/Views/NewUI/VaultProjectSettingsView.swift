@@ -30,8 +30,10 @@ struct VaultProjectSettingsView: View {
 	private var isEdited: Bool { store.projectSettingsDrafts[project.id] != nil }
 	private var isSaving: Bool { store.savingProjectSettings.contains(project.id) }
 	private var nameIsValid: Bool { VaultProjectRenamePolicy.normalizedName(settings.name) != nil }
-	private var folderExists: Bool { store.projectIcons.detection(for: project.id) != .folderMissing && !project.path.isEmpty }
-	private var displayPath: String { (project.path as NSString).abbreviatingWithTildeInPath }
+	/// The folder LPM Vault uses for the project, as Connect CLI last chose it.
+	private var folder: String { store.projectFolder(for: project) }
+	private var folderExists: Bool { store.projectIcons.detection(for: project.id) != .folderMissing && !folder.isEmpty }
+	private var displayPath: String { (folder as NSString).abbreviatingWithTildeInPath }
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -238,15 +240,15 @@ struct VaultProjectSettingsView: View {
 		row("Folder") {
 			if folderExists {
 				Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-					.help(project.path)
+					.help(folder)
 			} else {
-				Text(project.path.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
+				Text(folder.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
 					.foregroundStyle(VaultPalette.redText)
 			}
 		} controls: {
 			HStack(spacing: 6) {
-				VaultBarButton(systemImage: "doc.on.doc", title: "Copy Path", disabled: project.path.isEmpty, height: 28) {
-					store.clipboard.copyText(project.path)
+				VaultBarButton(systemImage: "doc.on.doc", title: "Copy Path", disabled: folder.isEmpty, height: 28) {
+					store.clipboard.copyText(folder)
 				}
 				VaultBarButton(systemImage: "folder", title: "Show in Finder", disabled: !folderExists, height: 28) { showInFinder() }
 			}
@@ -393,13 +395,13 @@ struct VaultProjectSettingsView: View {
 
 	private func showInFinder() {
 		guard folderExists else { return }
-		NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path, isDirectory: true)])
+		NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder, isDirectory: true)])
 	}
 
 	private func chooseFile() {
-		guard !isImporting, let url = VaultOpenPanel.iconImage(for: project.name, in: folderExists ? project.path : nil) else { return }
+		guard !isImporting, let url = VaultOpenPanel.iconImage(for: project.name, in: folderExists ? folder : nil) else { return }
 		let projectID = project.id
-		let folder = project.path
+		let folder = folder
 		let store = store
 		Task {
 			guard case .success(let choice) = await store.projectIcons.importImage(at: url, projectFolder: folder, for: projectID) else { return }

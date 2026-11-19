@@ -1703,6 +1703,47 @@ struct VaultStoreTests {
 		store.lock()
 	}
 
+	@Test("a project's folder is the one chosen for it, or else the one recorded; choosing the recorded one again forgets the choice")
+	func projectFolderFollowsTheChoice() throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let recorded = try ProjectIconFixture.folder(), chosen = try ProjectIconFixture.folder()
+		defer { for folder in [recorded, chosen] { try? FileManager.default.removeItem(at: folder) } }
+		let (store, _, _, _) = makeStore(projects: [(id: "n2proj", name: "n2proj", path: recorded.path, secrets: [:])], preferences: defaults)
+		store.isUnlocked = true
+		let project = try #require(store.projects.first)
+		#expect(store.projectFolder(for: project) == recorded.path)
+		store.chooseProjectFolder(chosen.path, for: "n2proj")
+		#expect(store.projectFolder(for: project) == chosen.path)
+		#expect(ProjectCLILink.folder(vaultId: "n2proj", projectPath: "", defaults: defaults) == chosen.path, "Kept for the next launch")
+		store.chooseProjectFolder(recorded.path, for: "n2proj")
+		#expect(store.projectFolder(for: project) == recorded.path)
+		#expect(ProjectCLILink.folder(vaultId: "n2proj", projectPath: "", defaults: defaults) == "", "Nothing to keep when it's the one recorded")
+		store.lock()
+	}
+
+	@Test("the project using a folder is found however its path is spelled, never the one asking, nor a project without a folder")
+	func projectUsingAFolder() async throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let shared = try ProjectIconFixture.folder()
+		defer { try? FileManager.default.removeItem(at: shared) }
+		// The temporary folder is under /var, a link to /private/var.
+		let resolved = ProjectCLILink.resolvedFolder(shared.path)
+		#expect(resolved != shared.path && resolved.hasPrefix("/private/"))
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "n2proj", name: "n2proj", path: "/nonexistent/n2/proj", secrets: [:]),
+			(id: "example1", name: "example1", path: "", secrets: [:]),
+		], preferences: defaults)
+		store.isUnlocked = true
+		#expect(await store.project(usingFolder: resolved, except: "example1") == nil)
+		ProjectCLILink.rememberFolder(shared.path + "/", vaultId: "n2proj", defaults: defaults)
+		#expect(await store.project(usingFolder: resolved, except: "example1") == ProjectFolderUser(id: "n2proj", name: "n2proj", folder: resolved))
+		#expect(await store.project(usingFolder: resolved, except: "n2proj") == nil, "A project's own folder is its own")
+		#expect(await store.project(usingFolder: shared.appending(path: "nested").path, except: "example1") == nil)
+		store.lock()
+	}
+
 	@Test("unlocking forgets preferences of vaults removed while the app was closed")
 	func unlockForgetsRemovedVaultPreferences() async throws {
 		let (defaults, domain) = try isolatedPreferences()

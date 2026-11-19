@@ -24,6 +24,9 @@ final class NewProjectDraft {
 	var keepsHistory: Bool
 	private(set) var icon: ProjectIconChoice = .automatic
 	private(set) var folder: ProjectFolderChoice?
+	/// Another project on this Mac whose folder the chosen one is, which
+	/// keeps it from being this one's though its lpm.json names neither.
+	private(set) var folderUser: ProjectFolderUser?
 	/// Why the folder last chosen couldn't be taken.
 	private(set) var folderError: ProjectCLILinkError?
 	private(set) var isCheckingFolder = false
@@ -45,8 +48,9 @@ final class NewProjectDraft {
 
 	var normalizedName: String? { EnvValidation.normalizedProjectName(name) }
 
-	/// Whether the chosen folder's lpm.json keeps it from being the project's.
-	var folderBlocksCreation: Bool { folder?.isTaken ?? false }
+	/// Whether the chosen folder can't be the project's: its lpm.json links
+	/// another, or another project here uses it.
+	var folderBlocksCreation: Bool { (folder?.isTaken ?? false) || folderUser != nil }
 
 	var isImportingIcon: Bool { store.projectIcons.isImporting(vaultId) }
 
@@ -116,9 +120,14 @@ final class NewProjectDraft {
 		guard generation == folderGeneration, !isDiscarded else { return }
 		switch chosen {
 		case .success(let choice):
+			// lpm.json that links a project already names it; one that links none can still be another's here.
+			let user = choice.status == .notLinked ? await store.project(usingFolder: choice.path, except: vaultId) : nil
+			guard generation == folderGeneration, !isDiscarded else { return }
+			folderUser = user
 			await setFolder(choice, generation: generation)
 		case .failure(let error):
 			folderError = error
+			folderUser = nil
 			await setFolder(nil, generation: generation)
 		}
 		if generation == folderGeneration { isCheckingFolder = false }
@@ -128,6 +137,7 @@ final class NewProjectDraft {
 		folderGeneration += 1
 		let generation = folderGeneration
 		folderError = nil
+		folderUser = nil
 		isCheckingFolder = true
 		await setFolder(nil, generation: generation)
 		if generation == folderGeneration { isCheckingFolder = false }

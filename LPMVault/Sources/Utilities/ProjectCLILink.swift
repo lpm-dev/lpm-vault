@@ -179,6 +179,13 @@ enum ProjectCLILink {
 		return String(cString: resolved)
 	}
 
+	/// `folder` as it resolves on disk, links and `..` followed, so two
+	/// spellings of one folder compare equal; one that's gone, as written,
+	/// without a trailing slash. Blocks on the file system.
+	static func resolvedFolder(_ folder: String) -> String {
+		realPath(URL(fileURLWithPath: folder, isDirectory: true).standardizedFileURL.path)
+	}
+
 	private static func folderExists(_ folder: String) -> Bool {
 		var isDirectory: ObjCBool = false
 		return !folder.isEmpty
@@ -203,6 +210,22 @@ struct ProjectFolderChoice: Equatable, Sendable {
 		case .linkedToOtherVault, .unreadable, .noFolder: true
 		case .linked, .notLinked: false
 		}
+	}
+}
+
+/// Another project on this Mac whose folder a chosen folder is.
+struct ProjectFolderUser: Equatable, Sendable {
+	let id: String
+	let name: String
+	/// The folder chosen, as it was asked about.
+	let folder: String
+
+	/// Why the folder can't be another project's too: lpm.json names one
+	/// project, whose rules it holds.
+	var explanation: String {
+		let name = name.escapingDirectionControls
+		let folder = (folder as NSString).lastPathComponent.escapingDirectionControls
+		return "\(name) uses \(folder), so its lpm.json and rules are \(name)’s. Choose another folder, or open \(name)."
 	}
 }
 

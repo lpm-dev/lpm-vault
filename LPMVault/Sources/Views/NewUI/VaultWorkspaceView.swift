@@ -88,8 +88,10 @@ struct VaultWorkspaceView: View {
 	}
 
 	private var iconWatch: IconWatch? {
-		guard store.isUnlocked, let project, !project.path.isEmpty else { return nil }
-		return IconWatch(projectID: project.id, folder: project.path, paths: store.projectIcons.watchedPaths(for: project.id))
+		guard store.isUnlocked, let project else { return nil }
+		let folder = store.projectFolder(for: project)
+		guard !folder.isEmpty else { return nil }
+		return IconWatch(projectID: project.id, folder: folder, paths: store.projectIcons.watchedPaths(for: project.id))
 	}
 
 	/// What the Schema page watches; nil off the page.
@@ -830,13 +832,14 @@ struct VaultWorkspaceView: View {
 				confirm: duplicateEnvironment)
 		}
 		.vaultConfirmation(item: $projectToDelete) { project in
-			VaultConfirmation(
+			let folder = store.projectFolder(for: project)
+			return VaultConfirmation(
 				symbol: "trash",
 				title: "Delete this project locally?",
 				message: "Removes the project, its Keychain values and its local history from this Mac. Its folder, its lpm.json and a synced cloud copy stay.",
 				subject: .init(
 					mark: .project(store.projectIcons.appearance(for: project.id)), name: project.name,
-					detail: project.path.isEmpty ? nil : (project.path as NSString).abbreviatingWithTildeInPath),
+					detail: folder.isEmpty ? nil : (folder as NSString).abbreviatingWithTildeInPath),
 				actions: [.init(title: "Delete Locally") { Task { _ = await store.deleteLocalVault(project) } }])
 		}
 		.vaultConfirmation(item: $pauseExit) { exit in

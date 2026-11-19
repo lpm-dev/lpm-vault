@@ -116,6 +116,20 @@ struct BackupExportTests {
 		#expect(VaultBackupRecord(defaults: fixture.defaults) == store.lastBackup)
 	}
 
+	@Test("a backup carries the folder a project uses, the one Connect CLI chose before the one first recorded")
+	func chosenFolder() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let chosen = fixture.folder.appending(path: "checkout", directoryHint: .isDirectory)
+		try FileManager.default.createDirectory(at: chosen, withIntermediateDirectories: true)
+		fixture.store.chooseProjectFolder(chosen.path, for: "vault-a")
+		let authorization = try #require(await fixture.store.authorizeBackupExport())
+		_ = try await fixture.store.exportBackup(.init(), passphrase: Self.passphrase, to: fixture.destination, authorization: authorization)
+		let projects = projects(try opened(fixture.destination))
+		#expect(projects["vault-a"]?["folder"] == .string(chosen.path))
+		#expect(projects["vault-hidden"]?["folder"] == nil, "A project the sidebar doesn't list has no folder")
+	}
+
 	@Test("a backup carries this Mac's sync keys as their stores keep them, and none when they're left out")
 	func syncKeys() async throws {
 		let fixture = try fixture()

@@ -1190,7 +1190,7 @@ final class VaultStore {
         pruneProjectSettingsDrafts(keeping: projectIDs)
       }
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id && $0.path == $1.path }) {
-        projectIcons.follow(projects.map { ProjectIconStore.Target(id: $0.id, folder: $0.path) })
+        followProjectIcons()
       }
       pruneSchemaDrafts()
       refreshValueChecks()
@@ -1351,6 +1351,9 @@ final class VaultStore {
   private var unverifiedKeyDescriptionProjects: Set<String> = []
   private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
+  /// Changes when a project's chosen folder does, so what shows the folder
+  /// follows it; the folders are kept in the preferences.
+  private var projectFolderRevision = 0
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
   private var pendingWorkspaceSnapshots: [String: VaultWorkspaceSnapshot]?
@@ -2102,7 +2105,7 @@ final class VaultStore {
     for account in accounts {
       let named = ValueSearchAccount(account: account, name: valueSearchAccountName(account))
       for project in ordered where projectBelongs(project.id, to: account) {
-        let folder = keyDescriptionFolder(for: project)
+        let folder = projectFolder(for: project)
         var target = ValueSearchTarget(
           id: project.id, name: project.name, account: named,
           environments: orderedEnvironmentNames(for: project), folder: folder)
@@ -4273,7 +4276,7 @@ final class VaultStore {
       schemaChange.rename = .init(from: pending.from, to: edit.newKey)
     } else {
       if let cached = keyDescriptions[id.projectID], let project = selectedProject,
-        cached.folder != keyDescriptionFolder(for: project)
+        cached.folder != projectFolder(for: project)
       {
         keyDrafts.finishSave(id, succeeded: false, projects: projects)
         reloadKeyDescriptions()
@@ -4290,7 +4293,7 @@ final class VaultStore {
         throw .description("lpm.json has not been read yet.", keySaved: false)
       default:
         if edit.isRename, let project = selectedProject {
-          let folder = keyDescriptionFolder(for: project)
+          let folder = projectFolder(for: project)
           if !folder.isEmpty { schemaFolder = folder }
         }
       }
@@ -4354,7 +4357,7 @@ final class VaultStore {
     switch result {
     case .success(let saved):
       keyDrafts.finishSave(id, succeeded: true, projects: projects)
-      if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+      if let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == schemaFolder {
         publishSavedRules(saved.rules, rootSchema: saved.rootSchema, folder: schemaFolder, for: projectID,
           description: schemaChange.description.map { ($0.key, $0.text) })
       }
@@ -4383,7 +4386,7 @@ final class VaultStore {
       if failure == .changed {
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: schemaFolder, vaultID: projectID)
         guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
-        if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+        if let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == schemaFolder {
           publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, loaded: loaded), for: projectID)
         }
       }
@@ -4393,10 +4396,49 @@ final class VaultStore {
 
   // MARK: - Key descriptions
 
-  /// The folder whose `lpm.json` holds a project's key descriptions: the one the
-  /// CLI was connected in, or else the project's own folder.
-  func keyDescriptionFolder(for project: VaultProject) -> String {
-    ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+  /// The folder LPM Vault uses for a project: the one last chosen for it in
+  /// Connect CLI, or else the one recorded when it was created. Its lpm.json
+  /// holds the project's rules; Project Settings, its icon, Export and a
+  /// backup use it too.
+  func projectFolder(for project: VaultProject) -> String {
+    _ = projectFolderRevision
+    return ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+  }
+
+  /// Makes `folder` the project's, as Connect CLI does when it's chosen
+  /// there, and reads its rules and icon.
+  func chooseProjectFolder(_ folder: String, for vaultId: String) {
+    guard let project = projects.first(where: { $0.id == vaultId }), projectFolder(for: project) != folder else { return }
+    if folder == project.path {
+      ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
+    } else {
+      ProjectCLILink.rememberFolder(folder, vaultId: vaultId, defaults: preferences)
+    }
+    projectFolderRevision &+= 1
+    followProjectIcons()
+    if selectedProjectId == vaultId { reloadKeyDescriptions() }
+  }
+
+  /// The project, other than `vaultId`, whose folder `folder` is, as each
+  /// resolves on disk; nil when there's none. Resolves off the main actor,
+  /// as a folder on a volume that stalls would stall it.
+  func project(usingFolder folder: String, except vaultId: String) async -> ProjectFolderUser? {
+    let others = projects.compactMap { project -> (id: String, folder: String)? in
+      guard project.id != vaultId else { return nil }
+      let folder = projectFolder(for: project)
+      return folder.isEmpty ? nil : (project.id, folder)
+    }
+    guard !folder.isEmpty, !others.isEmpty else { return nil }
+    let match = await BlockingWork.run {
+      let target = ProjectCLILink.resolvedFolder(folder)
+      return others.first { ProjectCLILink.resolvedFolder($0.folder) == target }?.id
+    }
+    return match.flatMap { id in projects.first { $0.id == id } }.map { ProjectFolderUser(id: $0.id, name: $0.name, folder: folder) }
+  }
+
+  /// Has the icon store look for each project's icon in its folder.
+  private func followProjectIcons() {
+    projectIcons.follow(projects.map { ProjectIconStore.Target(id: $0.id, folder: projectFolder(for: $0)) })
   }
 
   /// Keys whose current rules allow automatic reveal. Empty while rules are
@@ -4406,7 +4448,7 @@ final class VaultStore {
       !unverifiedKeyDescriptionProjects.contains(projectID),
       let descriptions = keyDescriptions[projectID],
       let project = projects.first(where: { $0.id == projectID }),
-      descriptions.folder == keyDescriptionFolder(for: project)
+      descriptions.folder == projectFolder(for: project)
     else { return [] }
     return descriptions.schema?.overview?.publicKeys ?? []
   }
@@ -4463,7 +4505,7 @@ final class VaultStore {
     keyDescriptionsTask?.cancel()
     guard isUnlocked, let project = selectedProject else { return }
     let projectID = project.id
-    let folder = keyDescriptionFolder(for: project)
+    let folder = projectFolder(for: project)
     unverifiedKeyDescriptionProjects.insert(projectID)
     let session = vaultSessionGeneration
     let account = selectedAccount
@@ -4471,7 +4513,7 @@ final class VaultStore {
       let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
       guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account,
         selectedProjectId == projectID, let currentProject = selectedProject,
-        keyDescriptionFolder(for: currentProject) == folder
+        projectFolder(for: currentProject) == folder
       else { return }
       publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: projectID)
       unverifiedKeyDescriptionProjects.remove(projectID)
@@ -4978,7 +5020,7 @@ final class VaultStore {
       savingSchemaDrafts.remove(projectID)
       switch result {
       case .success(let saved):
-        guard let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path else {
+        guard let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == folder.path else {
           // Saved where the draft was reviewed; the project's new folder has its own rules.
           endSchemaDraft(for: projectID)
           reloadKeyDescriptions()
@@ -4997,7 +5039,7 @@ final class VaultStore {
       case .failure(.file(.changed)):
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder.path, vaultID: projectID)
         guard generation == schemaDraftGeneration, isUnlocked,
-          let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path
+          let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == folder.path
         else { throw .file(.changed) }
         publishKeyDescriptions(ProjectKeyDescriptions(folder: folder.path, loaded: loaded), for: projectID, mergingDraft: false)
         let outcome = mergeSchemaDraft(for: projectID)
@@ -5050,7 +5092,7 @@ final class VaultStore {
   /// The folder whose lpm.json holds the project's loaded rules.
   private func editableSchemaFolder(for projectID: String) -> SchemaDraftFolder? {
     guard isUnlocked, let descriptions = keyDescriptions[projectID], case .loaded? = descriptions.schema,
-      let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == descriptions.folder,
+      let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == descriptions.folder,
       !descriptions.folder.isEmpty
     else { return nil }
     return SchemaDraftFolder(path: descriptions.folder, identity: descriptions.folderIdentity)
@@ -6011,7 +6053,11 @@ final class VaultStore {
       persistence: persistence, publishing: publishing, imagesDirectory: projectIcons.imagesDirectory,
       keyStore: backupKeys)
     let appState = BackupExporter.AppState(
-      settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)))
+      settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)),
+      folders: projects.reduce(into: [:]) { folders, project in
+        let folder = projectFolder(for: project)
+        if folder != project.path { folders[project.id] = folder }
+      })
     let now = Date()
     let sealed = try await exporter.seal(
       contents,
@@ -6424,7 +6470,7 @@ final class VaultStore {
     let requestId = UUID()
     let authorization = EnvFileExportAuthorization()
     let secrets = project.secrets(for: environment)
-    let projectFolder = ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+    let projectFolder = self.projectFolder(for: project)
     let task = Task { [envFileExportService] in
       try await envFileExportService.export(
         secrets: secrets,
@@ -8948,7 +8994,7 @@ final class VaultStore {
 	}
 
 	private func capturedSyncSchema(for project: VaultProject) async throws -> CapturedSyncSchema {
-		let path = keyDescriptionFolder(for: project)
+		let path = projectFolder(for: project)
     guard !path.isEmpty else { return CapturedSyncSchema(value: nil, sources: nil) }
     let projectID = project.id
     return try await BlockingWork.run {
@@ -8987,7 +9033,7 @@ final class VaultStore {
       guard let self, sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked,
         selectedProjectId == project.id
       else { afterCompletion(.failure(.targetUnavailable)); return }
-      guard keyDescriptionFolder(for: project) == folder else {
+      guard projectFolder(for: project) == folder else {
         reloadKeyDescriptions()
         afterCompletion(.failure(.description("The project folder changed. Review its descriptions, then save again.", keySaved: false)))
         return
@@ -9011,7 +9057,7 @@ final class VaultStore {
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
         error = commit.warning ?? follow.failure.map(Self.publishingFollowMessage)
-        if let rules, keyDescriptionFolder(for: commit.project) == folder {
+        if let rules, projectFolder(for: commit.project) == folder {
           publishSavedRules(rules, rootSchema: rootSchema, folder: folder, for: project.id,
             description: change.description.map { ($0.key, $0.text) })
         }
@@ -9023,7 +9069,7 @@ final class VaultStore {
       case .schemaChanged:
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: project.id)
         guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else { afterCompletion(.failure(.targetUnavailable)); return }
-        if let latest = projects.first(where: { $0.id == project.id }), keyDescriptionFolder(for: latest) == folder {
+        if let latest = projects.first(where: { $0.id == project.id }), projectFolder(for: latest) == folder {
           publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: project.id)
         }
         afterCompletion(.failure(.description(ProjectEnvSchemaFile.FileError.changed.localizedDescription, keySaved: false)))

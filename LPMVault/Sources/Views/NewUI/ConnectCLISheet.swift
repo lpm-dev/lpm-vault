@@ -20,6 +20,8 @@ struct ConnectCLISheet: View {
 	@State private var linkError: ProjectCLILinkError?
 	/// The folder chosen in the panel when the project around it was taken instead.
 	@State private var choiceInsideProject: URL?
+	/// The project whose folder the one last chosen is, which kept it from being taken.
+	@State private var folderUser: ProjectFolderUser?
 	@State private var isLinking = false
 	@State private var copiedItem: String?
 	@State private var copyResetTask: Task<Void, Never>?
@@ -61,7 +63,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private var folder: String {
-		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: store.preferences)
+		chosenFolder ?? project.map(store.projectFolder(for:)) ?? ""
 	}
 
 	private var availableHeight: CGFloat {
@@ -95,6 +97,7 @@ struct ConnectCLISheet: View {
 							step(1, "Choose the project folder")
 						} content: {
 							missingFolderNotice
+							if let folderUser { folderUserNotice(folderUser) }
 						}
 					}
 					projectSection(number: status == .noFolder ? 2 : 1)
@@ -165,6 +168,19 @@ struct ConnectCLISheet: View {
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
 		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.accessibilityElement(children: .contain)
+	}
+
+	/// Why the folder last chosen wasn't taken, and the way to the project that has it.
+	private func folderUserNotice(_ user: ProjectFolderUser) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			VaultInlineWarning(text: user.explanation)
+			if store.openableProject(id: user.id) != nil {
+				VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(user.name)", height: 26) {
+					store.openProject(id: user.id)
+					dismiss()
+				}
+			}
+		}
 	}
 
 	private var macLinkNotice: some View {
@@ -360,6 +376,9 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(writeFileExplanation)
 				.foregroundStyle(VaultPalette.textSecondary)
+			if let folderUser, status != .noFolder {
+				folderUserNotice(folderUser)
+			}
 			if case .linkedToOtherVault(let other) = status, let linked = store.openableProject(id: other) {
 				TerminalBarButton(title: "Open \(linked.name)", systemImage: "arrow.right.circle") {
 					store.openProject(id: linked.id)
@@ -623,26 +642,38 @@ struct ConnectCLISheet: View {
 	/// Takes the project the CLI would act on for the chosen folder: the nearest
 	/// folder at or above it with a package.json or lpm.json. A folder whose
 	/// .lpm is the LPM home is refused.
+	/// A folder whose lpm.json names no project, but that another project
+	/// here uses, stays that project's: it holds its rules.
 	private func chooseFolder() {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
 		let home = store.lpmHome
+		let vaultId = projectId
 		isLinking = true
 		Task {
-			let root = await BlockingWork.run { CLIFiles.projectRoot(for: url, home: home) }
+			let (root, status) = await BlockingWork.run {
+				let root = CLIFiles.projectRoot(for: url, home: home)
+				return (root, ProjectCLILink.status(vaultId: vaultId, folder: (root?.url ?? url).path))
+			}
+			let folder = root?.url ?? url
+			let user = root?.stateIsHome != true && status == .notLinked
+				? await store.project(usingFolder: folder.path, except: vaultId) : nil
 			isLinking = false
 			guard store.isUnlocked, store.selectedProjectId == projectId else { return }
+			folderUser = user
 			if root?.stateIsHome == true {
 				choiceInsideProject = nil
 				linkError = .folderIsLPMHome
 				return
 			}
-			let folder = root?.url ?? url
+			linkError = nil
+			guard user == nil else {
+				choiceInsideProject = nil
+				return
+			}
 			choiceInsideProject = folder.standardizedFileURL.path == url.standardizedFileURL.path ? nil : url
 			chosenFolder = folder.path
-			ProjectCLILink.rememberFolder(folder.path, vaultId: projectId, defaults: store.preferences)
-			store.reloadKeyDescriptions()
-			linkError = nil
+			store.chooseProjectFolder(folder.path, for: projectId)
 			refreshStatus()
 		}
 	}
