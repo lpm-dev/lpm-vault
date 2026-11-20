@@ -92,7 +92,7 @@ Go back to LPM Vault to see the connection status.
 ## Start with a project
 
 1. Unlock LPM Vault.
-2. Create an env project.
+2. Create an env project with **New Project**. The sheet also sets its icon, its folder (optional), **CLI approval** and **Local history**.
 3. Add environments to the project.
 4. Add variables to each environment, or import them.
 5. To compare the environments, select the project in the sidebar. **All Keys** opens.
@@ -137,6 +137,7 @@ A review comes before each undo or rollback. For 30 seconds after a rollback, yo
 The history stays on this Mac. It does not sync, and backups do not include it.
 To turn off history for a project, use **Local history** in **Project Settings**. This deletes the history of that project.
 **Keep local history for new projects** in **Settings → General** applies to new and imported projects.
+The **Local history** switch in the New Project sheet starts from this setting.
 
 LPM CLI 0.85.0 and later record their changes in the history. The `lpm env history` and `lpm env rollback` commands use the same history.
 An older LPM CLI can still read and write values, but it does not record its changes.
@@ -190,7 +191,7 @@ You can publish an environment to these destinations:
 
 - A Vercel project.
 - A Netlify site.
-- A Coolify application or service.
+- A Coolify application or service, over an `https://` address.
 - GitHub Actions secrets and variables.
 - Cloudflare Worker secrets.
 
@@ -201,6 +202,8 @@ You can publish an environment to these destinations:
 5. Read the review. It shows what will change before LPM Vault sends anything.
 
 LPM Vault saves each destination for the next publish.
+
+A Coolify connection that uses HTTP shows **Needs HTTPS** and can't publish. Connect the instance's HTTPS address with **Connect HTTPS**, use **Change Destination** to select and review the new connection for each saved destination, then disconnect the old connection.
 
 ## Back up and restore
 
@@ -214,7 +217,7 @@ To stop the reminders, turn off **Remind me to back up every month**.
 
 ## Connect the LPM CLI
 
-**Connect CLI** links a project folder through `lpm.json`.
+**Connect CLI** links a project folder through `lpm.json`, and links the folder to the project for the LPM CLI on this Mac.
 Linking a folder does not install the LPM CLI.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
 Then run a project script:
@@ -231,11 +234,16 @@ If an environment is empty, a script uses the default vault values.
 
 The [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and the [env guide](https://cli.lpm.dev/docs/dev/env) tell how the LPM CLI selects an environment.
 
+LPM CLI 0.87.0 and later use a project's values only in folders linked to it on this Mac. **Write File** in **Connect CLI**, and a folder chosen in **New Project**, link the folder before they write `lpm.json`. If **Connect CLI** shows **Not linked on this Mac yet**, choose **Link Folder**, or run `lpm env link` in the folder. With **Manual Setup**, the LPM CLI asks to link the folder the first time it runs there. Deleting a project removes its links.
+
+A project has one folder. **Project Settings**, the project's icon, backups and Export use it. To change it, choose **Change Folder…** in **Project Settings**. LPM Vault refuses a folder that another project on this Mac uses. A folder whose `lpm.json` links another project becomes this project's only after **Replace Vault ID** in **Connect CLI**.
+
 ## CLI approval
 
 CLI approval controls whether the LPM CLI must ask you before it reads the values of a project.
 To change it, open **Project Settings** (⌘I) for a project, then use **CLI approval**.
 **Ask before the CLI reads a new project** in **Settings → CLI** applies to new and imported projects, and is on by default.
+The **CLI approval** switch in the New Project sheet starts from this setting.
 A project the LPM CLI creates, as `lpm env set` does in a project without one, starts with CLI approval off.
 When CLI approval is off, `lpm run` gets the values without a prompt.
 When CLI approval is on, macOS asks for Touch ID or your Mac login password before the Keychain releases the values.
