@@ -26,6 +26,8 @@ struct VaultProjectSettingsView: View {
 	@State private var confirmsHistoryOff = false
 	@State private var changingHistory = false
 	@State private var isChoosingFolder = false
+	/// A folder being chosen, which leaving the page stops before it's taken.
+	@State private var chooseTask: Task<Void, Never>?
 	/// Why the folder last chosen wasn't taken.
 	@State private var folderRefusal: ProjectFolderRefusal?
 	/// Another project that uses this one's folder, whose lpm.json links none.
@@ -65,7 +67,10 @@ struct VaultProjectSettingsView: View {
 		.background(VaultPalette.content)
 		.onAppear { store.projectIcons.beginDetailing(project.id) }
 		.task(id: folder) { sharedFolder = await store.folderUser(of: folder, for: project.id) }
-		.onDisappear { store.projectIcons.endDetailing(project.id) }
+		.onDisappear {
+			store.projectIcons.endDetailing(project.id)
+			chooseTask?.cancel()
+		}
 		.task(id: project.id) { await readHistory() }
 		.vaultConfirmation(isPresented: $confirmsHistoryOff) {
 			VaultConfirmation(
@@ -414,9 +419,10 @@ struct VaultProjectSettingsView: View {
 		guard !isChoosingFolder, let url = folderPicker() else { return }
 		isChoosingFolder = true
 		let projectID = project.id
-		Task {
+		chooseTask = Task {
 			let result = await store.chooseProjectFolder(at: url, for: projectID)
 			isChoosingFolder = false
+			guard !Task.isCancelled else { return }
 			if case .failure(let refusal) = result { folderRefusal = refusal } else { folderRefusal = nil }
 		}
 	}

@@ -31,6 +31,8 @@ struct ConnectCLISheet: View {
 	@State private var copiedItem: String?
 	@State private var copyResetTask: Task<Void, Never>?
 	@State private var statusTask: Task<Void, Never>?
+	/// A folder being chosen, which closing the sheet stops before it's taken.
+	@State private var chooseTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
 	@State private var configuration = ProjectCLIConfiguration.pending
 	@State var showsTaskExample = false
@@ -125,7 +127,7 @@ struct ConnectCLISheet: View {
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismiss() } }
 		.onExitCommand { dismiss() }
-		.onDisappear { copyResetTask?.cancel(); statusTask?.cancel() }
+		.onDisappear { copyResetTask?.cancel(); statusTask?.cancel(); chooseTask?.cancel() }
 	}
 
 	// MARK: - Sections
@@ -179,8 +181,8 @@ struct ConnectCLISheet: View {
 	private func folderUserNotice(_ user: ProjectFolderUser) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
 			VaultInlineWarning(text: user.explanation)
-			if store.openableProject(id: user.id) != nil {
-				VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(user.escapedName)", height: 26) {
+			if let name = user.escapedName {
+				VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(name)", height: 26) {
 					store.openProject(id: user.id)
 					dismiss()
 				}
@@ -634,7 +636,8 @@ struct ConnectCLISheet: View {
 			isLinking = false
 			linkError = failure
 			refreshStatus()
-			store.reloadKeyDescriptions()
+			// A folder whose lpm.json linked another vault becomes the project's once it links this one.
+			if failure == nil { store.chooseProjectFolder(target, for: vaultId) } else { store.reloadKeyDescriptions() }
 		}
 	}
 
@@ -661,10 +664,10 @@ struct ConnectCLISheet: View {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
 		isLinking = true
-		Task {
+		chooseTask = Task {
 			let result = await store.chooseProjectFolder(at: url, for: projectId)
 			isLinking = false
-			guard store.isUnlocked, store.selectedProjectId == projectId else { return }
+			guard !Task.isCancelled, store.isUnlocked, store.selectedProjectId == projectId else { return }
 			choiceInsideProject = nil
 			linkError = nil
 			refusedFolder = nil

@@ -190,6 +190,30 @@ enum ProjectCLILink {
 		realPath(URL(fileURLWithPath: folder, isDirectory: true).standardizedFileURL.path)
 	}
 
+	/// The ID of the first of `folders` that is `folder`: one spelled the same
+	/// way without asking the disk, or else one that is the same directory on
+	/// it, as its device and inode say, however either is spelled. A folder
+	/// that's gone matches only its own spelling. Blocks on the file system.
+	static func firstFolder(
+		matching folder: String, in folders: [(id: String, folder: String)],
+		identity: (String) -> ProjectConfigFile.DirectoryIdentity? = { ProjectConfigFile.directoryIdentity(of: URL(fileURLWithPath: $0)) }
+	) -> String? {
+		let spelled = standardized(folder)
+		let others = folders.map { (id: $0.id, folder: standardized($0.folder)) }
+		if let same = others.first(where: { $0.folder == spelled }) { return same.id }
+		guard let target = identity(spelled) else { return nil }
+		return others.first { identity($0.folder) == target }?.id
+	}
+
+	/// Whether `first` and `second` are the same folder, as `firstFolder` decides.
+	static func isSameFolder(_ first: String, _ second: String) -> Bool {
+		firstFolder(matching: first, in: [(id: "", folder: second)]) != nil
+	}
+
+	private static func standardized(_ folder: String) -> String {
+		URL(fileURLWithPath: folder, isDirectory: true).standardizedFileURL.path
+	}
+
 	private static func folderExists(_ folder: String) -> Bool {
 		var isDirectory: ObjCBool = false
 		return !folder.isEmpty
@@ -220,7 +244,8 @@ struct ProjectFolderChoice: Equatable, Sendable {
 /// Another project on this Mac whose folder a chosen folder is.
 struct ProjectFolderUser: Equatable, Sendable {
 	let id: String
-	let name: String
+	/// Its name; nil for one the person can't open here, which isn't named.
+	let name: String?
 	/// The folder chosen, as it was asked about.
 	let folder: String
 
@@ -228,10 +253,13 @@ struct ProjectFolderUser: Equatable, Sendable {
 	/// already or once one is written, links one project.
 	var explanation: String {
 		let folder = (folder as NSString).lastPathComponent.escapingDirectionControls
+		guard let escapedName else {
+			return "Another project on this Mac uses \(folder), and a folder’s lpm.json links one project. Choose another folder."
+		}
 		return "\(escapedName) uses \(folder), and a folder’s lpm.json links one project. Choose another folder, or open \(escapedName)."
 	}
 
-	var escapedName: String { name.escapingDirectionControls }
+	var escapedName: String? { name?.escapingDirectionControls }
 }
 
 /// Why a folder chosen for a project wasn't taken.

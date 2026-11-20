@@ -143,8 +143,11 @@ extension SheetInteractionTests {
 			try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
 			let original = Data(#"{"envSchema":{"vars":{"DATABASE_URL":{"required":true}}}}"#.utf8)
 			try original.write(to: shared.appending(path: "lpm.json"))
-			// Through /var's link, unresolved, as a folder recorded for a project may be spelled.
-			let spelled = shared.path.hasPrefix("/private/") ? String(shared.path.dropFirst("/private".count)) : shared.path
+			// Through a link, as a folder recorded for a project may be spelled.
+			let link = fixture.root.appending(path: "link-to-shared")
+			try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+			let spelled = link.path
+			#expect(spelled != shared.path)
 			fixture.store.projects = [VaultProject(id: "n2proj", name: "n2proj", path: chosenInConnectCLI ? "/nonexistent/n2/proj" : spelled,
 				environments: ["default": [:]])]
 			if chosenInConnectCLI { ProjectCLILink.rememberFolder(spelled, vaultId: "n2proj", defaults: fixture.preferences) }

@@ -950,6 +950,11 @@ struct SheetInteractionTests {
 		#expect(try await host.waitForText("Replace Vault ID"))
 		try await host.settle()
 		#expect(try Data(contentsOf: config) == original)
+		let project = try #require(store.projects.first { $0.id == "sheet-regression" })
+		#expect(store.projectFolder(for: project) == "", "Another vault's folder isn't the project's until lpm.json links it")
+		try await host.click("Replace Vault ID")
+		#expect(try await host.waitUntil { store.projectFolder(for: project) == ProjectCLILink.resolvedFolder(folder.path) })
+		#expect(ProjectCLILink.status(vaultId: "sheet-regression", folder: folder.path) == .linked)
 	}
 
 	@Test("a folder another project uses, whose lpm.json names none, isn't taken: the sheet names that project and offers to open it, and a free folder is taken")

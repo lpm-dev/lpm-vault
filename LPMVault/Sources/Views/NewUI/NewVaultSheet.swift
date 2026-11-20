@@ -221,8 +221,8 @@ struct NewVaultSheet: View {
 		} else if let user = draft.folderUser {
 			VStack(alignment: .leading, spacing: 8) {
 				VaultInlineWarning(text: user.explanation)
-				if store.openableProject(id: user.id) != nil {
-					VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(user.escapedName)", height: 26) {
+				if let name = user.escapedName {
+					VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(name)", height: 26) {
 						store.openProject(id: user.id)
 						dismiss()
 					}

@@ -70,6 +70,29 @@ struct BackupRestoreTests {
 		return url
 	}
 
+	@Test("a folder chosen for a restored project is kept only while its lpm.json still links the project when it's written")
+	func restoredFolderIsCheckedAgain() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let linked = fixture.folder.appending(path: "linked", directoryHint: .isDirectory)
+		let moved = fixture.folder.appending(path: "moved", directoryHint: .isDirectory)
+		for folder in [linked, moved] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+		for (folder, vault) in [(linked, "kept"), (moved, "taken")] {
+			try Data(#"{"vault":"\#(vault)"}"#.utf8).write(to: folder.appending(path: "lpm.json"))
+		}
+		let url = try backup([project("kept", environments: ["default": [:]]), project("taken", environments: ["default": [:]])], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		var choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
+		choices.included = ["kept", "taken"]
+		choices.folders = ["kept": linked.path, "taken": moved.path]
+		// Another project's ID was written into the second folder after the review.
+		try Data(#"{"vault":"someone-else"}"#.utf8).write(to: moved.appending(path: "lpm.json"))
+		let result = try await fixture.store.restoreBackup(review, choices: choices) { _ in }
+		#expect(result.items.map(\.outcome) == [.restored(keys: 0, environments: 1, needsFolder: false), .restored(keys: 0, environments: 1, needsFolder: true)])
+		#expect(fixture.keychain.envStorage["kept"]?.path == linked.path)
+		#expect(fixture.keychain.envStorage["taken"]?.path == "", "Not a folder another project's lpm.json links")
+	}
+
 	@Test("on a Mac with no projects, a backup restores as new projects requiring approval, synced ones paused, and its settings, icons and destinations")
 	func freshMac() async throws {
 		let fixture = try fixture()

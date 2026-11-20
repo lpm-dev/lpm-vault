@@ -3250,10 +3250,10 @@ final class VaultStore {
       return .failed
     }
     let environments: [String: [String: String]] = ["default": [:]]
-    // Checked again here, as the sheet's check may be from before another project took the folder.
-    if !setup.folder.isEmpty, let user = await folderUser(of: setup.folder, for: vaultId) {
+    // Checked again here, as lpm.json or another project may have taken the folder since the sheet checked it.
+    if !setup.folder.isEmpty, let refusal = await folderRefusal(setup.folder, for: vaultId) {
       guard isUnlocked, selectedAccount == expectedAccount, sessionGeneration == vaultSessionGeneration else { return .failed }
-      error = user.explanation
+      error = refusal
       return .failed
     }
 
@@ -4432,13 +4432,18 @@ final class VaultStore {
   /// `vaultId`'s folder, as Connect CLI and Project Settings choose one. A
   /// folder whose .lpm is the LPM home is refused, as is one another
   /// project here uses whose lpm.json links no project.
+  ///
+  /// A folder whose lpm.json links another vault is returned but not taken:
+  /// it becomes the project's once Replace Vault ID points lpm.json at it.
+  /// A request whose task is cancelled, as when its sheet closes, or that
+  /// outlives the session it began in, takes nothing.
   func chooseProjectFolder(at url: URL, for vaultId: String) async -> Result<ProjectFolderChoice, ProjectFolderRefusal> {
     let home = lpmHome
     guard let recorded = projects.first(where: { $0.id == vaultId })?.path else { return .failure(.unusable(.interrupted)) }
     let session = vaultSessionGeneration
     let (chosen, isRecorded) = await BlockingWork.run {
       let chosen = ProjectCLILink.choose(url, for: vaultId, home: home)
-      let isRecorded = (try? chosen.get()).map { !recorded.isEmpty && ProjectCLILink.resolvedFolder(recorded) == $0.path } ?? false
+      let isRecorded = (try? chosen.get()).map { !recorded.isEmpty && ProjectCLILink.isSameFolder(recorded, $0.path) } ?? false
       return (chosen, isRecorded)
     }
     let choice: ProjectFolderChoice
@@ -4447,19 +4452,39 @@ final class VaultStore {
     case .failure(let error): return .failure(.unusable(error))
     }
     if let user = await folderUser(choice, for: vaultId) { return .failure(.usedBy(user)) }
-    guard isUnlocked, session == vaultSessionGeneration, projects.contains(where: { $0.id == vaultId }) else {
+    guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, projects.contains(where: { $0.id == vaultId }) else {
       return .failure(.unusable(.interrupted))
     }
+    if case .linkedToOtherVault = choice.status { return .success(choice) }
     chooseProjectFolder(choice.path, for: vaultId, isRecorded: isRecorded)
     return .success(choice)
   }
 
-  /// The project, other than `vaultId`, that uses `choice`'s folder, when
-  /// its lpm.json links no project: one that links one already names its
-  /// project, which keeps the folder's rules.
+  /// The project, other than `vaultId`, that uses `choice`'s folder, unless
+  /// its lpm.json links a project: that one names the project whose rules
+  /// it holds. One that can't be read says nothing of whose it is, so it
+  /// stays the project's that uses it.
   func folderUser(_ choice: ProjectFolderChoice, for vaultId: String) async -> ProjectFolderUser? {
-    guard choice.status == .notLinked else { return nil }
-    return await project(usingFolder: choice.path, except: vaultId)
+    switch choice.status {
+    case .notLinked, .unreadable: return await project(usingFolder: choice.path, except: vaultId)
+    case .linked, .linkedToOtherVault, .noFolder: return nil
+    }
+  }
+
+  /// Why a new project can't have `folder`, as the New Project sheet says
+  /// it: its lpm.json links another project or can't be read, it's gone,
+  /// or another project here uses it. nil when it can.
+  func folderRefusal(_ folder: String, for vaultId: String) async -> String? {
+    let status = await BlockingWork.run { ProjectCLILink.status(vaultId: vaultId, folder: folder) }
+    let choice = ProjectFolderChoice(path: folder, chosenInside: nil, status: status)
+    if let user = await folderUser(choice, for: vaultId) { return user.explanation }
+    let name = (folder as NSString).lastPathComponent.escapingDirectionControls
+    switch status {
+    case .linkedToOtherVault: return "\(name)’s lpm.json links another project. Choose another folder."
+    case .unreadable: return "\(name)’s lpm.json can’t be read safely. Fix it, or choose another folder."
+    case .noFolder: return "\(name) can’t be found any more. Choose it again."
+    case .linked, .notLinked: return nil
+    }
   }
 
   /// `folderUser(_:for:)` for a folder given by its path, whose lpm.json is read for it.
@@ -4469,9 +4494,10 @@ final class VaultStore {
     return await folderUser(ProjectFolderChoice(path: folder, chosenInside: nil, status: status), for: vaultId)
   }
 
-  /// The project, other than `vaultId`, whose folder `folder` is, as each
-  /// resolves on disk; nil when there's none. Resolves off the main actor,
-  /// as a folder on a volume that stalls would stall it.
+  /// The project, other than `vaultId`, whose folder `folder` is on disk;
+  /// nil when there's none. Checked off the main actor, as a folder on a
+  /// volume that stalls would stall it. A project the person can't open
+  /// here, such as an organization's they've left, isn't named.
   func project(usingFolder folder: String, except vaultId: String) async -> ProjectFolderUser? {
     let others = projects.compactMap { project -> (id: String, folder: String)? in
       guard project.id != vaultId else { return nil }
@@ -4479,11 +4505,9 @@ final class VaultStore {
       return folder.isEmpty ? nil : (project.id, folder)
     }
     guard !folder.isEmpty, !others.isEmpty else { return nil }
-    let match = await BlockingWork.run {
-      let target = ProjectCLILink.resolvedFolder(folder)
-      return others.first { ProjectCLILink.resolvedFolder($0.folder) == target }?.id
-    }
-    return match.flatMap { id in projects.first { $0.id == id } }.map { ProjectFolderUser(id: $0.id, name: $0.name, folder: folder) }
+    let match = await BlockingWork.run { ProjectCLILink.firstFolder(matching: folder, in: others) }
+    guard let match, let project = projects.first(where: { $0.id == match }) else { return nil }
+    return ProjectFolderUser(id: project.id, name: openableProject(id: project.id) == nil ? nil : project.name, folder: folder)
   }
 
   /// Has the icon store look for each project's icon in its folder.
@@ -6320,7 +6344,12 @@ final class VaultStore {
         outcome = .notChosen
       case .new:
         let listed = !project.backup.hidden
-        let folder = listed ? choices.folders[id] ?? "" : ""
+        var folder = listed ? choices.folders[id] ?? "" : ""
+        // Kept only while its lpm.json still links the project: another may have been linked there since the review.
+        if !folder.isEmpty {
+          let chosen = folder
+          if await BlockingWork.run({ ProjectCLILink.status(vaultId: id, folder: chosen) }) != .linked { folder = "" }
+        }
         let restored = VaultProject(id: id, name: project.backup.name, path: folder, environments: project.backup.environments)
         switch await persistence.restoreProject(.create(restored, listed: listed)) {
         case .written:
