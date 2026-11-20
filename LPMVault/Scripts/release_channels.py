@@ -197,23 +197,24 @@ def project_version(project):
 
 
 def check_stable_version(release_version, project):
-    if version_tuple(release_version) != version_tuple(project_version(project)[0]):
-        raise ValueError("Stable tag must match the project's version")
+    expected = project_version(project)[0]
+    if version_tuple(release_version) != version_tuple(expected):
+        raise ValueError(f"Version {release_version} differs from the project's {expected}")
 
 
 def tag_commit(repository, tag, output):
     """The commit `tag` names, following annotated tags, or None when the tag doesn't exist."""
     refs = json.loads(output("gh", "api", f"repos/{repository}/git/matching-refs/tags/{tag}"))
     target = next((ref["object"] for ref in refs if ref.get("ref") == f"refs/tags/{tag}"), None)
-    for _ in range(4):
-        if target is None:
-            return None
+    followed = set()
+    while target is not None:
         if target.get("type") == "commit":
             return target.get("sha")
-        if target.get("type") != "tag":
+        if target.get("type") != "tag" or target.get("sha") in followed or len(followed) >= 16:
             raise ValueError(f"Tag {tag} does not name a commit")
+        followed.add(target["sha"])
         target = json.loads(output("gh", "api", f"repos/{repository}/git/tags/{target['sha']}"))["object"]
-    raise ValueError(f"Tag {tag} nests too many annotated tags")
+    return None
 
 
 def claim_tag(repository, tag, commit, output):
@@ -222,11 +223,15 @@ def claim_tag(repository, tag, commit, output):
     if current is None:
         try:
             output("gh", "api", "-X", "POST", f"repos/{repository}/git/refs", "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}")
-        except RuntimeError:
-            pass
-        current = tag_commit(repository, tag, output)
-    if current is None:
-        raise RuntimeError(f"Could not create tag {tag}")
+        except RuntimeError as error:
+            # Another run may have created it, or the response may have been lost after the tag was created.
+            current = tag_commit(repository, tag, output)
+            if current is None:
+                raise RuntimeError(f"Could not create tag {tag}") from error
+        else:
+            current = tag_commit(repository, tag, output)
+            if current is None:
+                raise RuntimeError(f"Created tag {tag} but could not read it back")
     if current != commit:
         raise ValueError(f"Tag {tag} appeared at another commit while the release was being signed; inspect it before retrying")
 
@@ -317,6 +322,9 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
         run("gh", "release", "create", tag, "--repo", repository, "--verify-tag",
             "--draft", "--title", f"LPM Vault {release_version}", "--generate-notes",
             *(str(Path("release-output") / name) for name in names))
+        # --verify-tag only checks that the tag exists, and a draft doesn't pin where it points.
+        if tag_commit(repository, tag, output) != commit:
+            raise ValueError(f"Tag {tag} moved after it was claimed; inspect it and the draft before retrying")
         run("gh", "release", "edit", tag, "--repo", repository, "--draft=false",
             *( ["--prerelease", "--latest=false"] if channel == "nightly" else ["--latest"] ))
         published = json.loads(output("gh", "api", f"repos/{repository}/releases/tags/{tag}"))

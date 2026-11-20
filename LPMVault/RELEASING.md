@@ -175,11 +175,11 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 9. Verify that the published description contains the guidance and retains the generated list.
 
 A run without a version publishes a nightly, as the schedule does.
-The run builds `main` as it is when it starts. Merge nothing else between the version change and the run, and check the run's commit.
+The run builds the commit `main` pointed at when you started it, even if `main` moves before a runner picks the run up. Merge nothing else between the version change and the run, and check the run's commit.
 To recover a failed stable release, rerun that run instead of starting a new one.
 The run starts the CI gates again. The release job runs only from `main`, with a public repository and immutable releases.
-It refuses a version that differs from the project's, and a `vMAJOR.MINOR.PATCH` tag that already exists without its release.
-Publishing creates that tag at the `main` commit the job built.
+It refuses a version that differs from the project's.
+After signing, it creates the `vMAJOR.MINOR.PATCH` tag at the commit it built, creates the release on that tag, checks the tag again and publishes the release.
 After publication, the job verifies that the tag points at that commit, and checks the published state and immutable protection through the release API.
 If this verification fails, inspect the published release before recovery.
 
@@ -206,7 +206,10 @@ Immutable releases protect published assets. Their descriptions remain editable.
 
 If publication stops with a draft release, inspect its assets before recovery. The workflow refuses to replace an existing release. Published immutable assets cannot be replaced.
 
-Never push a `v*` tag by hand. After signing, the workflow creates the tag at the commit it built and then creates the release on that tag. A tag of that version at another commit stops the release, before signing or, if it appears during signing, before any draft exists, until you delete it. A tag at the built commit, left by an earlier attempt, is reused. Every release that enters the update feed must have its tag on the commit it was built from.
+Never push, move or delete a `v*` tag by hand. A tag of the release's version at another commit stops the release until you delete it: before signing, before any draft if it appears during signing, or with the draft left in place if it moves after the workflow created it. A tag at the built commit, left by an earlier attempt, is reused.
+A tag ruleset may block updating and deleting `v*` tags, but must not restrict creating them: the workflow creates each tag with its own token.
+
+Every release that enters the update feed must have its tag on the commit it was built from. If the latest release of a channel fails that check, every later run stops at it, because the tag of an immutable release can't be moved. Delete that release, so the previous one is the latest of its channel again, and publish a new version.
 
 Release runs wait for one another, and GitHub keeps only one waiting run. A later run, such as the scheduled nightly, replaces a run that is still waiting. If your stable run shows as cancelled before it started, run it again.
 

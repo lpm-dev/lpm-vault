@@ -184,6 +184,8 @@ class Publication(unittest.TestCase):
         self.tag_lookups = []
         self.tag_appears_while_signing = None
         self.claims = []
+        self.claim_failure = None
+        self.tag_moves_before_publication = None
 
     def previous(self, value, tag=None):
         tag = tag or 'v' + value.get('releaseVersion', value['version'])
@@ -195,6 +197,8 @@ class Publication(unittest.TestCase):
 
     def command(self, *arguments, **kwargs):
         self.commands.append(arguments)
+        if arguments[:3] == ('gh', 'release', 'create') and self.tag_moves_before_publication:
+            self.tag_objects[arguments[3]] = dict(type='commit', sha=self.tag_moves_before_publication)
         if arguments[:3] == ('gh', 'release', 'edit') and '--draft=false' in arguments:
             self.published_tags.append(arguments[3])
         if arguments[:3] == ('gh', 'release', 'download'):
@@ -209,6 +213,12 @@ class Publication(unittest.TestCase):
         if arguments[:4] == ('gh', 'api', '-X', 'POST') and arguments[4].endswith('/git/refs'):
             fields = dict(argument.split('=', 1) for argument in arguments[5:] if argument != '-f')
             tag = fields['ref'].removeprefix('refs/tags/')
+            if self.claim_failure:
+                appears_at = self.claim_failure
+                self.claim_failure = None
+                if appears_at != 'absent':
+                    self.tag_objects[tag] = dict(type='commit', sha=appears_at)
+                raise RuntimeError('gh failed with status 1')
             if tag in self.existing_tags():
                 raise RuntimeError('gh failed with status 1')
             self.claims.append((tag, fields['sha']))
@@ -233,7 +243,8 @@ class Publication(unittest.TestCase):
             return json.dumps([dict(ref='refs/tags/' + tag, object=self.tag_object(tag))
                                for tag in sorted(self.existing_tags()) if tag.startswith(name)])
         if '/git/tags/' in endpoint:
-            return json.dumps(dict(object=dict(type='commit', sha=self.annotated[endpoint.split('/git/tags/')[1]])))
+            target = self.annotated[endpoint.split('/git/tags/')[1]]
+            return json.dumps(dict(object=target if isinstance(target, dict) else dict(type='commit', sha=target)))
         raise AssertionError(arguments)
 
     def existing_tags(self):
@@ -384,6 +395,52 @@ class Publication(unittest.TestCase):
         publication = self.publish()
         publication.assert_called_once()
         self.assertNotIn('v1.0.1', self.tag_lookups)
+
+    def test_a_tag_moved_after_it_was_claimed_stops_publication_with_the_draft_in_place(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.tag_moves_before_publication = '0' * 40
+        with mock.patch.object(channels, 'publish_feed') as publication, self.assertRaisesRegex(ValueError, 'moved'):
+            channels.publish('example/vault', 'stable', 'v1.0.2', self.project, self.command, self.output, self.sign, self.environment)
+        self.assertTrue(any(command[:3] == ('gh', 'release', 'create') for command in self.commands))
+        self.assertFalse(any(command[:3] == ('gh', 'release', 'edit') for command in self.commands))
+        publication.assert_not_called()
+
+    def test_a_tag_another_run_created_at_the_source_commit_during_the_claim_is_accepted(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.claim_failure = SHA
+        self.published = dict(tag_name='v1.0.2', draft=False, prerelease=False, immutable=True)
+        self.publish('stable', 'v1.0.2')
+        self.assertTrue(any(command[:3] == ('gh', 'release', 'edit') for command in self.commands))
+
+    def test_a_failed_claim_that_left_no_tag_stops_publication_with_its_cause(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.claim_failure = 'absent'
+        with self.assertRaisesRegex(RuntimeError, 'Could not create tag v1.0.2') as raised:
+            self.publish('stable', 'v1.0.2')
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        self.assertFalse(any(command[:3] == ('gh', 'release', 'create') for command in self.commands))
+
+    def test_a_chain_of_annotated_tags_is_followed_to_its_commit(self):
+        self.previous(manifest('1.0.2', '6.0.2'))
+        chain = ['1' * 40, '2' * 40, '3' * 40, '4' * 40, '5' * 40]
+        self.tag_objects['v1.0.2'] = dict(type='tag', sha=chain[0])
+        for current, following in zip(chain, chain[1:]):
+            self.annotated[current] = dict(type='tag', sha=following)
+        self.annotated[chain[-1]] = SHA
+        self.status = 'identical'
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.publish('stable', 'v1.0.2').assert_called_once()
+
+    def test_a_tag_that_names_no_commit_or_loops_is_refused(self):
+        self.previous(manifest('1.0.2', '6.0.2'))
+        self.status = 'identical'
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        for target, annotated in [(dict(type='tree', sha='6' * 40), {}),
+                                  (dict(type='tag', sha='7' * 40), {'7' * 40: dict(type='tag', sha='7' * 40)})]:
+            self.tag_objects['v1.0.2'] = target
+            self.annotated = annotated
+            with self.subTest(target=target['type']), self.assertRaisesRegex(ValueError, 'does not name a commit'):
+                self.publish('stable', 'v1.0.2')
 
     def test_a_published_tag_must_point_at_the_source_commit(self):
         self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'

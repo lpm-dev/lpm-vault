@@ -60,7 +60,7 @@ The publisher refuses to overwrite an existing draft or immutable release.
 
 If feed publication fails after release publication, rerun that workflow run.
 The publisher reuses the published release and rebuilds the combined signed feed.
-Each release that enters the feed must have its tag on the commit its manifest records. A release whose tag points elsewhere stops feed publication.
+Each release that enters the feed must have its tag on the commit its manifest records. A release whose tag points elsewhere stops feed publication; see RELEASING.md for recovery.
 It does not rebuild the app or replace immutable artifacts.
 If `main` still matches the published nightly, a scheduled run also repairs the feed without another release.
 Every new release must contain the source of the latest published stable and nightly releases.
@@ -68,7 +68,7 @@ The publisher compares release tags, including stable tags with legacy manifests
 This rule prevents a higher build number from sending nightly users back to older source code.
 Feed recovery reuses existing artifacts even when another channel has newer source.
 
-A stable release builds `main` as it is when the run starts, so check the run's commit.
+A stable release builds the commit `main` pointed at when the run was started, so check the run's commit.
 To recover a failed stable release, rerun that run instead of starting a new one. A new run builds the current `main`, and refuses once the project's version has moved on.
 A tag at another commit without its release stops the release until you delete the tag.
 

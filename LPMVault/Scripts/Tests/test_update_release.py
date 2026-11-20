@@ -308,6 +308,8 @@ class ReleaseSecurity(unittest.TestCase):
             for version in ['1.0.3', 'v1.0.2', '1.0', '1.0.2;echo unsafe']:
                 with self.subTest(version=version), self.assertRaises(ValueError):
                     release.main(['--check-version', version])
+            with self.assertRaisesRegex(ValueError, "Version 1.0.3 differs from the project's 1.0.2"):
+                release.main(['--check-version', '1.0.3'])
         command.assert_not_called()
         output.assert_not_called()
 

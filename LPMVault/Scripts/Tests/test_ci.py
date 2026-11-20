@@ -1059,8 +1059,13 @@ class SigningWorkflowTests(unittest.TestCase):
                         (line.split(':', 1)[1].strip() for line in lines if line.startswith('    environment:')), None)
         self.assertEqual(holders, {(path, name): 'release' for path, name in self.SIGNERS.items()})
         for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
             with self.subTest(workflow=path.name):
-                self.assertNotRegex(path.read_text(), r'secrets:\s*inherit', 'a called workflow must not inherit every secret')
+                self.assertNotRegex(workflow, r'secrets:\s*inherit', 'a called workflow must not inherit every secret')
+                signer = self.SIGNERS.get(path.name)
+                outside = workflow.replace('\n'.join(job(workflow, signer)), '') if signer else workflow
+                self.assertNotRegex(outside, r'\bsecrets\b(?!\.GITHUB_TOKEN\b)',
+                                    'only the signing job may read a secret, including through workflow-level env')
 
     def test_only_the_signing_jobs_name_an_environment(self):
         named = {}
