@@ -57,9 +57,11 @@ Do not reset your Keychain or delete credentials to create a reproduction.
 
 Use **Connect CLI** for the intended env project and directory.
 Run the script from that directory with the official signed CLI.
+If the CLI refuses the folder because it isn't linked, choose **Link Folder** in **Connect CLI**, or run `lpm env link` in the folder.
 Use the [env guide](https://cli.lpm.dev/docs/dev/env) to select the intended environment.
 
 If the CLI asks for authentication, inspect the project's **CLI approval** setting.
+A project created in LPM Vault asks for approval by default. In SSH or launchd sessions, turn off its **CLI approval**.
 If you cancel authentication, the CLI stops before it runs the script.
 The app's **Lock** button does not enable CLI approval.
 Neither control revokes values that a process already received.
