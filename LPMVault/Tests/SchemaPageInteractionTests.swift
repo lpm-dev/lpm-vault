@@ -78,15 +78,24 @@ extension SheetInteractionTests {
 			defer { try? FileManager.default.removeItem(atPath: folder) }
 			let store = makeStore(path: folder)
 			defer { store.lock(); store.clipboard.pasteboard.releaseGlobally() }
-			let host = try await workspace(store)
+			let editors = FakeEditors()
+			let host = try await workspace(store, editors: editors.catalog)
 			defer { host.window.close() }
 			try await host.click("Schema")
 			#expect(try await host.waitForText("6 declared keys"))
 			try await host.click("Open lpm.json")
-			let menu = try await host.popoverWindow()
-			if let editor = ProjectConfigOpener.editors().first {
-				#expect(try await host.waitForText("Open in \(editor.name)", in: menu))
-			}
+			var menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Open in Cursor", in: menu), "The Mac's default first")
+			try await host.click("Open in TextEdit", in: menu)
+			#expect(try await host.waitUntil { editors.opened.count == 1 })
+			let opened = try #require(editors.opened.first)
+			#expect(opened.editor == FakeEditors.textEdit && opened.keep, "Another app opens it, and is kept")
+			#expect(opened.file.resolvingSymlinksInPath() == URL(filePath: folder + "/lpm.json").resolvingSymlinksInPath())
+			#expect(try await host.waitUntil { !menu.isVisible || SheetTestHost<AnyView>.isClosing(menu) })
+
+			try await host.click("Open lpm.json")
+			menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Open in TextEdit", in: menu), "The app chosen comes first now")
 			#expect(try await host.waitForText("Show in Finder", in: menu))
 			try await host.click("Copy Path", in: menu)
 			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) != nil })
@@ -101,7 +110,7 @@ extension SheetInteractionTests {
 			let overview = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
 			let file = URL(filePath: folder + "/lpm.json")
 			let host = SheetTestHost(VaultSchemaView(state: .loaded(overview, file: file), folder: folder, descriptions: [:], sortOrder: .constant(.ascending),
-				canEdit: true, clientPrefixes: AnyView(Text("Prefixes")), onConnectCLI: {}, onRecheck: {}),
+				canEdit: true, clientPrefixes: AnyView(Text("Prefixes")), onConnectCLI: {}, onRecheck: {}).environment(\.vaultConfigEditors, FakeEditors().catalog),
 				size: NSSize(width: 1000, height: 400), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			try await host.settle()
@@ -123,6 +132,20 @@ extension SheetInteractionTests {
 			try await host.click("Client Prefixes")
 			let prefixes = try await host.popoverWindow()
 			#expect(try await host.waitForText("Prefixes", in: prefixes), "One popover, from the control shown")
+		}
+
+		@Test("lpm.json that can't be read is offered for editing by a button of its own name, apart from the header's Open lpm.json menu")
+		func unreadableConfigControlsHaveDistinctNames() async throws {
+			let folder = try makeFolder("{ not json")
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let host = SheetTestHost(VaultSchemaView(state: .unreadable(.init(location: "lpm.json", reason: "Not JSON")), folder: folder, descriptions: [:],
+				sortOrder: .constant(.ascending), onConnectCLI: {}, onRecheck: {}),
+				size: NSSize(width: 1100, height: 500), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("Schema can’t be read"))
+			let buttons = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .button }
+			#expect(buttons.filter { $0.says("Open lpm.json", as: .leading) }.count == 1, "One control opens the menu")
+			#expect(buttons.contains { $0.says("Edit lpm.json", as: .leading) }, "The banner's control says it edits the file")
 		}
 
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")
@@ -247,11 +270,12 @@ extension SheetInteractionTests {
 			return store
 		}
 
-		private func workspace(_ store: VaultStore) async throws -> SheetTestHost<some View> {
+		private func workspace(_ store: VaultStore, editors: ProjectConfigOpener.Catalog = FakeEditors().catalog) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
 			let defaults = try #require(UserDefaults(suiteName: "schema-page-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
-				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
+				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults)
+				.environment(\.vaultConfigEditors, editors),
 				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots[store.selectedProjectId ?? ""] != nil })
 			try await host.settle()
@@ -269,5 +293,32 @@ extension SheetInteractionTests {
 			}
 			return folder
 		}
+	}
+}
+
+/// Two apps that open JSON, Cursor the Mac's default, which remember the one
+/// chosen as the Mac would, and record what they're asked to open.
+private final class FakeEditors: @unchecked Sendable {
+	static let cursor = URL(filePath: "/Applications/Cursor.app", directoryHint: .isDirectory)
+	static let textEdit = URL(filePath: "/Applications/TextEdit.app", directoryHint: .isDirectory)
+
+	private let lock = NSLock()
+	private var chosen: String?
+	private var openRequests: [(file: URL, editor: URL, keep: Bool)] = []
+
+	var opened: [(file: URL, editor: URL, keep: Bool)] { lock.withLock { openRequests } }
+
+	var catalog: ProjectConfigOpener.Catalog {
+		ProjectConfigOpener.Catalog(
+			list: { [self] in
+				ProjectConfigOpener.editors(capable: [Self.cursor, Self.textEdit], systemDefault: Self.cursor, chosen: lock.withLock { chosen },
+					name: { $0.deletingPathExtension().lastPathComponent }, version: { _ in nil })
+			},
+			open: { [self] file, editor, keep in
+				lock.withLock {
+					openRequests.append((file, editor, keep))
+					if keep { chosen = editor.path }
+				}
+			})
 	}
 }

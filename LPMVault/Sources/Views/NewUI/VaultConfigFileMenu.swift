@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+extension EnvironmentValues {
+	/// Where the Open lpm.json menu finds the apps that open JSON; tests give their own.
+	@Entry var vaultConfigEditors = ProjectConfigOpener.Catalog.system
+}
+
 /// lpm.json's button in a page's header: a menu that opens the file in the
 /// app last chosen for JSON or in another that opens it, shows it in Finder,
 /// or copies its path. Choosing another app keeps it for next time.
@@ -11,8 +16,11 @@ struct VaultConfigFileMenu: View {
 	var compact = false
 	let onCopyPath: (String) -> Void
 
+	@Environment(\.vaultConfigEditors) private var catalog
 	@State private var isOpen = false
 	@State private var hovering = false
+	/// Reading the apps that open JSON, before the menu opens with them.
+	@State private var loading: Task<Void, Never>?
 	/// The apps that open JSON, and the menu's rows with their icons, read as
 	/// the menu opens, since apps come and go.
 	@State private var editors: [ProjectConfigOpener.Editor] = []
@@ -28,11 +36,17 @@ struct VaultConfigFileMenu: View {
 
 	var body: some View {
 		Button {
-			if !isOpen {
-				editors = ProjectConfigOpener.editors()
-				rows = Self.rows(editors: editors)
+			guard !isOpen else { return isOpen = false }
+			guard loading == nil else { return }
+			let list = catalog.list
+			loading = Task {
+				let found = await BlockingWork.run { list() }
+				loading = nil
+				guard !Task.isCancelled else { return }
+				editors = found
+				rows = Self.rows(editors: found)
+				isOpen = true
 			}
-			isOpen.toggle()
 		} label: {
 			HStack(spacing: 6) {
 				Image(systemName: "doc")
@@ -61,6 +75,10 @@ struct VaultConfigFileMenu: View {
 		.accessibilityLabel("Open lpm.json")
 		.accessibilityHint("Shows the apps that open it, Show in Finder and Copy Path")
 		.vaultMenu(isPresented: $isOpen, rows: rows, width: 260, label: "Open lpm.json", onChoose: choose)
+		.onDisappear {
+			loading?.cancel()
+			loading = nil
+		}
 	}
 
 	/// The app that opens lpm.json first, then the others that can, then Finder and the path.
@@ -82,11 +100,8 @@ struct VaultConfigFileMenu: View {
 		guard let file else { return }
 		switch choice {
 		case .open(let editor):
-			if editor == editors.first?.url {
-				ProjectConfigOpener.open(file, in: editor)
-			} else {
-				ProjectConfigOpener.open(file, choosing: editor)
-			}
+			// The first is already the app that opens JSON; another becomes it.
+			catalog.open(file, editor, editor != editors.first?.url)
 		case .reveal:
 			ProjectConfigOpener.reveal(file)
 		case .copyPath:

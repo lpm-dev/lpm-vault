@@ -143,7 +143,7 @@ struct AddVariableSheet: View {
 					.lineLimit(1)
 			}
 			Spacer(minLength: 12)
-			VaultSheetCloseButton(action: close)
+			VaultSheetCloseButton(action: discard)
 				.disabled(isSubmitting)
 		}
 		.padding(.horizontal, 24)
@@ -528,7 +528,7 @@ struct AddVariableSheet: View {
 					.lineLimit(1)
 			}
 		} actions: {
-			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: close)
+			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: discard)
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(
 				title: isSubmitting ? "Adding…" : (valueProblems.isEmpty ? draft.submitTitle : "Add anyway"),
@@ -600,7 +600,7 @@ struct AddVariableSheet: View {
 				refreshDraft()
 				isKeyFocused = true
 			case .success:
-				close()
+				finish()
 			case .failure(let error):
 				refreshDraft()
 				submitError = error.localizedDescription
@@ -612,10 +612,16 @@ struct AddVariableSheet: View {
 		draft = Self.makeDraft(store: store, project: project, key: draft.key, selection: draft.selection)
 	}
 
-	private func close() {
-		guard !isSubmitting else { return }
+	/// Closes once the key is added, showing what was added as it goes.
+	private func finish() {
 		isClosing = true
 		dismiss()
+	}
+
+	/// Closes without adding, the value cleared first: one the person drops doesn't stay on screen.
+	private func discard() {
+		guard !isSubmitting else { return }
+		dismissAndClear()
 	}
 
 	/// Closes at once, clearing the value first, as locking or leaving the project requires.

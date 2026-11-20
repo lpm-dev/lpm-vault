@@ -1021,6 +1021,34 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Raw Text"), "Back on the environment's own page")
 		}
 
+		@Test("the app's name leads to the start page while the sidebar searches, which says no project matches only when none does")
+		func appNameWithASearch() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			func search(_ text: String) throws {
+				func fields(in view: NSView) -> [NSTextField] {
+					if let field = view as? NSTextField { return field.isEditable ? [field] : [] }
+					return view.subviews.flatMap(fields)
+				}
+				host.view.layoutSubtreeIfNeeded()
+				let field = try #require(fields(in: host.view).first { $0.convert($0.bounds, to: nil).maxX < VaultMetrics.sidebar }, "The sidebar's search")
+				host.window.makeFirstResponder(field)
+				let editor = try #require(field.currentEditor() as? NSTextView)
+				editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+				field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+			}
+			try search("Work")
+			#expect(try await host.waitForText("Workspace"))
+			let titleBar = CGRect(x: 0, y: 0.9, width: 0.4, height: 0.1)
+			try await host.click("LPM Vault", region: titleBar)
+			#expect(try await host.waitForText("Select an env project"), "Workspace still matches the search")
+			#expect(try await host.waitForElement(saying: "Create Project").isEnabledNow)
+			try search("nothing-like-it")
+			#expect(try await host.waitForText("No matching env projects"))
+		}
+
 		@Test("the app's name drops its hover tint once it closes the project, so it isn't tinted when a project opens again")
 		func appNameHoverEndsWithTheProject() async throws {
 			let (store, _) = makeStore()

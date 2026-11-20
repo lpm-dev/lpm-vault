@@ -4,12 +4,20 @@ import SwiftUI
 struct VaultHistoryView: View {
 	let store: VaultStore
 	let project: VaultProject
-	var onProjectSettings: () -> Void = {}
+	let onProjectSettings: () -> Void
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
-	@State private var keySearch = ""
+	@State private var keySearch: String
 	@FocusState private var keySearchFocused: Bool
 	@State private var searchTask: Task<Void, Never>?
+
+	init(store: VaultStore, project: VaultProject, onProjectSettings: @escaping () -> Void = {}) {
+		self.store = store
+		self.project = project
+		self.onProjectSettings = onProjectSettings
+		// Opening the project's page again keeps its filter, so the field starts with what filters it.
+		_keySearch = State(initialValue: store.history.projectID == project.id ? store.history.filter.keyContains : "")
+	}
 
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }

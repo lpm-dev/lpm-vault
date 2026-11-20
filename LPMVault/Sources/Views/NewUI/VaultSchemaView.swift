@@ -269,7 +269,7 @@ struct VaultSchemaView: View {
 				}
 				Spacer(minLength: 8)
 				if let configFile {
-					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 26) { ProjectConfigOpener.open(configFile) }
+					editConfigButton(configFile, filled: false, height: 26)
 				}
 			}
 			VStack(spacing: 0) {
@@ -410,6 +410,13 @@ struct VaultSchemaView: View {
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
 
+	/// Opens lpm.json straight in the app that opens JSON, to fix it; the header's
+	/// Open lpm.json menu has the other ways to reach it, so this says what it does.
+	private func editConfigButton(_ file: URL, filled: Bool, height: CGFloat) -> some View {
+		VaultBarButton(systemImage: "square.and.pencil", title: "Edit lpm.json", filled: filled, height: height) { ProjectConfigOpener.open(file) }
+			.help("Open lpm.json in the app that opens JSON")
+	}
+
 	private func problemBanner(_ problem: ProjectEnvSchemaState.Problem) -> some View {
 		HStack(alignment: .top, spacing: 10) {
 			Image(systemName: "exclamationmark.triangle.fill")
@@ -428,7 +435,7 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultBarButton(systemImage: "doc", title: "Open lpm.json", filled: true, height: 28) { ProjectConfigOpener.open(configFile) }
+				editConfigButton(configFile, filled: true, height: 28)
 			}
 			// Imports added while lpm.json can't be read aren't known yet, so they
 			// aren't watched until it resolves.

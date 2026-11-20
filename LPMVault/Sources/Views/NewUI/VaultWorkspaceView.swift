@@ -515,7 +515,8 @@ struct VaultWorkspaceView: View {
 							contentView(project, snapshot: snapshot)
 						} else {
 							VaultWorkspaceEmptyView(
-								isSearching: !searchText.isEmpty,
+								// Only a search that leaves nothing in the sidebar says so; one that matches leaves the start page as it is.
+								isSearching: !searchText.isEmpty && store.visibleVaults(matching: searchText).isEmpty,
 								hasProjects: !store.projects.isEmpty,
 								onCreate: { showNewProject = true },
 								onImport: { showCloudProjects = true },

@@ -1196,6 +1196,21 @@ struct SheetInteractionTests {
 		#expect(try await !host.text().contains("already exists"), "nor try to, which the key it added would refuse")
 	}
 
+	@Test("Cancel or Close discards a typed value at once, even one that's revealed, as the sheet closes", arguments: ["Cancel", "Close"])
+	func discardedValueClearsAtOnce(control: String) async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "TOKEN", initialValueRevealed: true),
+			size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		let field = "Paste a value or generate one"
+		try host.enterText("sk_discarded", placeholder: field)
+		try await host.waitUntil { host.fieldText(placeholder: field) == "sk_discarded" }
+		try await host.click(control)
+		#expect(try await host.waitUntil { host.fieldText(placeholder: field) == "" }, "A value the person discards doesn't stay on screen")
+		#expect(stored(keychain, "default", "TOKEN") == nil)
+	}
+
 	@Test("a typed value's hidden characters are said in words, a fix is the person's choice, and the value still adds as given")
 	func addVariableHiddenCharacters() async throws {
 		let (store, keychain) = makeStore()

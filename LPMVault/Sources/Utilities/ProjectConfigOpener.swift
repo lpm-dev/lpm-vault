@@ -13,12 +13,23 @@ enum ProjectConfigOpener {
 	static let editorDefaultsKey = "lpm-vault-json-editor"
 
 	/// An app that opens JSON.
-	struct Editor: Equatable, Identifiable {
+	struct Editor: Equatable, Identifiable, Sendable {
 		let url: URL
 		let name: String
 		/// Its version, where another app the menu lists has the same name.
 		var version: String?
 		var id: URL { url }
+	}
+
+	/// Where the Open lpm.json menu finds the apps that open JSON, and how it
+	/// opens lpm.json in one, keeping the app chosen when `keep` says to.
+	struct Catalog: Sendable {
+		var list: @Sendable () -> [Editor]
+		var open: @MainActor @Sendable (_ file: URL, _ editor: URL, _ keep: Bool) -> Void
+
+		static let system = Catalog(list: { editors() }, open: { file, editor, keep in
+			if keep { ProjectConfigOpener.open(file, choosing: editor) } else { ProjectConfigOpener.open(file, in: editor) }
+		})
 	}
 
 	/// Opens `file` in an app, as NSWorkspace does; tests watch it instead.
@@ -71,8 +82,8 @@ enum ProjectConfigOpener {
 	}
 
 	/// The apps that open JSON on this Mac, for the menu: the one chosen last,
-	/// or else the default, first, then the rest by name.
-	@MainActor
+	/// or else the default, first, then the rest by name. Reads each app's
+	/// name, which can wait on the volume it's on, so it runs off the main actor.
 	static func editors(defaults: UserDefaults = .standard) -> [Editor] {
 		let workspace = NSWorkspace.shared
 		return editors(
