@@ -1044,5 +1044,82 @@ class ReleaseBundleCheckTests(unittest.TestCase):
         self.assertGreaterEqual(self.time_limit('release-bundle.yml', 'build'), self.time_limit('release.yml', 'release'))
 
 
+class SigningWorkflowTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+    SIGNERS = {'release.yml': 'release', 'verify-release.yml': 'verify'}
+
+    def test_only_the_release_environment_holds_the_signing_secrets(self):
+        holders = {}
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
+            for name in re.findall(r'^  ([\w-]+):$', workflow.split('\njobs:\n', 1)[-1], re.MULTILINE):
+                lines = job(workflow, name)
+                if any(re.search(r'\bsecrets\b(?!\.GITHUB_TOKEN\b)', line) for line in lines):
+                    holders[(path.name, name)] = next(
+                        (line.split(':', 1)[1].strip() for line in lines if line.startswith('    environment:')), None)
+        self.assertEqual(holders, {(path, name): 'release' for path, name in self.SIGNERS.items()})
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
+            with self.subTest(workflow=path.name):
+                self.assertNotRegex(workflow, r'secrets:\s*inherit', 'a called workflow must not inherit every secret')
+                signer = self.SIGNERS.get(path.name)
+                outside = workflow.replace('\n'.join(job(workflow, signer)), '') if signer else workflow
+                self.assertNotRegex(outside, r'\bsecrets\b(?!\.GITHUB_TOKEN\b)',
+                                    'only the signing job may read a secret, including through workflow-level env')
+
+    def test_only_the_signing_jobs_name_an_environment(self):
+        named = {}
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
+            for name in re.findall(r'^  ([\w-]+):$', workflow.split('\njobs:\n', 1)[-1], re.MULTILINE):
+                environment = [line for line in job(workflow, name) if re.match(r'\s+environment:', line)]
+                if environment:
+                    named[(path.name, name)] = environment
+        self.assertEqual(named, {(path, name): ['    environment: release'] for path, name in self.SIGNERS.items()})
+
+    def test_signing_workflows_start_only_by_schedule_or_by_hand(self):
+        self.assertEqual(events((self.WORKFLOWS / 'release.yml').read_text()), {'schedule', 'workflow_dispatch'})
+        self.assertEqual(events((self.WORKFLOWS / 'verify-release.yml').read_text()), {'workflow_dispatch'})
+        for path in self.SIGNERS:
+            with self.subTest(workflow=path):
+                self.assertNotIn('tags:', (self.WORKFLOWS / path).read_text())
+
+    def test_a_stable_release_names_its_version_and_a_scheduled_run_is_a_nightly(self):
+        workflow = (self.WORKFLOWS / 'release.yml').read_text()
+        self.assertIn('    inputs:\n      version:\n', workflow)
+        release = '\n'.join(job(workflow, 'release'))
+        self.assertIn('          RELEASE_VERSION: ${{ inputs.version }}\n', release)
+        self.assertIn('if [[ -n "$RELEASE_VERSION" ]]; then\n'
+                      '            python3 LPMVault/Scripts/ci-release.py --channel stable --version "$RELEASE_VERSION"\n'
+                      '          else\n'
+                      '            python3 LPMVault/Scripts/ci-release.py --channel nightly\n', release)
+        self.assertNotIn('GITHUB_EVENT_NAME', release)
+
+    def test_a_stable_version_is_checked_before_the_macos_gates_run(self):
+        workflow = (self.WORKFLOWS / 'release.yml').read_text()
+        version = '\n'.join(job(workflow, 'version'))
+        self.assertIn('    runs-on: ubuntu-latest\n', version)
+        self.assertNotIn('environment:', version)
+        self.assertNotIn('secrets.', version)
+        self.assertIn('          RELEASE_VERSION: ${{ inputs.version }}\n', version)
+        self.assertIn('if [[ "$GITHUB_REF" != refs/heads/main ]]; then', version)
+        self.assertIn('python3 LPMVault/Scripts/ci-release.py --check-version "$RELEASE_VERSION"', version)
+        for gate in ['checks', 'ui']:
+            with self.subTest(gate=gate):
+                self.assertIn('    needs: [version]', job(workflow, gate))
+        self.assertIn('    timeout-minutes: 5', job(workflow, 'version'))
+
+    def test_verification_refuses_another_ref_before_the_macos_gates_run(self):
+        workflow = (self.WORKFLOWS / 'verify-release.yml').read_text()
+        ref = '\n'.join(job(workflow, 'ref'))
+        self.assertIn('    runs-on: ubuntu-latest\n', ref)
+        self.assertIn('    timeout-minutes: 5', ref)
+        self.assertNotIn('environment:', ref)
+        self.assertIn('if [[ "$GITHUB_REF" != refs/heads/main ]]; then', ref)
+        for gate in ['checks', 'ui']:
+            with self.subTest(gate=gate):
+                self.assertIn('    needs: [ref]', job(workflow, gate))
+
+
 if __name__ == '__main__':
     unittest.main()

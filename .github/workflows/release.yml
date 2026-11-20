@@ -1,17 +1,39 @@
 name: Signed release
 on:
-  push:
-    tags: ['v*', '!v*-nightly.*']
   schedule:
     - cron: '37 3 * * *'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version to release, MAJOR.MINOR.PATCH and equal to the project's version. Leave empty for a nightly.
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
   group: vault-production-release
   cancel-in-progress: false
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check the version to release
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Releases run only from main."
+            exit 1
+          fi
+          python3 LPMVault/Scripts/ci-release.py --check-version "$RELEASE_VERSION"
   checks:
+    needs: [version]
     # The CI workflow's plan job asks for it, and a called workflow can't have
     # more than its caller grants.
     permissions:
@@ -19,10 +41,13 @@ jobs:
       actions: read
     uses: ./.github/workflows/ci.yml
   ui:
+    needs: [version]
     uses: ./.github/workflows/ui.yml
   release:
     needs: [checks, ui]
     runs-on: macos-15
+    # The signing and Sparkle keys live in this environment, which only main can use.
+    environment: release
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     timeout-minutes: 60
@@ -44,9 +69,10 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            python3 LPMVault/Scripts/ci-release.py
+          if [[ -n "$RELEASE_VERSION" ]]; then
+            python3 LPMVault/Scripts/ci-release.py --channel stable --version "$RELEASE_VERSION"
           else
             python3 LPMVault/Scripts/ci-release.py --channel nightly
           fi

@@ -2,8 +2,8 @@
 
 ## Release behavior
 
-Stable releases use a `vMAJOR.MINOR.PATCH` tag that matches `MARKETING_VERSION` in the Xcode project.
-The nightly workflow runs from `main` at 03:37 UTC. A manual run also publishes a nightly from `main`.
+A stable release is started by hand from `main` with its version, which must match `MARKETING_VERSION` in the Xcode project. The workflow creates its `vMAJOR.MINOR.PATCH` tag.
+The nightly workflow runs from `main` at 03:37 UTC. A manual run without a version also publishes a nightly from `main`.
 Both paths run the repository CI before they sign, notarize, and publish the app.
 
 A nightly tag has this form: `v1.1.0-nightly.20261007.42.abcdef0`.
@@ -20,7 +20,7 @@ One workflow concurrency group serializes both channels. Separate counters canno
 
 Nightly releases use GitHub prerelease status and never become the latest stable release.
 The existing `/download` and `/updates/appcast.xml` routes continue to serve the latest stable release.
-Nightly tags do not trigger a second stable release run.
+No tag starts a release run. The workflow creates each tag at the commit it built, just before it creates the release.
 
 ## Signed channel feed
 
@@ -47,7 +47,7 @@ Failed signing or publication leaves the public feed unchanged.
 5. Check that `/updates/channels.xml` serves a signed feed with the expected nightly entry.
 6. Check that `/download` still redirects to the stable installer.
 
-The workflow uses the existing Apple signing, provisioning, notarization, Sparkle, and immutable-release secrets.
+The workflow reads the Apple signing, provisioning, notarization and Sparkle secrets from the `release` environment, which only `main` can use.
 Its `contents: write` permission also permits the generated feed branch update.
 The generated `updates` branch must permit forward updates from the release workflow.
 The implementation does not publish from a pull request or write generated artifacts to `main`.
@@ -66,8 +66,13 @@ Every new release must contain the source of the latest published stable and nig
 The publisher compares release tags, including stable tags with legacy manifests.
 This rule prevents a higher build number from sending nightly users back to older source code.
 Feed recovery reuses existing artifacts even when another channel has newer source.
+Each release that enters the feed must have its tag on the commit its manifest records. A release whose tag points elsewhere stops feed publication; see RELEASING.md for recovery.
 
-If signing credentials expire, replace the affected repository secret before the next run.
+A stable release builds the commit `main` pointed at when the run was started, so check the run's commit.
+To recover a failed stable release, rerun that run instead of starting a new one. A new run builds the current `main`, and refuses once the project's version has moved on.
+A tag at another commit without its release stops the release until you delete the tag.
+
+If signing credentials expire, replace the affected secret in the `release` environment before the next run.
 Release failure keeps the previous feed and stable installer available.
 
 ## Regression coverage

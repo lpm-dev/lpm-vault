@@ -70,7 +70,7 @@ Older clients reject `shared_keychain` authority. Keep Vault and CLI current aft
 
 ## GitHub configuration
 
-The release workflow requires these repository Actions secrets:
+The release and verification workflows read these secrets from the `release` environment:
 
 | Secret | Content |
 | --- | --- |
@@ -89,6 +89,20 @@ Publication uses `GITHUB_TOKEN` with **Contents: write** permission.
 The script passes the separate read credential only to the settings request.
 Other subprocesses do not receive that credential.
 
+Only `main` can use the `release` environment (**Settings → Environments → release → Deployment branches and tags**), and administrators can't bypass that rule.
+A workflow on any other branch, a pull request or a tag therefore never sees the signing or Sparkle keys.
+Keep these secrets in the environment, not at the repository level, where every branch's workflows can read them.
+A repository secret with the same name stays readable to every branch even after the environment holds its own copy, because the environment's copy only takes precedence in its own jobs.
+After you set or replace a secret in the environment, check **Settings → Secrets and variables → Actions** and delete any repository copy.
+
+To set up the environment:
+
+1. Create the `release` environment.
+2. Under **Deployment branches and tags**, choose **Selected branches and tags** and add one **Branch** rule, `main`. Add no tag rules. **Protected branches only** would also admit any other protected branch.
+3. Turn off the option that lets administrators bypass the environment's rules.
+4. Add every secret in the table above.
+5. Delete the repository copies of those secrets.
+
 ### Configure the settings credential
 
 1. Open [fine-grained token creation](https://github.com/settings/personal-access-tokens/new) with the `tolgaergin` account.
@@ -98,7 +112,7 @@ Other subprocesses do not receive that credential.
 5. Leave other permissions disabled, except the automatic **Metadata: read** permission.
 6. Select an expiration that complies with the organization policy.
 7. Create the token and complete any required organization approval.
-8. Save the token as the repository Actions secret `IMMUTABLE_RELEASES_READ_TOKEN`.
+8. Save the token as the `release` environment secret `IMMUTABLE_RELEASES_READ_TOKEN`.
 9. Record the expiration and replace the secret before that date.
 
 The account that creates the token must have repository administration access.
@@ -122,7 +136,6 @@ It then uses the signing secrets to build and notarize test installers without p
 For private repository setup, select the workflow's **signing_only** input.
 This mode verifies signing without the publication preflight.
 It does not prove that production publication can succeed.
-The `release-check-*` tag path always includes the publication preflight.
 
 For a settings check without signing, use the preflight command:
 
@@ -133,14 +146,14 @@ python3 LPMVault/Scripts/ci-release.py --preflight-only
 This command requires `GITHUB_REPOSITORY`, `GH_TOKEN`, and `IMMUTABLE_RELEASES_READ_TOKEN` in the environment.
 It does not create a release or use the Apple signing secrets.
 
-Run it manually with a test version and build number. Before the workflow reaches `main`, push a `release-check-*` tag on the reviewed branch:
+Run **Verify signed release** from `main` with a test version and build number:
 
 ```bash
-git tag release-check-1.0.0-build3
-git push origin release-check-1.0.0-build3
+gh workflow run verify-release.yml --ref main -f version=1.0.0 -f build=3
 ```
 
-This tag runs the full CI gates before signing. It does not start the production release workflow or create a GitHub release.
+It runs the full CI gates before signing. It does not start the production release workflow or create a GitHub release.
+It runs only from `main`, because only `main` can use the `release` environment. Check a signing change on a branch with a local build before it merges.
 
 Download the `vault-verified-installers` workflow artifact for local testing. GitHub retains it for seven days. It contains installers, checksums, the signed feed, and the release manifest. Signing credentials and diagnostic logs are excluded.
 
@@ -153,14 +166,21 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 3. Run `xcodegen generate --spec LPMVault/project.yml` from the repository root.
 4. Submit the change through a pull request. Include user-facing highlights and any upgrade instructions in its description.
 5. After the pull request passes CI and receives merge approval, merge it.
-6. Tag the merged commit with `vMAJOR.MINOR.PATCH`.
-7. Push that tag.
-8. Wait for the release workflow to publish all verified artifacts successfully.
-9. Edit the GitHub release description. Add reviewed highlights and upgrade instructions above the generated pull request list.
-10. Verify that the published description contains the guidance and retains the generated list.
+6. Run the **Signed release** workflow from `main` with the new version:
+   ```bash
+   gh workflow run release.yml --ref main -f version=MAJOR.MINOR.PATCH
+   ```
+7. Wait for the release workflow to publish all verified artifacts successfully.
+8. Edit the GitHub release description. Add reviewed highlights and upgrade instructions above the generated pull request list.
+9. Verify that the published description contains the guidance and retains the generated list.
 
-The tag starts the CI gates again. The release job requires a commit from `main`, a public repository, and immutable releases.
-After publication, the job verifies the tag, published state, and immutable protection through the release API.
+A run without a version publishes a nightly, as the schedule does.
+The run builds the commit `main` pointed at when you started it, even if `main` moves before a runner picks the run up. Merge nothing else between the version change and the run, and check the run's commit.
+To recover a failed stable release, rerun that run instead of starting a new one.
+The run starts the CI gates again. The release job runs only from `main`, with a public repository and immutable releases.
+It refuses a version that differs from the project's.
+After signing, it creates the `vMAJOR.MINOR.PATCH` tag at the commit it built, creates the release on that tag, checks the tag again and publishes the release.
+After publication, the job verifies that the tag points at that commit, and checks the published state and immutable protection through the release API.
 If this verification fails, inspect the published release before recovery.
 
 The job signs every Sparkle component, signs Vault, notarizes the app, staples its ticket, and verifies Gatekeeper acceptance. It repeats notarization for the DMG. It then generates and verifies the signed feed and archive signatures.
@@ -178,13 +198,20 @@ The workflow publishes these assets together:
 
 GitHub generates release notes from merged pull requests.
 The categories in [`.github/release.yml`](../.github/release.yml) use the primary labels described in [CONTRIBUTING.md](../CONTRIBUTING.md).
-Before tagging, verify that merged pull requests have the correct labels and that their titles describe the changes.
+Before releasing, verify that merged pull requests have the correct labels and that their titles describe the changes.
 Prepare migration requirements in the release preparation pull request before publication.
 Generated notes include pull request titles and links, but not their descriptions.
 Copy the reviewed guidance into the published release description through **Releases → Edit**.
 Immutable releases protect published assets. Their descriptions remain editable.
 
 If publication stops with a draft release, inspect its assets before recovery. The workflow refuses to replace an existing release. Published immutable assets cannot be replaced.
+
+Never push, move or delete a `v*` tag by hand. A tag of the release's version at another commit stops the release until you delete it: before signing, before any draft if it appears during signing, or with the draft left in place if it moves after the workflow created it. A tag at the built commit, left by an earlier attempt, is reused.
+A tag ruleset may block updating and deleting `v*` tags, but must not restrict creating them: the workflow creates each tag with its own token.
+
+Every release that enters the update feed must have its tag on the commit it was built from. If the latest release of a channel fails that check, every later run stops at it, because the tag of an immutable release can't be moved. Delete that release, so the previous one is the latest of its channel again, and publish a new version.
+
+Release runs wait for one another, and GitHub keeps only one waiting run. A later run, such as the scheduled nightly, replaces a run that is still waiting. If your stable run shows as cancelled before it started, run it again.
 
 ## Local verification
 

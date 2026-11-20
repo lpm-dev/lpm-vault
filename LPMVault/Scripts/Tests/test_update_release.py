@@ -60,11 +60,11 @@ class ReleaseSecurity(unittest.TestCase):
         with self.assertRaises(ValueError):
             appcast.verify(root, manifest, 123)
 
-    def test_release_tag_validation(self):
-        self.assertEqual(release.release_version('v1.2.3'), '1.2.3')
-        for tag in ['main', 'v1', 'v1.2.3-beta', 'v01.2.3', 'v1.2.3;echo secret']:
-            with self.subTest(tag=tag), self.assertRaises(ValueError):
-                release.release_version(tag)
+    def test_stable_version_validation(self):
+        self.assertEqual(release.stable_version('1.2.3'), '1.2.3')
+        for value in ['main', '1', 'v1.2.3', '1.2.3-beta', '01.2.3', '1.2.3;echo secret', '']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                release.stable_version(value)
 
     def test_signing_requires_every_sparkle_component(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -98,14 +98,14 @@ class ReleaseSecurity(unittest.TestCase):
         self.fail('Unexpected release API endpoint: ' + endpoint)
 
     def test_production_uses_read_credential_for_settings(self):
-        environment = dict(GITHUB_REF_NAME='v1.0.2', GITHUB_REPOSITORY='example/vault',
+        environment = dict(GITHUB_REPOSITORY='example/vault',
                            GH_TOKEN='publisher-token', IMMUTABLE_RELEASES_READ_TOKEN='settings-read-token')
         with mock.patch.dict(os.environ, environment), \
              mock.patch.object(release, 'run') as command, \
              mock.patch.object(release, 'output', side_effect=self.repository_response), \
              mock.patch.object(release.Path, 'read_text', return_value='CURRENT_PROJECT_VERSION = 7;'), \
              mock.patch.object(release.release_channels, 'publish') as publish:
-            release.main([])
+            release.main(['--version', '1.0.2'])
             self.assertEqual(os.environ['GH_TOKEN'], 'publisher-token')
         publish.assert_called_once()
         self.assertEqual(publish.call_args.args[:3], ('example/vault', 'stable', 'v1.0.2'))
@@ -141,14 +141,14 @@ class ReleaseSecurity(unittest.TestCase):
         sign.assert_not_called()
 
     def test_missing_read_credential_stops_before_signing(self):
-        environment = dict(GITHUB_REF_NAME='v1.0.2', GITHUB_REPOSITORY='example/vault',
+        environment = dict(GITHUB_REPOSITORY='example/vault',
                            GH_TOKEN='publisher-token', IMMUTABLE_RELEASES_READ_TOKEN='')
         with mock.patch.dict(os.environ, environment), \
              mock.patch.object(release, 'run'), \
              mock.patch.object(release, 'output', return_value='{"private": false}'), \
              mock.patch.object(release, 'sign_release') as sign:
             with self.assertRaisesRegex(ValueError, 'IMMUTABLE_RELEASES_READ_TOKEN'):
-                release.main([])
+                release.main(['--version', '1.0.2'])
         sign.assert_not_called()
 
     def test_permission_failure_stops_verification_before_signing(self):
@@ -178,7 +178,7 @@ class ReleaseSecurity(unittest.TestCase):
                 sign.assert_not_called()
 
     def test_publication_failure_propagates_without_retrying_signing(self):
-        environment = dict(GITHUB_REF_NAME='v1.0.2', GITHUB_REPOSITORY='example/vault',
+        environment = dict(GITHUB_REPOSITORY='example/vault',
                            IMMUTABLE_RELEASES_READ_TOKEN='settings-read-token')
         with mock.patch.dict(os.environ, environment), \
              mock.patch.object(release, 'run'), \
@@ -187,7 +187,7 @@ class ReleaseSecurity(unittest.TestCase):
              mock.patch.object(release.release_channels, 'publish', side_effect=RuntimeError('immutable')) as publish, \
              mock.patch.object(release, 'sign_release') as sign:
             with self.assertRaisesRegex(RuntimeError, 'immutable'):
-                release.main([])
+                release.main(['--version', '1.0.2'])
         publish.assert_called_once()
         sign.assert_not_called()
 
@@ -266,13 +266,63 @@ class ReleaseSecurity(unittest.TestCase):
             release.main(['--version', '1.0.0', '--build', '3'])
 
     def test_production_still_refuses_a_private_repository_before_signing(self):
-        with mock.patch.dict(os.environ, GITHUB_REF_NAME='v1.0.0', GITHUB_REPOSITORY='example/vault'), \
+        with mock.patch.dict(os.environ, GITHUB_REPOSITORY='example/vault'), \
              mock.patch.object(release, 'run'), \
              mock.patch.object(release, 'output', return_value='{"private": true}'), \
              mock.patch.object(release, 'sign_release') as sign:
             with self.assertRaisesRegex(ValueError, 'public repository'):
-                release.main([])
+                release.main(['--version', '1.0.0'])
         sign.assert_not_called()
+
+    def test_a_stable_release_takes_its_tag_from_the_named_version_not_the_ref(self):
+        environment = dict(GITHUB_REF_NAME='v9.9.9', GITHUB_REPOSITORY='example/vault',
+                           IMMUTABLE_RELEASES_READ_TOKEN='settings-read-token')
+        with mock.patch.dict(os.environ, environment), \
+             mock.patch.object(release, 'run'), \
+             mock.patch.object(release, 'output', side_effect=self.repository_response), \
+             mock.patch.object(release.Path, 'read_text', return_value='CURRENT_PROJECT_VERSION = 7;'), \
+             mock.patch.object(release.release_channels, 'publish') as publish:
+            release.main(['--channel', 'stable', '--version', '1.0.2'])
+        self.assertEqual(publish.call_args.args[:3], ('example/vault', 'stable', 'v1.0.2'))
+
+    def test_a_stable_release_needs_a_whole_version_and_a_nightly_takes_none(self):
+        with mock.patch.object(release, 'run') as command, \
+             mock.patch.object(release, 'output') as output, \
+             mock.patch.object(release.release_channels, 'publish') as publish:
+            for arguments in [[], ['--channel', 'stable'], ['--channel', 'nightly', '--version', '1.0.2'],
+                              ['--version', 'v1.0.2'], ['--version', '1.0'], ['--version', '1.0.2-rc.1'],
+                              ['--version', '1.0.2;echo unsafe'], ['--version', '01.0.2']]:
+                with self.subTest(arguments=arguments), self.assertRaises((ValueError, SystemExit)):
+                    release.main(arguments)
+        command.assert_not_called()
+        output.assert_not_called()
+        publish.assert_not_called()
+
+    def test_the_version_check_compares_a_stable_version_with_the_project_offline(self):
+        project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 7;'
+        with mock.patch.object(release, 'run') as command, \
+             mock.patch.object(release, 'output') as output, \
+             mock.patch.object(release.Path, 'read_text', return_value=project):
+            release.main(['--check-version', ''])
+            release.main(['--check-version', '1.0.2'])
+            for version in ['1.0.3', 'v1.0.2', '1.0', '1.0.2;echo unsafe']:
+                with self.subTest(version=version), self.assertRaises(ValueError):
+                    release.main(['--check-version', version])
+            with self.assertRaisesRegex(ValueError, "Version 1.0.3 differs from the project's 1.0.2"):
+                release.main(['--check-version', '1.0.3'])
+        command.assert_not_called()
+        output.assert_not_called()
+
+    def test_a_malformed_version_is_described_as_the_option_expects_it(self):
+        for arguments in [['--version', 'v1.0.2'], ['--check-version', 'v1.0.2']]:
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, 'MAJOR.MINOR.PATCH without a leading v'):
+                release.main(arguments)
+
+    def test_the_version_check_takes_no_other_options(self):
+        for arguments in [['--check-version', '1.0.2', '--version', '1.0.2'], ['--check-version', '1.0.2', '--verify-only'],
+                          ['--check-version', '1.0.2', '--channel', 'nightly']]:
+            with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
+                release.main(arguments)
 
     def test_subprocess_failure_does_not_expose_arguments(self):
         with self.assertRaises(RuntimeError) as result:

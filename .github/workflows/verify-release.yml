@@ -1,7 +1,5 @@
 name: Verify signed release
 on:
-  push:
-    tags: ['release-check-*']
   workflow_dispatch:
     inputs:
       version:
@@ -23,7 +21,19 @@ concurrency:
   group: vault-release-verification
   cancel-in-progress: false
 jobs:
+  ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Refuse any ref but main
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Verification runs only from main, the only ref that can use the release environment."
+            exit 1
+          fi
   checks:
+    needs: [ref]
     # The CI workflow's plan job asks for it, and a called workflow can't have
     # more than its caller grants.
     permissions:
@@ -31,10 +41,13 @@ jobs:
       actions: read
     uses: ./.github/workflows/ci.yml
   ui:
+    needs: [ref]
     uses: ./.github/workflows/ui.yml
   verify:
     needs: [checks, ui]
     runs-on: macos-15
+    # The signing and Sparkle keys live in this environment, which only main can use.
+    environment: release
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     timeout-minutes: 60
@@ -47,8 +60,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
           SIGNING_ONLY: ${{ inputs.signing_only }}
-          TEST_VERSION: ${{ inputs.version || '1.0.0' }}
-          TEST_BUILD: ${{ inputs.build || '3' }}
+          TEST_VERSION: ${{ inputs.version }}
+          TEST_BUILD: ${{ inputs.build }}
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
           APPLE_VAULT_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_VAULT_PROVISIONING_PROFILE_BASE64 }}
