@@ -23,7 +23,8 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func makeFixture(path: String, otherProject: Bool = false) throws -> Fixture {
+		/// `chosenFolder` is a folder Connect CLI chose for the project before the app last launched.
+		private func makeFixture(path: String, otherProject: Bool = false, chosenFolder: String? = nil) throws -> Fixture {
 			let domain = "project-settings-ui-\(UUID().uuidString)"
 			let preferences = try #require(UserDefaults(suiteName: domain))
 			let images = FileManager.default.temporaryDirectory.appending(path: "project-settings-ui-images-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -32,6 +33,7 @@ extension SheetInteractionTests {
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				preferences: preferences, authTokenProvider: { _, _ in nil }, projectIconsDirectory: images,
 				clipboard: ClipboardManager(pasteboard: .withUniqueName()))
+			if let chosenFolder { ProjectCLILink.rememberFolder(chosenFolder, vaultId: "demo", defaults: preferences) }
 			store.projects = [VaultProject(id: "demo", name: "demo-api", path: path, environments: ["default": ["TOKEN": "x"]])]
 			if otherProject {
 				keychain.envStorage["other"] = (name: "web-dashboard", path: "", environments: ["default": [:]])
@@ -103,6 +105,78 @@ extension SheetInteractionTests {
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			try await host.click("Copy Path")
 			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == folder.path })
+		}
+
+		@Test("the folder chosen in Connect CLI is the project's: its row shows, copies and finds it, not the one first recorded, and follows a new choice")
+		func folderChosenInConnectCLI() async throws {
+			let chosen = try ProjectIconFixture.folder()
+			let next = try ProjectIconFixture.folder()
+			defer { for folder in [chosen, next] { try? FileManager.default.removeItem(at: folder) } }
+			let fixture = try makeFixture(path: "/nonexistent/recorded-\(UUID().uuidString)", chosenFolder: chosen.path)
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+			let shown = (chosen.path as NSString).abbreviatingWithTildeInPath
+			#expect(try await host.waitForText(shown))
+			#expect(try await !host.text().contains("can’t be found"), "The folder first recorded is gone, but it isn't the project's now")
+			#expect(try await host.waitForElement(saying: "Show in Finder").isEnabledNow)
+			try await host.click("Copy Path")
+			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == chosen.path })
+
+			fixture.store.chooseProjectFolder(next.path, for: "demo")
+			#expect(try await host.waitForText((next.path as NSString).abbreviatingWithTildeInPath), "A new choice shows at once")
+		}
+
+		@Test("Change Folder… replaces a chosen folder that's gone, here as with the one first recorded, which then needs no choice kept")
+		func changeFolderReplacesAStaleChoice() async throws {
+			let recorded = try ProjectIconFixture.folder()
+			defer { try? FileManager.default.removeItem(at: recorded) }
+			let fixture = try makeFixture(path: recorded.path, chosenFolder: "/nonexistent/checkout-\(UUID().uuidString)")
+			defer { fixture.tearDown() }
+			let project = try #require(fixture.store.projects.first)
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { recorded }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("can’t be found"), "The folder last chosen is the project's, and it's gone")
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText((recorded.path as NSString).abbreviatingWithTildeInPath))
+			#expect(try await host.waitForTextToDisappear("can’t be found"))
+			#expect(ProjectCLILink.folder(vaultId: "demo", projectPath: "", defaults: fixture.preferences) == "", "The folder recorded needs no choice kept")
+		}
+
+		@Test("Change Folder… refuses a folder another project uses, saying which, and the project keeps its folder")
+		func changeFolderRefusesAnotherProjectsFolder() async throws {
+			let own = try ProjectIconFixture.folder(), shared = try ProjectIconFixture.folder()
+			defer { for folder in [own, shared] { try? FileManager.default.removeItem(at: folder) } }
+			let fixture = try makeFixture(path: own.path, otherProject: true)
+			defer { fixture.tearDown() }
+			fixture.store.chooseProjectFolder(shared.path, for: "other")
+			let project = try #require(fixture.store.projects.first { $0.id == "demo" })
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { shared }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText("web-dashboard uses \(shared.lastPathComponent), and a folder’s lpm.json links one project."))
+			#expect(fixture.store.projectFolder(for: project) == own.path)
+		}
+
+		@Test("Change Folder… on a folder whose lpm.json links another project leaves the folder as it was, and says Connect CLI replaces the link")
+		func changeFolderToAnotherVaultsFolder() async throws {
+			let own = try ProjectIconFixture.folder(), linked = try ProjectIconFixture.folder()
+			defer { for folder in [own, linked] { try? FileManager.default.removeItem(at: folder) } }
+			try Data(#"{"vault":"someone-else"}"#.utf8).write(to: linked.appending(path: "lpm.json"))
+			let fixture = try makeFixture(path: own.path)
+			defer { fixture.tearDown() }
+			let project = try #require(fixture.store.projects.first)
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { linked }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText("lpm.json links another project. Replace its vault ID from Connect CLI to use it here."))
+			#expect(fixture.store.projectFolder(for: project) == own.path)
 		}
 
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {

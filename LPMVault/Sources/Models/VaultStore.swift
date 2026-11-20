@@ -1190,7 +1190,7 @@ final class VaultStore {
         pruneProjectSettingsDrafts(keeping: projectIDs)
       }
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id && $0.path == $1.path }) {
-        projectIcons.follow(projects.map { ProjectIconStore.Target(id: $0.id, folder: $0.path) })
+        followProjectIcons()
       }
       pruneSchemaDrafts()
       refreshValueChecks()
@@ -1351,6 +1351,9 @@ final class VaultStore {
   private var unverifiedKeyDescriptionProjects: Set<String> = []
   private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
+  /// Changes when a project's chosen folder does, so what shows the folder
+  /// follows it; the folders are kept in the preferences.
+  private var projectFolderRevision = 0
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
   private var pendingWorkspaceSnapshots: [String: VaultWorkspaceSnapshot]?
@@ -2102,7 +2105,7 @@ final class VaultStore {
     for account in accounts {
       let named = ValueSearchAccount(account: account, name: valueSearchAccountName(account))
       for project in ordered where projectBelongs(project.id, to: account) {
-        let folder = keyDescriptionFolder(for: project)
+        let folder = projectFolder(for: project)
         var target = ValueSearchTarget(
           id: project.id, name: project.name, account: named,
           environments: orderedEnvironmentNames(for: project), folder: folder)
@@ -3247,6 +3250,12 @@ final class VaultStore {
       return .failed
     }
     let environments: [String: [String: String]] = ["default": [:]]
+    // Checked again here, as lpm.json or another project may have taken the folder since the sheet checked it.
+    if !setup.folder.isEmpty, let refusal = await folderRefusal(setup.folder, for: vaultId) {
+      guard isUnlocked, selectedAccount == expectedAccount, sessionGeneration == vaultSessionGeneration else { return .failed }
+      error = refusal
+      return .failed
+    }
 
     let policyRevision = cliAccessProjectRevisions[vaultId]
     let creationRecord: ProjectCreationRecord
@@ -4273,7 +4282,7 @@ final class VaultStore {
       schemaChange.rename = .init(from: pending.from, to: edit.newKey)
     } else {
       if let cached = keyDescriptions[id.projectID], let project = selectedProject,
-        cached.folder != keyDescriptionFolder(for: project)
+        cached.folder != projectFolder(for: project)
       {
         keyDrafts.finishSave(id, succeeded: false, projects: projects)
         reloadKeyDescriptions()
@@ -4290,7 +4299,7 @@ final class VaultStore {
         throw .description("lpm.json has not been read yet.", keySaved: false)
       default:
         if edit.isRename, let project = selectedProject {
-          let folder = keyDescriptionFolder(for: project)
+          let folder = projectFolder(for: project)
           if !folder.isEmpty { schemaFolder = folder }
         }
       }
@@ -4354,7 +4363,7 @@ final class VaultStore {
     switch result {
     case .success(let saved):
       keyDrafts.finishSave(id, succeeded: true, projects: projects)
-      if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+      if let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == schemaFolder {
         publishSavedRules(saved.rules, rootSchema: saved.rootSchema, folder: schemaFolder, for: projectID,
           description: schemaChange.description.map { ($0.key, $0.text) })
       }
@@ -4383,7 +4392,7 @@ final class VaultStore {
       if failure == .changed {
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: schemaFolder, vaultID: projectID)
         guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
-        if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+        if let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == schemaFolder {
           publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, loaded: loaded), for: projectID)
         }
       }
@@ -4393,10 +4402,113 @@ final class VaultStore {
 
   // MARK: - Key descriptions
 
-  /// The folder whose `lpm.json` holds a project's key descriptions: the one the
-  /// CLI was connected in, or else the project's own folder.
-  func keyDescriptionFolder(for project: VaultProject) -> String {
-    ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+  /// The folder LPM Vault uses for a project: the one last chosen for it in
+  /// Connect CLI, or else the one recorded when it was created. Its lpm.json
+  /// holds the project's rules; Project Settings, its icon, Export and a
+  /// backup use it too.
+  func projectFolder(for project: VaultProject) -> String {
+    _ = projectFolderRevision
+    return ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+  }
+
+  /// Makes `folder` the project's, and reads its rules and icon again.
+  /// `isRecorded` says it's the folder recorded for the project, however
+  /// spelled, whose choice needn't be kept; nil compares them as written.
+  func chooseProjectFolder(_ folder: String, for vaultId: String, isRecorded: Bool? = nil) {
+    guard let project = projects.first(where: { $0.id == vaultId }) else { return }
+    if projectFolder(for: project) != folder {
+      if isRecorded ?? (folder == project.path) {
+        ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
+      } else {
+        ProjectCLILink.rememberFolder(folder, vaultId: vaultId, defaults: preferences)
+      }
+      projectFolderRevision &+= 1
+      followProjectIcons()
+    }
+    if selectedProjectId == vaultId { reloadKeyDescriptions() }
+  }
+
+  /// Takes the project the LPM CLI acts on for `url`, at its real path, as
+  /// `vaultId`'s folder, as Connect CLI and Project Settings choose one. A
+  /// folder whose .lpm is the LPM home is refused, as is one another
+  /// project here uses whose lpm.json links no project.
+  ///
+  /// A folder whose lpm.json links another vault is returned but not taken:
+  /// it becomes the project's once Replace Vault ID points lpm.json at it.
+  /// A request whose task is cancelled, as when its sheet closes, or that
+  /// outlives the session it began in, takes nothing.
+  func chooseProjectFolder(at url: URL, for vaultId: String) async -> Result<ProjectFolderChoice, ProjectFolderRefusal> {
+    let home = lpmHome
+    guard let recorded = projects.first(where: { $0.id == vaultId })?.path else { return .failure(.unusable(.interrupted)) }
+    let session = vaultSessionGeneration
+    let (chosen, isRecorded) = await BlockingWork.run {
+      let chosen = ProjectCLILink.choose(url, for: vaultId, home: home)
+      let isRecorded = (try? chosen.get()).map { !recorded.isEmpty && ProjectCLILink.isSameFolder(recorded, $0.path) } ?? false
+      return (chosen, isRecorded)
+    }
+    let choice: ProjectFolderChoice
+    switch chosen {
+    case .success(let value): choice = value
+    case .failure(let error): return .failure(.unusable(error))
+    }
+    if let user = await folderUser(choice, for: vaultId) { return .failure(.usedBy(user)) }
+    guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, projects.contains(where: { $0.id == vaultId }) else {
+      return .failure(.unusable(.interrupted))
+    }
+    if case .linkedToOtherVault = choice.status { return .success(choice) }
+    chooseProjectFolder(choice.path, for: vaultId, isRecorded: isRecorded)
+    return .success(choice)
+  }
+
+  /// The project, other than `vaultId`, that uses `choice`'s folder, unless
+  /// its lpm.json links a project: that one names the project whose rules
+  /// it holds. One that can't be read says nothing of whose it is, so it
+  /// stays the project's that uses it.
+  func folderUser(_ choice: ProjectFolderChoice, for vaultId: String) async -> ProjectFolderUser? {
+    switch choice.status {
+    case .notLinked, .unreadable: return await project(usingFolder: choice.path, except: vaultId)
+    case .linked, .linkedToOtherVault, .noFolder: return nil
+    }
+  }
+
+  /// Why a new project can't have `folder`: another project here uses it,
+  /// or its lpm.json links another project, whose rules it holds. nil when
+  /// it can. A folder that's gone or whose lpm.json can't be read still
+  /// gets its project, whose link failing says how to finish it later.
+  func folderRefusal(_ folder: String, for vaultId: String) async -> String? {
+    let status = await BlockingWork.run { ProjectCLILink.status(vaultId: vaultId, folder: folder) }
+    let choice = ProjectFolderChoice(path: folder, chosenInside: nil, status: status)
+    if let user = await folderUser(choice, for: vaultId) { return user.explanation }
+    guard case .linkedToOtherVault = status else { return nil }
+    return "\((folder as NSString).lastPathComponent.escapingDirectionControls)’s lpm.json links another project. Choose another folder."
+  }
+
+  /// `folderUser(_:for:)` for a folder given by its path, whose lpm.json is read for it.
+  func folderUser(of folder: String, for vaultId: String) async -> ProjectFolderUser? {
+    guard !folder.isEmpty else { return nil }
+    let status = await BlockingWork.run { ProjectCLILink.status(vaultId: vaultId, folder: folder) }
+    return await folderUser(ProjectFolderChoice(path: folder, chosenInside: nil, status: status), for: vaultId)
+  }
+
+  /// The project, other than `vaultId`, whose folder `folder` is on disk;
+  /// nil when there's none. Checked off the main actor, as a folder on a
+  /// volume that stalls would stall it. A project the person can't open
+  /// here, such as an organization's they've left, isn't named.
+  func project(usingFolder folder: String, except vaultId: String) async -> ProjectFolderUser? {
+    let others = projects.compactMap { project -> (id: String, folder: String)? in
+      guard project.id != vaultId else { return nil }
+      let folder = projectFolder(for: project)
+      return folder.isEmpty ? nil : (project.id, folder)
+    }
+    guard !folder.isEmpty, !others.isEmpty else { return nil }
+    let match = await BlockingWork.run { ProjectCLILink.firstFolder(matching: folder, in: others) }
+    guard let match, let project = projects.first(where: { $0.id == match }) else { return nil }
+    return ProjectFolderUser(id: project.id, name: openableProject(id: project.id) == nil ? nil : project.name, folder: folder)
+  }
+
+  /// Has the icon store look for each project's icon in its folder.
+  private func followProjectIcons() {
+    projectIcons.follow(projects.map { ProjectIconStore.Target(id: $0.id, folder: projectFolder(for: $0)) })
   }
 
   /// Keys whose current rules allow automatic reveal. Empty while rules are
@@ -4406,7 +4518,7 @@ final class VaultStore {
       !unverifiedKeyDescriptionProjects.contains(projectID),
       let descriptions = keyDescriptions[projectID],
       let project = projects.first(where: { $0.id == projectID }),
-      descriptions.folder == keyDescriptionFolder(for: project)
+      descriptions.folder == projectFolder(for: project)
     else { return [] }
     return descriptions.schema?.overview?.publicKeys ?? []
   }
@@ -4423,6 +4535,11 @@ final class VaultStore {
     defer { writes.end(write) }
     let session = vaultSessionGeneration
     let account = selectedAccount
+    // lpm.json that links no project here can still be another project's folder, whose rules it holds.
+    if replacingVaultId == nil, let user = await folderUser(of: folder, for: vaultId) {
+      return .usedByAnotherProject(user.explanation)
+    }
+    guard isUnlocked, session == vaultSessionGeneration, account == selectedAccount else { return .interrupted }
     if let failure = await ProjectCLILink.linkInBackground(
       vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: lpmHome, checkOnly: true)
     {
@@ -4463,7 +4580,7 @@ final class VaultStore {
     keyDescriptionsTask?.cancel()
     guard isUnlocked, let project = selectedProject else { return }
     let projectID = project.id
-    let folder = keyDescriptionFolder(for: project)
+    let folder = projectFolder(for: project)
     unverifiedKeyDescriptionProjects.insert(projectID)
     let session = vaultSessionGeneration
     let account = selectedAccount
@@ -4471,7 +4588,7 @@ final class VaultStore {
       let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
       guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account,
         selectedProjectId == projectID, let currentProject = selectedProject,
-        keyDescriptionFolder(for: currentProject) == folder
+        projectFolder(for: currentProject) == folder
       else { return }
       publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: projectID)
       unverifiedKeyDescriptionProjects.remove(projectID)
@@ -4978,7 +5095,7 @@ final class VaultStore {
       savingSchemaDrafts.remove(projectID)
       switch result {
       case .success(let saved):
-        guard let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path else {
+        guard let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == folder.path else {
           // Saved where the draft was reviewed; the project's new folder has its own rules.
           endSchemaDraft(for: projectID)
           reloadKeyDescriptions()
@@ -4997,7 +5114,7 @@ final class VaultStore {
       case .failure(.file(.changed)):
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder.path, vaultID: projectID)
         guard generation == schemaDraftGeneration, isUnlocked,
-          let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path
+          let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == folder.path
         else { throw .file(.changed) }
         publishKeyDescriptions(ProjectKeyDescriptions(folder: folder.path, loaded: loaded), for: projectID, mergingDraft: false)
         let outcome = mergeSchemaDraft(for: projectID)
@@ -5050,7 +5167,7 @@ final class VaultStore {
   /// The folder whose lpm.json holds the project's loaded rules.
   private func editableSchemaFolder(for projectID: String) -> SchemaDraftFolder? {
     guard isUnlocked, let descriptions = keyDescriptions[projectID], case .loaded? = descriptions.schema,
-      let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == descriptions.folder,
+      let project = projects.first(where: { $0.id == projectID }), projectFolder(for: project) == descriptions.folder,
       !descriptions.folder.isEmpty
     else { return nil }
     return SchemaDraftFolder(path: descriptions.folder, identity: descriptions.folderIdentity)
@@ -6011,7 +6128,11 @@ final class VaultStore {
       persistence: persistence, publishing: publishing, imagesDirectory: projectIcons.imagesDirectory,
       keyStore: backupKeys)
     let appState = BackupExporter.AppState(
-      settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)))
+      settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)),
+      folders: projects.reduce(into: [:]) { folders, project in
+        let folder = projectFolder(for: project)
+        if folder != project.path { folders[project.id] = folder }
+      })
     let now = Date()
     let sealed = try await exporter.seal(
       contents,
@@ -6219,7 +6340,12 @@ final class VaultStore {
         outcome = .notChosen
       case .new:
         let listed = !project.backup.hidden
-        let folder = listed ? choices.folders[id] ?? "" : ""
+        var folder = listed ? choices.folders[id] ?? "" : ""
+        // Kept only while its lpm.json still links the project: another may have been linked there since the review.
+        if !folder.isEmpty {
+          let chosen = folder
+          if await BlockingWork.run({ ProjectCLILink.status(vaultId: id, folder: chosen) }) != .linked { folder = "" }
+        }
         let restored = VaultProject(id: id, name: project.backup.name, path: folder, environments: project.backup.environments)
         switch await persistence.restoreProject(.create(restored, listed: listed)) {
         case .written:
@@ -6424,7 +6550,7 @@ final class VaultStore {
     let requestId = UUID()
     let authorization = EnvFileExportAuthorization()
     let secrets = project.secrets(for: environment)
-    let projectFolder = ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+    let projectFolder = self.projectFolder(for: project)
     let task = Task { [envFileExportService] in
       try await envFileExportService.export(
         secrets: secrets,
@@ -8948,7 +9074,7 @@ final class VaultStore {
 	}
 
 	private func capturedSyncSchema(for project: VaultProject) async throws -> CapturedSyncSchema {
-		let path = keyDescriptionFolder(for: project)
+		let path = projectFolder(for: project)
     guard !path.isEmpty else { return CapturedSyncSchema(value: nil, sources: nil) }
     let projectID = project.id
     return try await BlockingWork.run {
@@ -8987,7 +9113,7 @@ final class VaultStore {
       guard let self, sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked,
         selectedProjectId == project.id
       else { afterCompletion(.failure(.targetUnavailable)); return }
-      guard keyDescriptionFolder(for: project) == folder else {
+      guard projectFolder(for: project) == folder else {
         reloadKeyDescriptions()
         afterCompletion(.failure(.description("The project folder changed. Review its descriptions, then save again.", keySaved: false)))
         return
@@ -9011,7 +9137,7 @@ final class VaultStore {
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
         error = commit.warning ?? follow.failure.map(Self.publishingFollowMessage)
-        if let rules, keyDescriptionFolder(for: commit.project) == folder {
+        if let rules, projectFolder(for: commit.project) == folder {
           publishSavedRules(rules, rootSchema: rootSchema, folder: folder, for: project.id,
             description: change.description.map { ($0.key, $0.text) })
         }
@@ -9023,7 +9149,7 @@ final class VaultStore {
       case .schemaChanged:
         let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: project.id)
         guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else { afterCompletion(.failure(.targetUnavailable)); return }
-        if let latest = projects.first(where: { $0.id == project.id }), keyDescriptionFolder(for: latest) == folder {
+        if let latest = projects.first(where: { $0.id == project.id }), projectFolder(for: latest) == folder {
           publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: project.id)
         }
         afterCompletion(.failure(.description(ProjectEnvSchemaFile.FileError.changed.localizedDescription, keySaved: false)))

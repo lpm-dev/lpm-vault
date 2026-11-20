@@ -11,6 +11,7 @@ struct VaultProjectSettingsView: View {
 	var nameFocusRequest: UUID?
 	/// The page the settings were opened from, which the way back names.
 	var backTitle = "All Keys"
+	var folderPicker: @MainActor () -> URL? = VaultOpenPanel.projectFolder
 	let onBack: () -> Void
 	let onDelete: () -> Void
 
@@ -24,14 +25,29 @@ struct VaultProjectSettingsView: View {
 	@State private var historyFailure: String?
 	@State private var confirmsHistoryOff = false
 	@State private var changingHistory = false
+	@State private var isChoosingFolder = false
+	/// A folder being chosen, which leaving the page stops before it's taken.
+	@State private var chooseTask: Task<Void, Never>?
+	/// Why the folder last chosen wasn't taken.
+	@State private var folderRefusal: FolderRefusal?
+
+	private enum FolderRefusal {
+		case refused(ProjectFolderRefusal)
+		/// Its lpm.json links another vault, which only Connect CLI replaces.
+		case linksAnotherVault(folder: String)
+	}
+	/// Another project that uses this one's folder, whose lpm.json links none.
+	@State private var sharedFolder: ProjectFolderUser?
 
 	private var settings: ProjectSettingsValues { store.projectSettings(for: project) }
 	private var isImporting: Bool { store.projectIcons.isImporting(project.id) }
 	private var isEdited: Bool { store.projectSettingsDrafts[project.id] != nil }
 	private var isSaving: Bool { store.savingProjectSettings.contains(project.id) }
 	private var nameIsValid: Bool { VaultProjectRenamePolicy.normalizedName(settings.name) != nil }
-	private var folderExists: Bool { store.projectIcons.detection(for: project.id) != .folderMissing && !project.path.isEmpty }
-	private var displayPath: String { (project.path as NSString).abbreviatingWithTildeInPath }
+	/// The folder LPM Vault uses for the project, as Connect CLI last chose it.
+	private var folder: String { store.projectFolder(for: project) }
+	private var folderExists: Bool { store.projectIcons.detection(for: project.id) != .folderMissing && !folder.isEmpty }
+	private var displayPath: String { (folder as NSString).abbreviatingWithTildeInPath }
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -56,7 +72,11 @@ struct VaultProjectSettingsView: View {
 		}
 		.background(VaultPalette.content)
 		.onAppear { store.projectIcons.beginDetailing(project.id) }
-		.onDisappear { store.projectIcons.endDetailing(project.id) }
+		.task(id: folder) { sharedFolder = await store.folderUser(of: folder, for: project.id) }
+		.onDisappear {
+			store.projectIcons.endDetailing(project.id)
+			chooseTask?.cancel()
+		}
 		.task(id: project.id) { await readHistory() }
 		.vaultConfirmation(isPresented: $confirmsHistoryOff) {
 			VaultConfirmation(
@@ -236,19 +256,30 @@ struct VaultProjectSettingsView: View {
 
 	private var folderRow: some View {
 		row("Folder") {
-			if folderExists {
-				Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-					.help(project.path)
-			} else {
-				Text(project.path.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
-					.foregroundStyle(VaultPalette.redText)
+			VStack(alignment: .leading, spacing: 6) {
+				if folderExists {
+					Text(displayPath).font(VaultTypography.code(12)).foregroundStyle(VaultPalette.textSecondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+						.help(folder)
+				} else {
+					Text(folder.isEmpty ? "This project isn’t linked to a folder." : "\(displayPath) can’t be found.")
+						.foregroundStyle(VaultPalette.redText)
+				}
+				switch folderRefusal {
+				case .refused(.usedBy(let user))?: VaultInlineWarning(text: user.explanation)
+				case .refused(.unusable(let error))?: Text(error.localizedDescription).foregroundStyle(VaultPalette.redText)
+				case .linksAnotherVault(let chosen)?:
+					VaultInlineWarning(text: "\((chosen as NSString).lastPathComponent.escapingDirectionControls)’s lpm.json links another project. Replace its vault ID from Connect CLI to use it here.")
+				case nil: if let sharedFolder { VaultInlineWarning(text: sharedFolder.explanation) }
+				}
 			}
 		} controls: {
 			HStack(spacing: 6) {
-				VaultBarButton(systemImage: "doc.on.doc", title: "Copy Path", disabled: project.path.isEmpty, height: 28) {
-					store.clipboard.copyText(project.path)
+				VaultBarButton(systemImage: "doc.on.doc", title: "Copy Path", disabled: folder.isEmpty, height: 28) {
+					store.clipboard.copyText(folder)
 				}
 				VaultBarButton(systemImage: "folder", title: "Show in Finder", disabled: !folderExists, height: 28) { showInFinder() }
+				VaultBarButton(title: "Change Folder…", disabled: isChoosingFolder, height: 28) { chooseFolder() }
+					.help("Choose the folder that holds the project’s package.json")
 			}
 		}
 	}
@@ -391,15 +422,33 @@ struct VaultProjectSettingsView: View {
 		Task { await store.saveProjectSettings(of: project.id) }
 	}
 
+	/// Takes the folder chosen as the project's, as Connect CLI does.
+	private func chooseFolder() {
+		guard !isChoosingFolder, let url = folderPicker() else { return }
+		isChoosingFolder = true
+		let projectID = project.id
+		chooseTask = Task {
+			let result = await store.chooseProjectFolder(at: url, for: projectID)
+			isChoosingFolder = false
+			guard !Task.isCancelled else { return }
+			switch result {
+			case .success(let choice):
+				if case .linkedToOtherVault = choice.status { folderRefusal = .linksAnotherVault(folder: choice.path) } else { folderRefusal = nil }
+			case .failure(let refusal):
+				folderRefusal = .refused(refusal)
+			}
+		}
+	}
+
 	private func showInFinder() {
 		guard folderExists else { return }
-		NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path, isDirectory: true)])
+		NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder, isDirectory: true)])
 	}
 
 	private func chooseFile() {
-		guard !isImporting, let url = VaultOpenPanel.iconImage(for: project.name, in: folderExists ? project.path : nil) else { return }
+		guard !isImporting, let url = VaultOpenPanel.iconImage(for: project.name, in: folderExists ? folder : nil) else { return }
 		let projectID = project.id
-		let folder = project.path
+		let folder = folder
 		let store = store
 		Task {
 			guard case .success(let choice) = await store.projectIcons.importImage(at: url, projectFolder: folder, for: projectID) else { return }

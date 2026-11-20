@@ -218,6 +218,16 @@ struct NewVaultSheet: View {
 			message("Checking lpm.json…")
 		} else if let error = draft.folderError {
 			message(error.localizedDescription, color: VaultPalette.redText)
+		} else if let user = draft.folderUser {
+			VStack(alignment: .leading, spacing: 8) {
+				VaultInlineWarning(text: user.explanation)
+				if let name = user.escapedName {
+					VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(name)", height: 26) {
+						store.openProject(id: user.id)
+						dismiss()
+					}
+				}
+			}
 		} else if let folder = draft.folder {
 			switch folder.status {
 			case .notLinked:

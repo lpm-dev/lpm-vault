@@ -20,10 +20,19 @@ struct ConnectCLISheet: View {
 	@State private var linkError: ProjectCLILinkError?
 	/// The folder chosen in the panel when the project around it was taken instead.
 	@State private var choiceInsideProject: URL?
+	/// The project whose folder the one last chosen is, which kept it from being taken.
+	@State private var refusedFolder: ProjectFolderUser?
+	/// Another project that uses this project's folder, whose lpm.json links
+	/// none, which keeps lpm.json from being written for this one.
+	@State private var sharedFolder: ProjectFolderUser?
+
+	private var folderUser: ProjectFolderUser? { refusedFolder ?? sharedFolder }
 	@State private var isLinking = false
 	@State private var copiedItem: String?
 	@State private var copyResetTask: Task<Void, Never>?
 	@State private var statusTask: Task<Void, Never>?
+	/// A folder being chosen, which closing the sheet stops before it's taken.
+	@State private var chooseTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
 	@State private var configuration = ProjectCLIConfiguration.pending
 	@State var showsTaskExample = false
@@ -61,7 +70,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private var folder: String {
-		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: store.preferences)
+		chosenFolder ?? project.map(store.projectFolder(for:)) ?? ""
 	}
 
 	private var availableHeight: CGFloat {
@@ -95,6 +104,7 @@ struct ConnectCLISheet: View {
 							step(1, "Choose the project folder")
 						} content: {
 							missingFolderNotice
+							if let folderUser { folderUserNotice(folderUser) }
 						}
 					}
 					projectSection(number: status == .noFolder ? 2 : 1)
@@ -117,7 +127,7 @@ struct ConnectCLISheet: View {
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismiss() } }
 		.onExitCommand { dismiss() }
-		.onDisappear { copyResetTask?.cancel(); statusTask?.cancel() }
+		.onDisappear { copyResetTask?.cancel(); statusTask?.cancel(); chooseTask?.cancel() }
 	}
 
 	// MARK: - Sections
@@ -165,6 +175,19 @@ struct ConnectCLISheet: View {
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
 		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.accessibilityElement(children: .contain)
+	}
+
+	/// Why the folder last chosen wasn't taken, and the way to the project that has it.
+	private func folderUserNotice(_ user: ProjectFolderUser) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			VaultInlineWarning(text: user.explanation)
+			if let name = user.escapedName {
+				VaultBarButton(systemImage: "arrow.right.circle", title: "Open \(name)", height: 26) {
+					store.openProject(id: user.id)
+					dismiss()
+				}
+			}
+		}
 	}
 
 	private var macLinkNotice: some View {
@@ -349,7 +372,7 @@ struct ConnectCLISheet: View {
 				TerminalBarButton(title: isLinking ? "Writing…" : "Write lpm.json", systemImage: "square.and.pencil") {
 					link(folder: folder)
 				}
-				.disabled(isLinking)
+				.disabled(isLinking || sharedFolder != nil)
 			case .unreadable, nil:
 				EmptyView()
 			}
@@ -360,6 +383,9 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(writeFileExplanation)
 				.foregroundStyle(VaultPalette.textSecondary)
+			if let folderUser, status != .noFolder {
+				folderUserNotice(folderUser)
+			}
 			if case .linkedToOtherVault(let other) = status, let linked = store.openableProject(id: other) {
 				TerminalBarButton(title: "Open \(linked.name)", systemImage: "arrow.right.circle") {
 					store.openProject(id: linked.id)
@@ -572,6 +598,7 @@ struct ConnectCLISheet: View {
 		status = nil
 		macLink = .notApplicable
 		configuration = .pending
+		sharedFolder = nil
 		let vaultId = projectId
 		let folder = folder
 		statusTask = Task {
@@ -582,6 +609,9 @@ struct ConnectCLISheet: View {
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
 			configuration = config
+			let user = await store.folderUser(ProjectFolderChoice(path: folder, chosenInside: nil, status: resolved), for: vaultId)
+			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
+			sharedFolder = user
 			// lpm.json shows at once; the Keychain check waits for the lock the
 			// CLI holds while it reads values.
 			guard resolved == .linked else { return }
@@ -602,7 +632,8 @@ struct ConnectCLISheet: View {
 			isLinking = false
 			linkError = failure
 			refreshStatus()
-			store.reloadKeyDescriptions()
+			// A folder whose lpm.json linked another vault becomes the project's once it links this one.
+			if failure == nil { store.chooseProjectFolder(target, for: vaultId) } else { store.reloadKeyDescriptions() }
 		}
 	}
 
@@ -620,30 +651,31 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	/// Takes the project the CLI would act on for the chosen folder: the nearest
-	/// folder at or above it with a package.json or lpm.json. A folder whose
-	/// .lpm is the LPM home is refused.
+	/// Takes the project the CLI would act on for the chosen folder, as the
+	/// store chooses it: the nearest folder at or above it with a package.json
+	/// or lpm.json. A folder whose .lpm is the LPM home is refused, and one
+	/// another project here uses stays its.
 	private func chooseFolder() {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
-		let home = store.lpmHome
 		isLinking = true
-		Task {
-			let root = await BlockingWork.run { CLIFiles.projectRoot(for: url, home: home) }
+		chooseTask = Task {
+			let result = await store.chooseProjectFolder(at: url, for: projectId)
 			isLinking = false
-			guard store.isUnlocked, store.selectedProjectId == projectId else { return }
-			if root?.stateIsHome == true {
-				choiceInsideProject = nil
-				linkError = .folderIsLPMHome
-				return
-			}
-			let folder = root?.url ?? url
-			choiceInsideProject = folder.standardizedFileURL.path == url.standardizedFileURL.path ? nil : url
-			chosenFolder = folder.path
-			ProjectCLILink.rememberFolder(folder.path, vaultId: projectId, defaults: store.preferences)
-			store.reloadKeyDescriptions()
+			guard !Task.isCancelled, store.isUnlocked, store.selectedProjectId == projectId else { return }
+			choiceInsideProject = nil
 			linkError = nil
-			refreshStatus()
+			refusedFolder = nil
+			switch result {
+			case .success(let choice):
+				choiceInsideProject = choice.chosenInside.map { URL(fileURLWithPath: $0) }
+				chosenFolder = choice.path
+				refreshStatus()
+			case .failure(.usedBy(let user)):
+				refusedFolder = user
+			case .failure(.unusable(let error)):
+				linkError = error
+			}
 		}
 	}
 

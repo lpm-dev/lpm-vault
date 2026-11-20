@@ -950,6 +950,64 @@ struct SheetInteractionTests {
 		#expect(try await host.waitForText("Replace Vault ID"))
 		try await host.settle()
 		#expect(try Data(contentsOf: config) == original)
+		let project = try #require(store.projects.first { $0.id == "sheet-regression" })
+		#expect(store.projectFolder(for: project) == "", "Another vault's folder isn't the project's until lpm.json links it")
+		try await host.click("Replace Vault ID")
+		#expect(try await host.waitUntil { store.projectFolder(for: project) == ProjectCLILink.resolvedFolder(folder.path) })
+		#expect(ProjectCLILink.status(vaultId: "sheet-regression", folder: folder.path) == .linked)
+	}
+
+	@Test("a folder another project uses, whose lpm.json names none, isn't taken: the sheet names that project and offers to open it, and a free folder is taken")
+	func chosenFolderAnotherProjectUses() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let shared = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		let free = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		for folder in [shared, free] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+		defer { for folder in [shared, free] { try? FileManager.default.removeItem(at: folder) } }
+		let original = Data(#"{"envSchema":{"vars":{"DATABASE_URL":{"required":true}}}}"#.utf8)
+		try original.write(to: shared.appendingPathComponent("lpm.json"))
+		let (store, _) = makeStore(path: "/nonexistent/\(UUID().uuidString)", preferences: defaults)
+		store.projects.append(VaultProject(id: "n2proj", name: "n2proj", path: "/nonexistent/n2/proj", environments: ["default": [:]]))
+		ProjectCLILink.rememberFolder(shared.path, vaultId: "n2proj", defaults: defaults)
+		let picked = OSAllocatedUnfairLock(initialState: shared)
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { picked.withLock { $0 } }),
+			size: NSSize(width: 600, height: 600))
+		defer { host.window.close() }
+		try await host.settle()
+		try await host.click("Choose Folder…")
+		#expect(try await host.waitForText("n2proj uses \(shared.lastPathComponent), and a folder’s lpm.json links one project. Choose another folder, or open n2proj."))
+		#expect(try await host.waitForText("No project folder on this Mac yet"), "The folder isn't this project's")
+		let project = try #require(store.projects.first { $0.id == "sheet-regression" })
+		#expect(store.projectFolder(for: project) != shared.path)
+		#expect(try Data(contentsOf: shared.appendingPathComponent("lpm.json")) == original)
+
+		picked.withLock { $0 = free }
+		try await host.click("Choose Folder…")
+		#expect(try await host.waitUntil { store.projectFolder(for: project) == ProjectCLILink.resolvedFolder(free.path) }, "At its real path, as the CLI keeps it")
+		#expect(try await host.waitForTextToDisappear("lpm.json links one project"))
+	}
+
+	@Test("a project whose folder another project uses, with an lpm.json that links none, can't write lpm.json there, and the sheet says why")
+	func sharedCurrentFolderIsNotWritten() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let shared = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: shared) }
+		let (store, _) = makeStore(path: shared.path, preferences: defaults)
+		store.projects.append(VaultProject(id: "n2proj", name: "n2proj", path: "/nonexistent/n2/proj", environments: ["default": [:]]))
+		ProjectCLILink.rememberFolder(shared.path, vaultId: "n2proj", defaults: defaults)
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 600))
+		defer { host.window.close() }
+		try await host.settle()
+		try await host.click("Write File")
+		#expect(try await host.waitForText("n2proj uses \(shared.lastPathComponent), and a folder’s lpm.json links one project."))
+		#expect(try await !host.waitForElement(saying: "Write lpm.json").isEnabledNow)
+		#expect(await store.linkProjectFolder(vaultId: "sheet-regression", folder: shared.path) != nil, "The store refuses it too")
+		#expect(!FileManager.default.fileExists(atPath: shared.appendingPathComponent("lpm.json").path), "Nothing was written")
 	}
 
 	@Test("a folder that links another vault on this Mac names it and offers to open it", arguments: [true, false])
