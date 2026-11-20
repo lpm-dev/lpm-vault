@@ -4,11 +4,20 @@ import SwiftUI
 struct VaultHistoryView: View {
 	let store: VaultStore
 	let project: VaultProject
+	let onProjectSettings: () -> Void
 	@Environment(\.vaultContentObscured) private var obscured
 	@Environment(\.vaultClock) private var clock
-	@State private var keySearch = ""
+	@State private var keySearch: String
 	@FocusState private var keySearchFocused: Bool
 	@State private var searchTask: Task<Void, Never>?
+
+	init(store: VaultStore, project: VaultProject, onProjectSettings: @escaping () -> Void = {}) {
+		self.store = store
+		self.project = project
+		self.onProjectSettings = onProjectSettings
+		// Opening the project's page again keeps its filter, so the field starts with what filters it.
+		_keySearch = State(initialValue: store.history.projectID == project.id ? store.history.filter.keyContains : "")
+	}
 
 	private var history: VaultLocalHistory { store.history }
 	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
@@ -57,15 +66,19 @@ struct VaultHistoryView: View {
 	// MARK: - Header and filters
 
 	private var header: some View {
-		HStack(alignment: .firstTextBaseline, spacing: 10) {
-			Text("History")
-				.vaultPageTitle()
-				.accessibilityAddTraits(.isHeader)
-			Text("Changes to \(project.name)’s values on this Mac")
-				.font(.system(size: 12.5))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.lineLimit(1)
-			Spacer(minLength: 0)
+		HStack(spacing: 10) {
+			HStack(alignment: .firstTextBaseline, spacing: 10) {
+				Text("History")
+					.vaultPageTitle()
+					.accessibilityAddTraits(.isHeader)
+				Text("Changes to \(project.name)’s values on this Mac")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+			}
+			Spacer(minLength: 8)
+			VaultOutlineButton(systemImage: "gearshape", title: "Project Settings", help: "Project Settings (⌘I)", label: "Project Settings",
+				borderless: true, action: onProjectSettings)
 		}
 		.padding(.horizontal, 20)
 		.frame(height: 60)

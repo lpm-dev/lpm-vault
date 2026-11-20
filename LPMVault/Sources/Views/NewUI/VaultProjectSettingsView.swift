@@ -9,6 +9,8 @@ struct VaultProjectSettingsView: View {
 	let project: VaultProject
 	/// Focuses the name field each time it changes, as Rename does.
 	var nameFocusRequest: UUID?
+	/// The page the settings were opened from, which the way back names.
+	var backTitle = "All Keys"
 	let onBack: () -> Void
 	let onDelete: () -> Void
 
@@ -84,7 +86,7 @@ struct VaultProjectSettingsView: View {
 		HStack(spacing: 12) {
 			// The way back reads as a step on the path, lighter than the page it leads from, on the title's baseline.
 			HStack(alignment: .firstTextBaseline, spacing: 7) {
-				VaultBackTitle(title: "All Keys", action: onBack)
+				VaultBackTitle(title: backTitle, action: onBack)
 				Image(systemName: "chevron.right")
 					.font(.system(size: 10, weight: .semibold))
 					.foregroundStyle(VaultPalette.textFaint)
@@ -437,7 +439,7 @@ private struct VaultBackTitle: View {
 		.buttonStyle(VaultPressStyle(cornerRadius: 5))
 		.vaultPointingHand()
 		.onHover { hovering = $0 }
-		.help("Back to All Keys")
-		.accessibilityLabel("Back to All Keys")
+		.help("Back to \(title)")
+		.accessibilityLabel("Back to \(title)")
 	}
 }

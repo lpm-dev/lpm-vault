@@ -236,6 +236,7 @@
 		979C304D2034F831393D1530 /* VaultCaptureProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF2B50ECE3B288D0A03E379 /* VaultCaptureProtection.swift */; };
 		97B62C0D8945A7B4AB1BDF04 /* PlatformTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 678F37650ABEEBAF7CCA6AE6 /* PlatformTokens.swift */; };
 		9865BC8960054863333EE960 /* BackupPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95700F2BFD11A848B52BF0B3 /* BackupPayload.swift */; };
+		9889B4FDC7392680C76BE40E /* VaultConfigFileMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EEE2F76EF77C5CDB0671F4D /* VaultConfigFileMenu.swift */; };
 		98E999243060235FCAE05FFF /* ProjectConfigWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4BA60E4876BDA7818D1F5A /* ProjectConfigWatcher.swift */; };
 		9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682E805810ACD18F61FEDF2 /* OrgVaultsSheet.swift */; };
 		99E434B85A59BD80A2B3C0E3 /* VaultSettingsContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CC397887072428833B3B0F /* VaultSettingsContent.swift */; };
@@ -574,6 +575,7 @@
 		6C9EE22CF4981C65729D0AA7 /* AddVariableDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddVariableDraft.swift; sourceTree = "<group>"; };
 		6DC3706FA3E2382573C2DE2F /* SecuritySettingsInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecuritySettingsInteractionTests.swift; sourceTree = "<group>"; };
 		6DCCEA126A2BE5A2C2D3D664 /* BackupExportSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupExportSheetTests.swift; sourceTree = "<group>"; };
+		6EEE2F76EF77C5CDB0671F4D /* VaultConfigFileMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultConfigFileMenu.swift; sourceTree = "<group>"; };
 		6FCE3BF1BA2251ECF6B28588 /* ProjectEnvSchemaDraftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaDraftTests.swift; sourceTree = "<group>"; };
 		6FFA31C6D513927411DD5EAF /* BackupPassphraseMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupPassphraseMeter.swift; sourceTree = "<group>"; };
 		7132CB4C93FB5453AD934A4F /* VaultStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStoreTests.swift; sourceTree = "<group>"; };
@@ -838,6 +840,7 @@
 				BA2E2764E046CF17D089E269 /* ValueSearchSheet.swift */,
 				2E315EA9B1D3C2727C30FB05 /* VaultBackupSettingsSection.swift */,
 				3DC9A097042E1E1F922653FF /* VaultCompanionBanner.swift */,
+				6EEE2F76EF77C5CDB0671F4D /* VaultConfigFileMenu.swift */,
 				0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */,
 				CEDE6264C2563EEC4611935A /* VaultContentView.swift */,
 				18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */,
@@ -1666,6 +1669,7 @@
 				B71C27BF7C3D7E50FF8503F0 /* VaultBackupSettingsSection.swift in Sources */,
 				979C304D2034F831393D1530 /* VaultCaptureProtection.swift in Sources */,
 				B60336B2B462BAABF5722A5F /* VaultCompanionBanner.swift in Sources */,
+				9889B4FDC7392680C76BE40E /* VaultConfigFileMenu.swift in Sources */,
 				2CEB55DF6C83628CD0B40A98 /* VaultConfirmDialog.swift in Sources */,
 				624242199ADD00465D0F54A5 /* VaultContentView.swift in Sources */,
 				235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */,

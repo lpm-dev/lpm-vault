@@ -355,7 +355,7 @@ extension SheetInteractionTests {
 				expectedText: ["LPM Vault is Locked", "Unlock"])
 		}
 
-		@Test("a default button that's off keeps its accent, faded, so it never reads as the Cancel beside it", arguments: [ColorScheme.light, .dark])
+		@Test("a default button that's off keeps its accent and its shortcut, faded, so it never reads as the Cancel beside it", arguments: [ColorScheme.light, .dark])
 		func disabledDefaultButton(scheme: ColorScheme) async throws {
 			let buttons = HStack(spacing: 12) {
 				VaultBarButton(title: "Cancel") {}
@@ -394,8 +394,16 @@ extension SheetInteractionTests {
 				}
 				#expect(whitest < 150, "In dark, the title of a button that's off is dim: \(whitest)")
 			}
+			// What's drawn across the button's middle sits as far from either side: its shortcut fills the room it keeps, so none reads as empty.
+			let fill = color(at: CGPoint(x: add.minX + 4, y: add.midY))
+			let inked = stride(from: add.minX + 4, to: add.maxX - 4, by: 0.5).filter { x in
+				let ink = color(at: CGPoint(x: x, y: add.midY))
+				return abs(ink.red - fill.red) + abs(ink.green - fill.green) + abs(ink.blue - fill.blue) > 40
+			}
+			let first = try #require(inked.first), last = try #require(inked.last)
+			#expect(abs((add.maxX - last) - (first - add.minX)) < 3, "Drawn from \(first) to \(last) in \(add)")
 			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.texts.contains { $0.contains("↩") } },
-				"Its shortcut waits until it's on")
+				"VoiceOver hears the shortcut once it works")
 		}
 
 		@Test("a scroll view's content fades into the surface at its bottom edge, so a line cut there reads as more below")

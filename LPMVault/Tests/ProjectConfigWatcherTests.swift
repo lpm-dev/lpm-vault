@@ -302,6 +302,86 @@ struct ProjectConfigOpenerTests {
 	}
 }
 
+@Suite("Apps that open lpm.json")
+struct ProjectConfigEditorTests {
+	/// An app as LaunchServices names it: a folder URL, with a trailing slash.
+	private static func app(_ name: String, in folder: String = "/Applications") -> URL {
+		URL(filePath: "\(folder)/\(name).app", directoryHint: .isDirectory)
+	}
+
+	private func editors(_ capable: [URL], systemDefault: URL?, chosen: String?) -> [ProjectConfigOpener.Editor] {
+		ProjectConfigOpener.editors(capable: capable, systemDefault: systemDefault, chosen: chosen,
+			name: { $0.deletingPathExtension().lastPathComponent }, version: { $0.path.hasPrefix("/Volumes") ? "16.2" : "26.1" })
+	}
+
+	@Test("the app chosen last comes first, then the Mac's default, then the rest by name; an app at one path is listed once")
+	func order() {
+		let capable = [Self.app("Xcode"), Self.app("TextEdit"), Self.app("Visual Studio Code"), Self.app("Cursor"), Self.app("TextEdit")]
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: nil).map(\.name) == ["TextEdit", "Cursor", "Visual Studio Code", "Xcode"])
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: "/Applications/Cursor.app").map(\.name)
+			== ["Cursor", "TextEdit", "Visual Studio Code", "Xcode"], "A saved path, without the trailing slash, names the app")
+		#expect(editors(capable, systemDefault: Self.app("TextEdit"), chosen: "/Applications/Zed.app").first?.name == "TextEdit",
+			"An app chosen that can't open JSON any more, or is gone, gives way to the default")
+		#expect(editors(capable, systemDefault: nil, chosen: nil).map(\.name) == ["Cursor", "TextEdit", "Visual Studio Code", "Xcode"])
+		#expect(editors([], systemDefault: nil, chosen: "/Applications/Cursor.app").isEmpty)
+		#expect(editors(capable, systemDefault: nil, chosen: nil).allSatisfy { $0.version == nil }, "Versions only tell same-named apps apart")
+	}
+
+	@Test("two copies of one app are both listed, each with its version, and the one chosen comes first")
+	func copiesOfOneApp() {
+		let capable = [Self.app("Xcode"), Self.app("Xcode", in: "/Volumes/Old"), Self.app("TextEdit")]
+		let listed = editors(capable, systemDefault: Self.app("TextEdit"), chosen: "/Volumes/Old/Xcode.app")
+		#expect(listed.map(\.url.path) == ["/Volumes/Old/Xcode.app", "/Applications/TextEdit.app", "/Applications/Xcode.app"])
+		#expect(listed.map(\.version) == ["16.2", nil, "26.1"])
+	}
+
+	@Test("a plain open uses the app chosen last, matched by its path, while it can still open JSON")
+	func preferredEditor() {
+		let capable = [Self.app("TextEdit"), Self.app("Cursor")]
+		#expect(ProjectConfigOpener.preferredEditor(capable: capable, systemDefault: Self.app("TextEdit"), chosen: "/Applications/Cursor.app") == Self.app("Cursor"))
+		#expect(ProjectConfigOpener.preferredEditor(capable: capable, systemDefault: Self.app("TextEdit"), chosen: "/Applications/Zed.app") == Self.app("TextEdit"))
+		#expect(ProjectConfigOpener.preferredEditor(capable: capable, systemDefault: nil, chosen: nil) == nil)
+	}
+
+	@Test("choosing an app opens lpm.json in it and keeps it, through the preferences, for the next open; a link is only shown")
+	@MainActor
+	func choosingKeepsTheApp() throws {
+		let domain = "json-editor-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let folder = FileManager.default.temporaryDirectory.appending(path: "json-editor-\(UUID().uuidString)", directoryHint: .isDirectory)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let file = folder.appending(path: "lpm.json")
+		try Data("{}".utf8).write(to: file)
+		var launched: [(file: URL, app: URL)] = []
+		ProjectConfigOpener.open(file, choosing: Self.app("Cursor"), defaults: defaults) { launched.append(($0, $1)) }
+		#expect(launched.map(\.app) == [Self.app("Cursor")] && launched.map(\.file) == [file])
+		let saved = defaults.string(forKey: ProjectConfigOpener.editorDefaultsKey)
+		#expect(saved == "/Applications/Cursor.app")
+		#expect(ProjectConfigOpener.preferredEditor(capable: [Self.app("TextEdit"), Self.app("Cursor")], systemDefault: Self.app("TextEdit"), chosen: saved)
+			== Self.app("Cursor"), "Read back, it's the app that opens lpm.json")
+
+		try FileManager.default.createSymbolicLink(at: folder.appending(path: "linked.json"), withDestinationURL: file)
+		ProjectConfigOpener.open(folder.appending(path: "linked.json"), in: Self.app("Cursor")) { launched.append(($0, $1)) }
+		#expect(launched.count == 1, "A link isn't opened in an app")
+	}
+
+	@Test("the menu opens lpm.json in the first app listed, lists the others under Open With, then Finder and the path")
+	@MainActor
+	func menuRows() {
+		let editors = [ProjectConfigOpener.Editor(url: Self.app("Cursor"), name: "Cursor"),
+			ProjectConfigOpener.Editor(url: Self.app("Xcode"), name: "Xcode", version: "26.1")]
+		let rows = VaultConfigFileMenu.rows(editors: editors, icon: { _ in nil })
+		#expect(rows.map(\.title) == ["Open in Cursor", "Xcode", "Show in Finder", "Copy Path"])
+		#expect(rows[1].section == "Open With" && rows[1].accessibilityLabel == "Open in Xcode 26.1" && rows[1].detail == "26.1")
+		#expect(rows[2].separated)
+		#expect(rows.map(\.id) == [.open(Self.app("Cursor")), .open(Self.app("Xcode")), .reveal, .copyPath])
+		#expect(VaultConfigFileMenu.rows(editors: [], icon: { _ in nil }).map(\.title) == ["Show in Finder", "Copy Path"],
+			"With no app for JSON, it can still be found and named")
+	}
+}
+
 @Suite("Opening imported schemas")
 struct ProjectConfigOpenerImportTests {
 	@Test("only a JSON file inside the project opens, not another type or one reached through a link out of the folder")

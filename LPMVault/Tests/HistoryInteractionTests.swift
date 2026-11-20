@@ -96,6 +96,39 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("k1"), "Closing the change forgets its values")
 		}
 
+		@Test("History's header opens Project Settings, whose way back returns to History")
+		func projectSettingsFromHistory() async throws {
+			let (store, _, _) = try makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await openHistory(host)
+			try await host.click("Project Settings", region: CGRect(x: 0.3, y: 0.8, width: 0.7, height: 0.15))
+			#expect(try await host.waitForText("Back to History"))
+			#expect(try await host.waitForText("DANGER ZONE"))
+			try await host.click("Back to History")
+			#expect(try await host.waitForText("Changes to my-app’s values on this Mac"))
+		}
+
+		@Test("a key search History had is still in its field, and still filters, when the page is opened again")
+		func keySearchSurvivesLeavingThePage() async throws {
+			let (store, _, _) = try makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await openHistory(host)
+			try host.enterText("DB_URL", placeholder: "Key name")
+			#expect(try await host.waitUntil { store.history.filter.keyContains == "DB_URL" })
+			#expect(try await host.waitForTextToDisappear("Changed API_KEY"), "Filtered to DB_URL")
+			try await host.click("Project Settings", region: CGRect(x: 0.3, y: 0.8, width: 0.7, height: 0.15))
+			try await host.click("Back to History")
+			#expect(try await host.waitForText("Changes to my-app’s values on this Mac"))
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "Key name") == "DB_URL" }, "The field says what filters the page")
+			#expect(try await !host.text().contains("Changed API_KEY"))
+			try host.enterText("", placeholder: "Key name")
+			#expect(try await host.waitForText("Changed API_KEY"), "Clearing it shows every key again")
+		}
+
 		@Test("Undo This Change… reviews the undo, applies it as a new change, and offers to undo that")
 		func undoThroughReview() async throws {
 			let (store, service, _) = try makeStore()

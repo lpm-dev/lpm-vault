@@ -6,6 +6,8 @@ struct VaultSchemaReviewSheet: View {
 	@Bindable var store: VaultStore
 	let project: VaultProject
 	let environments: [String]
+	/// Runs once the draft is written into lpm.json, before the sheet closes.
+	var onSaved: () -> Void = {}
 	@Environment(\.dismiss) private var dismiss
 
 	@State private var submitting = false
@@ -164,6 +166,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			do throws(ProjectEnvSchemaFile.DraftSaveError) {
 				try await store.saveSchemaDraft(in: project.id)
+				onSaved()
 			} catch .file(.changed) {
 				// The merge left conflicts; the Schema page's banner settles them.
 				if store.schemaDraft(for: project.id)?.conflicts.isEmpty == false {

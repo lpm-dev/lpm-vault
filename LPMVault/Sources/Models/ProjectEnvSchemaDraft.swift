@@ -142,6 +142,12 @@ struct ProjectEnvSchemaDraft: Sendable {
 		return base(of: item)
 	}
 
+	/// Whether the draft declares `item` in lpm.json, which doesn't have it.
+	func adds(_ item: Item) -> Bool {
+		guard base(of: item) == .absent, case .declared = declaration(of: item) else { return false }
+		return true
+	}
+
 	/// Sets an item. A value equivalent to what lpm.json has drops the item's
 	/// change, so the file keeps its own member order; for a conflicting item,
 	/// that settles the conflict.

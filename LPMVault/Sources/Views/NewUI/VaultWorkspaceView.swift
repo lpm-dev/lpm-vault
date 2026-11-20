@@ -17,6 +17,8 @@ struct VaultWorkspaceView: View {
 	@State private var schemaSelection: VaultSchemaSelection?
 	/// The project whose schema draft the review sheet shows.
 	@State private var schemaReview: SchemaReviewTarget?
+	/// The row the Schema page points out a moment, as a key just added is.
+	@State private var schemaMark: VaultSchemaView.Mark?
 	/// Whether signing out, asked from the account menu, waits for confirmation.
 	@State private var confirmsSignOut = false
 	@State private var schemaPanelSession = UUID()
@@ -43,6 +45,8 @@ struct VaultWorkspaceView: View {
 	@State private var isCheckingSharingKey = false
 	/// The project whose settings open once it's selected.
 	@State private var pendingProjectSettings: String?
+	/// The page Project Settings goes back to: the one it was opened from.
+	@State private var projectSettingsReturn: VaultWorkspaceMode = .matrix
 	/// Focuses the Project Settings name field each time it changes.
 	@State private var projectNameFocusRequest: UUID?
 
@@ -114,8 +118,35 @@ struct VaultWorkspaceView: View {
 	/// and nothing blocks it; returns whether it did.
 	private func reviewSchemaFromPage(in project: VaultProject) -> Bool {
 		guard canReviewSchema(in: project) else { return false }
-		schemaReview = SchemaReviewTarget(projectID: project.id)
+		reviewSchema(in: project)
 		return true
+	}
+
+	/// Opens the review of the project's schema draft, noting the key or group
+	/// the side panel adds, if it shows one.
+	private func reviewSchema(in project: VaultProject) {
+		let item: ProjectEnvSchemaDraft.Item? = switch schemaSelection {
+		case .key(let key)?: .key(key)
+		case .group(let name)?: .group(name)
+		case .newKey?, .newGroup?, nil: nil
+		}
+		let adds = schemaPanelVisible && item.map { store.schemaDraft(for: project.id)?.adds($0) == true } == true
+		schemaReview = SchemaReviewTarget(projectID: project.id, added: adds ? schemaSelection : nil)
+	}
+
+	/// A key or group the side panel added is saved: adding it is done, as a
+	/// new key's sheet closes once it adds one, so the panel closes and its row
+	/// is marked a moment. One saved while it's edited stays in the panel.
+	private func schemaSaved(_ target: SchemaReviewTarget) {
+		guard let added = target.added, store.selectedProjectId == target.projectID, mode == .schema, schemaSelection == added else { return }
+		selectSchema(nil)
+		schemaMark = VaultSchemaView.Mark(selection: added)
+		let name = switch added {
+		case .key(let key): key
+		case .group(let group): "The group \(group.escapingDirectionControls)"
+		case .newKey, .newGroup: ""
+		}
+		AccessibilityNotification.Announcement("\(name) saved to lpm.json").post()
 	}
 
 	/// Whether the page can open the review: there's a draft, nothing blocks
@@ -295,6 +326,8 @@ struct VaultWorkspaceView: View {
 		.modifier(VaultSyncCommands(isAvailable: { project != nil && !hostWindow.hasAttachedSheet },
 			onPull: presentPullConfirmation, onPush: presentPushConfirmation))
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		// A row is pointed out on its page; it isn't again once the page is left.
+		.onChange(of: mode) { _, mode in if mode != .schema { schemaMark = nil } }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
 		.task(id: iconWatch) {
@@ -390,7 +423,8 @@ struct VaultWorkspaceView: View {
 								store: store,
 								project: project,
 								nameFocusRequest: projectNameFocusRequest,
-								onBack: { mode = .matrix },
+								backTitle: VaultTitleBarView.pageName(for: projectSettingsReturn.synchronized(to: store.selectedEnvironment)) ?? "All Keys",
+								onBack: { mode = projectSettingsReturn.synchronized(to: store.selectedEnvironment) },
 								onDelete: { projectToDelete = project }
 							)
 							.id(project.id)
@@ -401,7 +435,7 @@ struct VaultWorkspaceView: View {
 								.background(VaultPalette.content)
 						} else if let project, mode == .history {
 							// A project's own page, so its search and filters don't carry over.
-							VaultHistoryView(store: store, project: project)
+							VaultHistoryView(store: store, project: project, onProjectSettings: { openProjectSettings(project, focusingName: false) })
 								.id(project.id)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let project, mode == .schema {
@@ -415,6 +449,8 @@ struct VaultWorkspaceView: View {
 								draft: draft,
 								draftOverview: draft == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.overview,
 								selection: schemaSelection,
+								mark: schemaMark,
+								onMarkEnd: { schemaMark = nil },
 								onSelect: selectSchema,
 								canEdit: store.canEditSchema(of: project.id),
 								onAddKey: { selectSchema(.newKey) },
@@ -422,14 +458,14 @@ struct VaultWorkspaceView: View {
 								clientPrefixCount: store.schemaClientPrefixesInEffect(for: project.id).count,
 								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(
 									store: store, project: project, onOpenKey: { selectSchema(.key($0)) },
-									onReview: canReviewSchema(in: project) ? { schemaReview = SchemaReviewTarget(projectID: project.id) } : nil)),
+									onReview: canReviewSchema(in: project) ? { reviewSchema(in: project) } : nil)),
 								storedKeyCount: store.workspaceSnapshots[project.id]?.allSecretKeys.count ?? 0,
 								failures: schemaFailures(in: project),
 								saveFailed: VaultSchemaEditorFooter.saveFailure(store: store, projectID: project.id) != nil,
 								saving: store.savingSchemaDrafts.contains(project.id),
 								blocker: draft == nil || schemaPanelVisible || rules?.schema?.overview == nil ? nil
 									: VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil),
-								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
+								onReview: { reviewSchema(in: project) },
 								onDiscardAll: { store.discardSchemaDraft(in: project.id) },
 								onUndo: { undoSchemaDraft(in: project, redo: $0) },
 								onMove: moveSchemaSelection,
@@ -457,6 +493,8 @@ struct VaultWorkspaceView: View {
 									mode = .matrix
 									filter = view.filter
 								},
+								onProjectSettings: { openProjectSettings(project, focusingName: false) },
+								onCopy: { store.clipboard.copyText($0) },
 								onConnectCLI: { showConnectCLISheet = true },
 								onRecheck: store.reloadKeyDescriptions
 							)
@@ -477,7 +515,8 @@ struct VaultWorkspaceView: View {
 							contentView(project, snapshot: snapshot)
 						} else {
 							VaultWorkspaceEmptyView(
-								isSearching: !searchText.isEmpty,
+								// Only a search that leaves nothing in the sidebar says so; one that matches leaves the start page as it is.
+								isSearching: !searchText.isEmpty && store.visibleVaults(matching: searchText).isEmpty,
 								hasProjects: !store.projects.isEmpty,
 								onCreate: { showNewProject = true },
 								onImport: { showCloudProjects = true },
@@ -515,7 +554,7 @@ struct VaultWorkspaceView: View {
 								session: schemaPanelSession,
 								onSelect: selectSchema,
 								onFollow: { self.schemaSelection = $0 },
-								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
+								onReview: { reviewSchema(in: project) },
 								onRenamed: followRename
 							)
 						}
@@ -721,7 +760,8 @@ struct VaultWorkspaceView: View {
 		.vaultConfirmation(isPresented: $confirmsSignOut) { .signOut(store) }
 		.sheet(item: $schemaReview) { target in
 			if let project = store.projects.first(where: { $0.id == target.projectID }) {
-				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project))
+				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project),
+					onSaved: { schemaSaved(target) })
 					.vaultPrivacyProtected(isObscured)
 			}
 		}
@@ -1499,6 +1539,7 @@ struct VaultWorkspaceView: View {
 			return
 		}
 		projectNameFocusRequest = focusingName ? UUID() : nil
+		if mode != .projectSettings { projectSettingsReturn = pendingProjectSettings == nil ? mode : .matrix }
 		mode = .projectSettings
 	}
 
@@ -1538,11 +1579,13 @@ struct VaultWorkspaceView: View {
 		rawTextSaved = nil
 		mode = pendingProjectSettings != nil && pendingProjectSettings == store.selectedProjectId ? .projectSettings : .matrix
 		pendingProjectSettings = nil
+		projectSettingsReturn = .matrix
 		filter = .all
 		environmentViewMode = .table
 		selectedKey = nil
 		schemaSelection = nil
 		schemaReview = nil
+		schemaMark = nil
 		revealedKeys.removeAll()
 		showsInspector = false
 		shownMenu = nil
@@ -1707,6 +1750,8 @@ struct VaultWorkspaceView: View {
 /// project is no longer the one shown.
 private struct SchemaReviewTarget: Identifiable {
 	let projectID: String
+	/// The key or group the side panel adds to lpm.json, which saving ends the adding of.
+	var added: VaultSchemaSelection?
 	var id: String { projectID }
 }
 

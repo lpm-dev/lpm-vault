@@ -766,6 +766,23 @@ final class SheetTestHost<V: View> {
 			width: box.width * target.bounds.width, height: box.height * target.bounds.height)
 	}
 
+	/// Moves the pointer to `point` of the host's view, from its bottom-left,
+	/// as the view's tracking areas report it, which SwiftUI's hover follows.
+	/// A mouse-moved event alone doesn't reach a hover a test window has.
+	func hover(at point: NSPoint) throws {
+		let local = view.isFlipped ? NSPoint(x: point.x, y: view.bounds.height - point.y) : point
+		let location = view.convert(local, to: nil)
+		let now = ProcessInfo.processInfo.systemUptime
+		for area in view.trackingAreas where area.rect.contains(local) {
+			let enter = try #require(NSEvent.enterExitEvent(with: .mouseEntered, location: location, modifierFlags: [], timestamp: now,
+				windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: unsafeBitCast(area, to: Int.self), userData: nil))
+			view.mouseEntered(with: enter)
+		}
+		let move = try #require(NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [], timestamp: now,
+			windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+		view.mouseMoved(with: move)
+	}
+
 	/// Clicks the sidebar row of an environment, such as ".env", found by its
 	/// name, and returns the clicked point in window coordinates.
 	@discardableResult
@@ -1152,6 +1169,46 @@ struct SheetInteractionTests {
 		try host.enterKey("NEXT")
 		try await host.settle()
 		#expect(try await !host.text().contains("Added TOKEN"))
+	}
+
+	@Test("a key just added closes the sheet as it was submitted, never saying the key it added already exists")
+	func addedKeyClosesAsSubmitted() async throws {
+		let (store, keychain) = makeStore()
+		// The host keeps the sheet showing after it asks to close, as each frame of its closing animation does.
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "DATABASE_URL"),
+			size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.enterValue("postgres://fixture")
+		try await host.waitUntil { host.value == "postgres://fixture" }
+		try await host.click("Add to")
+		try await host.waitUntil { store.projects.first?.environments["default"]?["DATABASE_URL"] == "postgres://fixture" }
+		#expect(stored(keychain, "default", "DATABASE_URL") == "postgres://fixture")
+		try await host.settle()
+		#expect(try await !host.text().contains("Already exists"), "The key it just added isn't a conflict")
+		#expect(host.value == "postgres://fixture", "The value stays as it was added while the sheet closes")
+		let writes = OSAllocatedUnfairLock(initialState: 0)
+		keychain.beforeKeychainTransaction = { writes.withLock { $0 += 1 } }
+		try host.returnWhileEditing("secure value", modifiers: [])
+		// Nothing says a second add didn't start, so the check waits as long as one would take to reach the Keychain.
+		try await quietPeriod()
+		#expect(writes.withLock { $0 } == 0, "Return while it closes doesn't add the key again")
+		#expect(try await !host.text().contains("already exists"), "nor try to, which the key it added would refuse")
+	}
+
+	@Test("Cancel or Close discards a typed value at once, even one that's revealed, as the sheet closes", arguments: ["Cancel", "Close"])
+	func discardedValueClearsAtOnce(control: String) async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "TOKEN", initialValueRevealed: true),
+			size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		let field = "Paste a value or generate one"
+		try host.enterText("sk_discarded", placeholder: field)
+		try await host.waitUntil { host.fieldText(placeholder: field) == "sk_discarded" }
+		try await host.click(control)
+		#expect(try await host.waitUntil { host.fieldText(placeholder: field) == "" }, "A value the person discards doesn't stay on screen")
+		#expect(stored(keychain, "default", "TOKEN") == nil)
 	}
 
 	@Test("a typed value's hidden characters are said in words, a fix is the person's choice, and the value still adds as given")

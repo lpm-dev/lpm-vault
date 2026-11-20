@@ -22,7 +22,8 @@ struct VaultSettingsOverlay: View {
 
 	/// How far the panel stays from the title bar, the window's bottom and its sides.
 	static let margin: CGFloat = 40
-	static let menuWidth: CGFloat = 200
+	/// Wide enough for a nightly's version, with its date and short commit, on one line under the app's name.
+	static let menuWidth: CGFloat = 240
 	/// The space between a page's column of cards and the panel's sides.
 	static let contentInset: CGFloat = 28
 	static let headerHeight: CGFloat = 58
@@ -131,7 +132,8 @@ struct VaultSettingsOverlay: View {
 			header
 			VaultHairline()
 			HStack(spacing: 0) {
-				VaultSettingsMenuColumn(store: store, category: category, search: search, searchFocused: $searchFocused, show: show)
+				VaultSettingsMenuColumn(store: store, category: category, search: search, searchFocused: $searchFocused,
+					build: updates?.buildInfo ?? VaultBuildInfo(), show: show)
 				VaultHairline(axis: .vertical)
 				VaultSettingsContent(store: store, category: category)
 					.id(category)
@@ -188,6 +190,7 @@ private struct VaultSettingsMenuColumn: View {
 	let category: VaultSettingsCategory
 	let search: VaultSettingsSearch
 	var searchFocused: FocusState<Bool>.Binding
+	let build: VaultBuildInfo
 	let show: (VaultSettingsEntry) -> Void
 
 	var body: some View {
@@ -204,7 +207,7 @@ private struct VaultSettingsMenuColumn: View {
 			}
 			VStack(alignment: .leading, spacing: 2) {
 				Text("LPM Vault")
-				Text(VaultBuildInfo().displayVersion)
+				Text(build.displayVersion)
 					.lineLimit(2)
 			}
 			.font(.system(size: 11))

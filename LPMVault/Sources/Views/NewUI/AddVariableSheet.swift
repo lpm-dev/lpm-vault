@@ -12,6 +12,9 @@ struct AddVariableSheet: View {
 	private var value: String { typed.text }
 	@State private var isValueRevealed = false
 	@State private var submitTask: Task<Void, Never>?
+	/// The sheet asked to close: it stays as it was through its closing
+	/// animation, and the key just added isn't checked against itself.
+	@State private var isClosing = false
 	@State private var submitError: String?
 	@State private var lastAddedKey: String?
 	/// The highlighted declared-key suggestion.
@@ -58,6 +61,7 @@ struct AddVariableSheet: View {
 
 	/// What quitting would discard: the key typed, never its value.
 	private var unsavedWork: String? {
+		guard !isClosing else { return nil }
 		let key = draft.key.trimmingCharacters(in: .whitespaces)
 		if !key.isEmpty, key != initialKey || !value.isEmpty { return key }
 		return value.isEmpty ? nil : "A value, with no key yet"
@@ -114,7 +118,8 @@ struct AddVariableSheet: View {
 		}
 		.onChange(of: draft.selection) { _, _ in submitError = nil }
 		.onChange(of: ExactText(value)) { _, _ in submitError = nil }
-		.onChange(of: project?.workspaceSnapshotIdentity) { _, _ in refreshDraft() }
+		// An add in flight changes the project too, and isn't a conflict with itself.
+		.onChange(of: project?.workspaceSnapshotIdentity) { _, _ in if !isSubmitting, !isClosing { refreshDraft() } }
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismissAndClear() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismissAndClear() } }
 		.onDisappear {
@@ -138,7 +143,7 @@ struct AddVariableSheet: View {
 					.lineLimit(1)
 			}
 			Spacer(minLength: 12)
-			VaultSheetCloseButton(action: close)
+			VaultSheetCloseButton(action: discard)
 				.disabled(isSubmitting)
 		}
 		.padding(.horizontal, 24)
@@ -523,7 +528,7 @@ struct AddVariableSheet: View {
 					.lineLimit(1)
 			}
 		} actions: {
-			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: close)
+			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: discard)
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(
 				title: isSubmitting ? "Adding…" : (valueProblems.isEmpty ? draft.submitTitle : "Add anyway"),
@@ -572,7 +577,7 @@ struct AddVariableSheet: View {
 	}
 
 	private func submit(keepOpen: Bool) {
-		guard draft.canSubmit, !isSubmitting else { return }
+		guard draft.canSubmit, !isSubmitting, !isClosing else { return }
 		let key = draft.key
 		let submittedValue = value
 		let environments = draft.selection
@@ -595,8 +600,9 @@ struct AddVariableSheet: View {
 				refreshDraft()
 				isKeyFocused = true
 			case .success:
-				close()
+				finish()
 			case .failure(let error):
+				refreshDraft()
 				submitError = error.localizedDescription
 			}
 		}
@@ -606,14 +612,23 @@ struct AddVariableSheet: View {
 		draft = Self.makeDraft(store: store, project: project, key: draft.key, selection: draft.selection)
 	}
 
-	private func close() {
+	/// Closes once the key is added, showing what was added as it goes.
+	private func finish() {
+		isClosing = true
+		dismiss()
+	}
+
+	/// Closes without adding, the value cleared first: one the person drops doesn't stay on screen.
+	private func discard() {
 		guard !isSubmitting else { return }
 		dismissAndClear()
 	}
 
+	/// Closes at once, clearing the value first, as locking or leaving the project requires.
 	private func dismissAndClear() {
 		submitTask?.cancel()
 		submitTask = nil
+		isClosing = true
 		typed = ExactText("")
 		dismiss()
 	}

@@ -49,6 +49,105 @@ extension SheetInteractionTests {
 			#expect(!AccessibleText(inspector.map(\.text)).contains("VALUES"), "The inspector stays closed on the Schema page")
 		}
 
+		@Test("the header reads Open lpm.json, Project Settings, Client Prefixes, then Declare Key, and Project Settings goes back to Schema")
+		func headerOrderAndProjectSettings() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let store = makeStore(path: folder)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.click("Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+			let header = CGRect(x: 0.2, y: 0.8, width: 0.8, height: 0.15)
+			var edges: [CGFloat] = []
+			for control in ["Open lpm.json", "Project Settings", "Client Prefixes", "Declare Key"] {
+				edges.append(try await host.labelFrame(control, region: header).minX)
+			}
+			#expect(edges == edges.sorted(), "Left to right: \(edges)")
+
+			try await host.click("Project Settings", region: header)
+			#expect(try await host.waitForText("Back to Schema"))
+			try await host.click("Back to Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+		}
+
+		@Test("Open lpm.json offers the apps that open it, Show in Finder and Copy Path, which copies lpm.json's path")
+		func openConfigMenu() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let store = makeStore(path: folder)
+			defer { store.lock(); store.clipboard.pasteboard.releaseGlobally() }
+			let editors = FakeEditors()
+			let host = try await workspace(store, editors: editors.catalog)
+			defer { host.window.close() }
+			try await host.click("Schema")
+			#expect(try await host.waitForText("6 declared keys"))
+			try await host.click("Open lpm.json")
+			var menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Open in Cursor", in: menu), "The Mac's default first")
+			try await host.click("Open in TextEdit", in: menu)
+			#expect(try await host.waitUntil { editors.opened.count == 1 })
+			let opened = try #require(editors.opened.first)
+			#expect(opened.editor == FakeEditors.textEdit && opened.keep, "Another app opens it, and is kept")
+			#expect(opened.file.resolvingSymlinksInPath() == URL(filePath: folder + "/lpm.json").resolvingSymlinksInPath())
+			#expect(try await host.waitUntil { !menu.isVisible || SheetTestHost<AnyView>.isClosing(menu) })
+
+			try await host.click("Open lpm.json")
+			menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Open in TextEdit", in: menu), "The app chosen comes first now")
+			#expect(try await host.waitForText("Show in Finder", in: menu))
+			try await host.click("Copy Path", in: menu)
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) != nil })
+			let copied = try #require(store.clipboard.pasteboard.string(forType: .string))
+			#expect(URL(filePath: copied).resolvingSymlinksInPath() == URL(filePath: folder + "/lpm.json").resolvingSymlinksInPath())
+		}
+
+		@Test("the header's controls stay as they were as it narrows: an open menu stays open, and every control keeps its name, only giving up titles")
+		func headerNarrowsInPlace() async throws {
+			let folder = try makeFolder(Self.sample, files: ["schemas/base.json": #"{"vars":{"DATABASE_URL":{"format":"url","required":true}}}"#])
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let overview = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
+			let file = URL(filePath: folder + "/lpm.json")
+			let host = SheetTestHost(VaultSchemaView(state: .loaded(overview, file: file), folder: folder, descriptions: [:], sortOrder: .constant(.ascending),
+				canEdit: true, clientPrefixes: AnyView(Text("Prefixes")), onConnectCLI: {}, onRecheck: {}).environment(\.vaultConfigEditors, FakeEditors().catalog),
+				size: NSSize(width: 1000, height: 400), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(try await host.waitForText("Project Settings"))
+			try await host.click("Open lpm.json")
+			let menu = try await host.popoverWindow()
+			#expect(try await host.waitForText("Copy Path", in: menu))
+			host.window.setContentSize(NSSize(width: 560, height: 400))
+			try await host.settle()
+			let header = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .button }
+			for control in ["Open lpm.json", "Project Settings", "Client Prefixes", "Declare Key"] {
+				#expect(header.contains { $0.says(control, as: .leading) }, "\(control) is still named")
+			}
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.role == .staticText && $0.says("Project Settings") },
+				"Narrow, Project Settings shows its symbol alone")
+			#expect(menu.isVisible && !SheetTestHost<AnyView>.isClosing(menu), "The menu stays open")
+			try host.sendEscape()
+			#expect(try await host.waitUntil { !menu.isVisible || SheetTestHost<AnyView>.isClosing(menu) })
+			try await host.click("Client Prefixes")
+			let prefixes = try await host.popoverWindow()
+			#expect(try await host.waitForText("Prefixes", in: prefixes), "One popover, from the control shown")
+		}
+
+		@Test("lpm.json that can't be read is offered for editing by a button of its own name, apart from the header's Open lpm.json menu")
+		func unreadableConfigControlsHaveDistinctNames() async throws {
+			let folder = try makeFolder("{ not json")
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			let host = SheetTestHost(VaultSchemaView(state: .unreadable(.init(location: "lpm.json", reason: "Not JSON")), folder: folder, descriptions: [:],
+				sortOrder: .constant(.ascending), onConnectCLI: {}, onRecheck: {}),
+				size: NSSize(width: 1100, height: 500), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("Schema can’t be read"))
+			let buttons = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.role == .button }
+			#expect(buttons.filter { $0.says("Open lpm.json", as: .leading) }.count == 1, "One control opens the menu")
+			#expect(buttons.contains { $0.says("Edit lpm.json", as: .leading) }, "The banner's control says it edits the file")
+		}
+
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")
 		func noFolderState() async throws {
 			let store = makeStore(path: "/nonexistent-\(UUID().uuidString)")
@@ -164,18 +263,19 @@ extension SheetInteractionTests {
 			let project = VaultProject(id: "schema-page", name: "billing-app", path: path, environments: ["default": values])
 			keychain.envStorage[project.id] = (name: project.name, path: path, environments: project.environments)
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project]
 			store.openProject(id: project.id)
 			return store
 		}
 
-		private func workspace(_ store: VaultStore) async throws -> SheetTestHost<some View> {
+		private func workspace(_ store: VaultStore, editors: ProjectConfigOpener.Catalog = FakeEditors().catalog) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
 			let defaults = try #require(UserDefaults(suiteName: "schema-page-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
-				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
+				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults)
+				.environment(\.vaultConfigEditors, editors),
 				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots[store.selectedProjectId ?? ""] != nil })
 			try await host.settle()
@@ -193,5 +293,32 @@ extension SheetInteractionTests {
 			}
 			return folder
 		}
+	}
+}
+
+/// Two apps that open JSON, Cursor the Mac's default, which remember the one
+/// chosen as the Mac would, and record what they're asked to open.
+private final class FakeEditors: @unchecked Sendable {
+	static let cursor = URL(filePath: "/Applications/Cursor.app", directoryHint: .isDirectory)
+	static let textEdit = URL(filePath: "/Applications/TextEdit.app", directoryHint: .isDirectory)
+
+	private let lock = NSLock()
+	private var chosen: String?
+	private var openRequests: [(file: URL, editor: URL, keep: Bool)] = []
+
+	var opened: [(file: URL, editor: URL, keep: Bool)] { lock.withLock { openRequests } }
+
+	var catalog: ProjectConfigOpener.Catalog {
+		ProjectConfigOpener.Catalog(
+			list: { [self] in
+				ProjectConfigOpener.editors(capable: [Self.cursor, Self.textEdit], systemDefault: Self.cursor, chosen: lock.withLock { chosen },
+					name: { $0.deletingPathExtension().lastPathComponent }, version: { _ in nil })
+			},
+			open: { [self] file, editor, keep in
+				lock.withLock {
+					openRequests.append((file, editor, keep))
+					if keep { chosen = editor.path }
+				}
+			})
 	}
 }

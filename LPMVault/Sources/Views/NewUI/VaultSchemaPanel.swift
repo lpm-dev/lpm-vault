@@ -263,8 +263,7 @@ private struct VaultSchemaKeyEditor: View {
 
 	/// Whether the draft declares `name` in lpm.json without lpm.json having it.
 	private static func isAdded(_ name: String, in draft: Draft) -> Bool {
-		guard draft.base(of: .key(name)) == .absent, case .declared = draft.declaration(of: .key(name)) else { return false }
-		return true
+		draft.adds(.key(name))
 	}
 
 	/// Whether the name field names the key in the draft as it's typed: a key
@@ -442,12 +441,13 @@ private struct VaultSchemaKeyEditor: View {
 				VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 			}
 			Spacer(minLength: 4)
+			// A line sets the key's actions apart from closing, so none without them.
 			if let prompt = removalPrompt(mode) {
 				VaultRowIconButton(systemImage: "trash", help: "Remove \(key) from the schema (⌘⌫)", destructive: true,
 					label: "Remove \(key) from the schema") { removal = prompt }
 					.disabled(!canEdit)
+				Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			}
-			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			VaultRowIconButton(systemImage: "xmark", help: "Close") { onSelect(nil) }
 		}
 		.padding(.leading, 16)
