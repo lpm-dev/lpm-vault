@@ -237,6 +237,8 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
                 print("Current main already has a nightly; repairing feed publication if needed")
                 tag = previous
     else:
+        if environment.get("GITHUB_REF") != "refs/heads/main":
+            raise ValueError("Stable releases must run from main")
         release_version = tag[1:]
         if version_tuple(release_version) != version_tuple(version):
             raise ValueError("Stable tag must match the project's version")
@@ -244,6 +246,10 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
     if existing and existing["draft"]:
         raise ValueError("A release draft already exists; inspect and remove it before retrying")
     if not existing:
+        # Publishing creates the tag at the source commit, but an existing tag would be reused wherever it points.
+        refs = json.loads(output("gh", "api", f"repos/{repository}/git/matching-refs/tags/{tag}"))
+        if any(ref.get("ref") == f"refs/tags/{tag}" for ref in refs):
+            raise ValueError(f"Tag {tag} already exists without its release; remove it before publishing")
         for previous_channel, (release, _, _) in latest.items():
             previous = release["tag_name"]
             status = comparisons.get(previous)
@@ -266,13 +272,15 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
         names = [f"LPM-Vault-{release_version}.dmg", f"LPM-Vault-{release_version}-macos-universal.zip",
                  "LPM-Vault.dmg", "appcast.xml", "checksums.txt", "release-manifest.json"]
         run("gh", "release", "create", tag, "--repo", repository, "--target", commit,
-            *( ["--verify-tag"] if channel == "stable" else [] ), "--draft", "--title", f"LPM Vault {release_version}", "--generate-notes",
+            "--draft", "--title", f"LPM Vault {release_version}", "--generate-notes",
             *(str(Path("release-output") / name) for name in names))
         run("gh", "release", "edit", tag, "--repo", repository, "--draft=false",
             *( ["--prerelease", "--latest=false"] if channel == "nightly" else ["--latest"] ))
         published = json.loads(output("gh", "api", f"repos/{repository}/releases/tags/{tag}"))
         if published.get("tag_name") != tag or published.get("draft") is not False or published.get("immutable") is not True or published.get("prerelease") is not (channel == "nightly"):
             raise RuntimeError("Release publication did not confirm immutable protection and channel")
+        if json.loads(output("gh", "api", f"repos/{repository}/commits/{tag}"))["sha"] != commit:
+            raise RuntimeError(f"Published tag {tag} does not point at the source commit")
         latest[channel] = (published, manifest, directory)
     elif channel not in latest or latest[channel][0]["tag_name"] != tag:
         raise ValueError("Refusing to republish an obsolete release")

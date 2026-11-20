@@ -79,14 +79,21 @@ def main(argv=None):
             repository_preflight(os.environ["GITHUB_REPOSITORY"])
         sign_release(version, args.build)
         return
-    if args.version or args.build:
-        parser.error('--version and --build are only available with --verify-only')
+    if args.build:
+        parser.error('--build is only available with --verify-only')
     if args.preflight_only:
+        if args.version:
+            parser.error('--version is not available with --preflight-only')
         repository_preflight(os.environ["GITHUB_REPOSITORY"])
         return
-    tag = os.environ["GITHUB_REF_NAME"]
-    if args.channel == 'stable':
-        release_version(tag)
+    if args.channel == 'nightly':
+        if args.version:
+            parser.error('A nightly takes its version from the project; --version names a stable release')
+        tag = None
+    else:
+        if not args.version:
+            parser.error('A stable release needs --version MAJOR.MINOR.PATCH')
+        tag = 'v' + release_version('v' + args.version)
     repository = os.environ["GITHUB_REPOSITORY"]
     run("git", "fetch", "origin", "main")
     run("git", "merge-base", "--is-ancestor", "HEAD", "origin/main")

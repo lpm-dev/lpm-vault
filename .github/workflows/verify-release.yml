@@ -1,7 +1,5 @@
 name: Verify signed release
 on:
-  push:
-    tags: ['release-check-*']
   workflow_dispatch:
     inputs:
       version:
@@ -35,6 +33,8 @@ jobs:
   verify:
     needs: [checks, ui]
     runs-on: macos-15
+    # The signing and Sparkle keys live in this environment, which only main can use.
+    environment: release
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     timeout-minutes: 60

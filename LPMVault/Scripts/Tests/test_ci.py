@@ -1044,5 +1044,39 @@ class ReleaseBundleCheckTests(unittest.TestCase):
         self.assertGreaterEqual(self.time_limit('release-bundle.yml', 'build'), self.time_limit('release.yml', 'release'))
 
 
+class SigningWorkflowTests(unittest.TestCase):
+    WORKFLOWS = Path(__file__).resolve().parents[3] / '.github/workflows'
+    SIGNERS = {'release.yml': 'release', 'verify-release.yml': 'verify'}
+
+    def test_only_the_release_environment_holds_the_signing_secrets(self):
+        holders = {}
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
+            for name in re.findall(r'^  ([\w-]+):$', workflow.split('\njobs:\n', 1)[-1], re.MULTILINE):
+                lines = job(workflow, name)
+                if any(re.search(r'secrets\.(?!GITHUB_TOKEN\b)', line) for line in lines):
+                    holders[(path.name, name)] = next(
+                        (line.split(':', 1)[1].strip() for line in lines if line.startswith('    environment:')), None)
+        self.assertEqual(holders, {(path, name): 'release' for path, name in self.SIGNERS.items()})
+
+    def test_signing_workflows_start_only_from_main_by_schedule_or_by_hand(self):
+        self.assertEqual(events((self.WORKFLOWS / 'release.yml').read_text()), {'schedule', 'workflow_dispatch'})
+        self.assertEqual(events((self.WORKFLOWS / 'verify-release.yml').read_text()), {'workflow_dispatch'})
+        for path in self.SIGNERS:
+            with self.subTest(workflow=path):
+                self.assertNotIn('tags:', (self.WORKFLOWS / path).read_text())
+
+    def test_a_stable_release_names_its_version_and_a_scheduled_run_is_a_nightly(self):
+        workflow = (self.WORKFLOWS / 'release.yml').read_text()
+        self.assertIn('    inputs:\n      version:\n', workflow)
+        release = '\n'.join(job(workflow, 'release'))
+        self.assertIn('          RELEASE_VERSION: ${{ inputs.version }}\n', release)
+        self.assertIn('if [[ -n "$RELEASE_VERSION" ]]; then\n'
+                      '            python3 LPMVault/Scripts/ci-release.py --channel stable --version "$RELEASE_VERSION"\n'
+                      '          else\n'
+                      '            python3 LPMVault/Scripts/ci-release.py --channel nightly\n', release)
+        self.assertNotIn('GITHUB_EVENT_NAME', release)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -176,6 +176,8 @@ class Publication(unittest.TestCase):
         self.status = 'ahead'
         self.comparisons = {}
         self.published = None
+        self.tags = []
+        self.tagged = SHA
 
     def previous(self, value, tag=None):
         tag = tag or 'v' + value.get('releaseVersion', value['version'])
@@ -209,6 +211,11 @@ class Publication(unittest.TestCase):
         if '/releases/tags/' in endpoint:
             return json.dumps(self.published or dict(tag_name=endpoint.split('/tags/')[1], draft=False,
                                                     immutable=True, prerelease=True))
+        if '/git/matching-refs/tags/' in endpoint:
+            prefix = 'refs/tags/' + endpoint.split('/git/matching-refs/tags/')[1]
+            return json.dumps([dict(ref=tag) for tag in self.tags if tag.startswith(prefix)])
+        if '/commits/' in endpoint:
+            return json.dumps(dict(sha=self.tagged))
         raise AssertionError(arguments)
 
     def sign(self, version, build, metadata):
@@ -262,9 +269,43 @@ class Publication(unittest.TestCase):
         self.published = dict(tag_name='v1.0.2', draft=False, prerelease=False, immutable=True)
         self.publish('stable', 'v1.0.2')
         self.assertEqual(self.signed[0][:2], ('1.0.2', '6.0.2'))
+        create = next(command for command in self.commands if command[:3] == ('gh', 'release', 'create'))
+        self.assertEqual(create[create.index('--target') + 1], SHA)
+        self.assertNotIn('--verify-tag', create)
         edit = next(command for command in self.commands if command[:3] == ('gh', 'release', 'edit'))
         self.assertIn('--latest', edit)
         self.assertNotIn('--prerelease', edit)
+
+    def test_stable_releases_run_only_from_main(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        for ref in ['refs/tags/v1.0.2', 'refs/heads/feature', '']:
+            self.environment['GITHUB_REF'] = ref
+            with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, 'main'):
+                self.publish('stable', 'v1.0.2')
+        self.assertEqual(self.signed, [])
+
+    def test_a_tag_that_exists_without_its_release_stops_publication_before_signing(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.tags = ['refs/tags/v1.0.2']
+        with self.assertRaisesRegex(ValueError, 'v1.0.2 already exists'):
+            self.publish('stable', 'v1.0.2')
+        self.assertEqual(self.signed, [])
+        self.assertFalse(any(command[:3] == ('gh', 'release', 'create') for command in self.commands))
+
+    def test_a_longer_tag_with_the_same_prefix_does_not_stop_publication(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.tags = ['refs/tags/v1.0.20']
+        self.published = dict(tag_name='v1.0.2', draft=False, prerelease=False, immutable=True)
+        self.publish('stable', 'v1.0.2')
+        self.assertEqual(len(self.signed), 1)
+
+    def test_a_published_tag_must_point_at_the_source_commit(self):
+        self.project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 6;'
+        self.published = dict(tag_name='v1.0.2', draft=False, prerelease=False, immutable=True)
+        self.tagged = '0' * 40
+        with mock.patch.object(channels, 'publish_feed') as publication, self.assertRaisesRegex(RuntimeError, 'source commit'):
+            channels.publish('example/vault', 'stable', 'v1.0.2', self.project, self.command, self.output, self.sign, self.environment)
+        publication.assert_not_called()
 
     def test_stable_publication_cannot_roll_nightly_users_back_to_an_older_source(self):
         self.previous(manifest('1.1.0', '6.0.1', 'nightly', '1.1.0-nightly.20261007.41.abcdef0'))

@@ -70,7 +70,7 @@ Older clients reject `shared_keychain` authority. Keep Vault and CLI current aft
 
 ## GitHub configuration
 
-The release workflow requires these repository Actions secrets:
+The release and verification workflows read these secrets from the `release` environment:
 
 | Secret | Content |
 | --- | --- |
@@ -89,6 +89,10 @@ Publication uses `GITHUB_TOKEN` with **Contents: write** permission.
 The script passes the separate read credential only to the settings request.
 Other subprocesses do not receive that credential.
 
+Only `main` can use the `release` environment (**Settings → Environments → release → Deployment branches and tags**).
+A workflow on any other branch, a pull request or a tag therefore never sees the signing or Sparkle keys.
+Keep these secrets in the environment, not at the repository level, where every branch's workflows can read them.
+
 ### Configure the settings credential
 
 1. Open [fine-grained token creation](https://github.com/settings/personal-access-tokens/new) with the `tolgaergin` account.
@@ -98,7 +102,7 @@ Other subprocesses do not receive that credential.
 5. Leave other permissions disabled, except the automatic **Metadata: read** permission.
 6. Select an expiration that complies with the organization policy.
 7. Create the token and complete any required organization approval.
-8. Save the token as the repository Actions secret `IMMUTABLE_RELEASES_READ_TOKEN`.
+8. Save the token as the `release` environment secret `IMMUTABLE_RELEASES_READ_TOKEN`.
 9. Record the expiration and replace the secret before that date.
 
 The account that creates the token must have repository administration access.
@@ -122,7 +126,6 @@ It then uses the signing secrets to build and notarize test installers without p
 For private repository setup, select the workflow's **signing_only** input.
 This mode verifies signing without the publication preflight.
 It does not prove that production publication can succeed.
-The `release-check-*` tag path always includes the publication preflight.
 
 For a settings check without signing, use the preflight command:
 
@@ -133,14 +136,14 @@ python3 LPMVault/Scripts/ci-release.py --preflight-only
 This command requires `GITHUB_REPOSITORY`, `GH_TOKEN`, and `IMMUTABLE_RELEASES_READ_TOKEN` in the environment.
 It does not create a release or use the Apple signing secrets.
 
-Run it manually with a test version and build number. Before the workflow reaches `main`, push a `release-check-*` tag on the reviewed branch:
+Run it from `main` with a test version and build number:
 
 ```bash
-git tag release-check-1.0.0-build3
-git push origin release-check-1.0.0-build3
+gh workflow run verify-release.yml --ref main -f version=1.0.0 -f build=3
 ```
 
-This tag runs the full CI gates before signing. It does not start the production release workflow or create a GitHub release.
+It runs the full CI gates before signing. It does not start the production release workflow or create a GitHub release.
+It runs only from `main`, because only `main` can use the `release` environment. Check a signing change on a branch with a local build before it merges.
 
 Download the `vault-verified-installers` workflow artifact for local testing. GitHub retains it for seven days. It contains installers, checksums, the signed feed, and the release manifest. Signing credentials and diagnostic logs are excluded.
 
@@ -153,14 +156,19 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 3. Run `xcodegen generate --spec LPMVault/project.yml` from the repository root.
 4. Submit the change through a pull request. Include user-facing highlights and any upgrade instructions in its description.
 5. After the pull request passes CI and receives merge approval, merge it.
-6. Tag the merged commit with `vMAJOR.MINOR.PATCH`.
-7. Push that tag.
-8. Wait for the release workflow to publish all verified artifacts successfully.
-9. Edit the GitHub release description. Add reviewed highlights and upgrade instructions above the generated pull request list.
-10. Verify that the published description contains the guidance and retains the generated list.
+6. Run the **Signed release** workflow from `main` with the new version:
+   ```bash
+   gh workflow run release.yml --ref main -f version=MAJOR.MINOR.PATCH
+   ```
+7. Wait for the release workflow to publish all verified artifacts successfully.
+8. Edit the GitHub release description. Add reviewed highlights and upgrade instructions above the generated pull request list.
+9. Verify that the published description contains the guidance and retains the generated list.
 
-The tag starts the CI gates again. The release job requires a commit from `main`, a public repository, and immutable releases.
-After publication, the job verifies the tag, published state, and immutable protection through the release API.
+A run without a version publishes a nightly, as the schedule does.
+The run starts the CI gates again. The release job runs only from `main`, with a public repository and immutable releases.
+It refuses a version that differs from the project's, and a `vMAJOR.MINOR.PATCH` tag that already exists without its release.
+Publishing creates that tag at the `main` commit the job built.
+After publication, the job verifies that the tag points at that commit, and checks the published state and immutable protection through the release API.
 If this verification fails, inspect the published release before recovery.
 
 The job signs every Sparkle component, signs Vault, notarizes the app, staples its ticket, and verifies Gatekeeper acceptance. It repeats notarization for the DMG. It then generates and verifies the signed feed and archive signatures.
@@ -178,7 +186,7 @@ The workflow publishes these assets together:
 
 GitHub generates release notes from merged pull requests.
 The categories in [`.github/release.yml`](../.github/release.yml) use the primary labels described in [CONTRIBUTING.md](../CONTRIBUTING.md).
-Before tagging, verify that merged pull requests have the correct labels and that their titles describe the changes.
+Before releasing, verify that merged pull requests have the correct labels and that their titles describe the changes.
 Prepare migration requirements in the release preparation pull request before publication.
 Generated notes include pull request titles and links, but not their descriptions.
 Copy the reviewed guidance into the published release description through **Releases → Edit**.
