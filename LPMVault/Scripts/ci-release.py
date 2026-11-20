@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 import release_channels
 
+PROJECT = "LPMVault/LPMVault.xcodeproj/project.pbxproj"
+
 
 def subprocess_environment(environment=None):
     result = dict(os.environ if environment is None else environment)
@@ -49,10 +51,10 @@ def repository_preflight(repository):
     print(f"Publication preflight passed for {repository}")
 
 
-def release_version(tag):
-    if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
-        raise ValueError("Release tags must use vMAJOR.MINOR.PATCH")
-    return tag[1:]
+def stable_version(value):
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+        raise ValueError("--version takes MAJOR.MINOR.PATCH without a leading v")
+    return value
 
 
 def main(argv=None):
@@ -60,11 +62,23 @@ def main(argv=None):
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--verify-only', action='store_true')
     modes.add_argument('--preflight-only', action='store_true')
+    modes.add_argument('--check-version', metavar='VERSION',
+                       help='Check a stable version against the project without network access; empty means a nightly')
     parser.add_argument('--signing-only', action='store_true')
     parser.add_argument('--version')
     parser.add_argument('--build')
     parser.add_argument('--channel', choices=['stable', 'nightly'], default='stable')
     args = parser.parse_args(argv)
+    if args.check_version is not None:
+        if args.version or args.build or args.signing_only or args.channel != 'stable':
+            parser.error('--check-version takes no other options')
+        if args.check_version:
+            version = stable_version(args.check_version)
+            release_channels.check_stable_version(version, Path(PROJECT).read_text())
+            print(f"Stable release {version} matches the project's version")
+        else:
+            print("No version given: this run publishes a nightly")
+        return
     if args.channel == 'nightly' and (args.verify_only or args.preflight_only or args.signing_only):
         parser.error('Verification modes use the stable channel')
     if args.signing_only and not args.verify_only:
@@ -72,7 +86,7 @@ def main(argv=None):
     if args.verify_only:
         if not args.version or not args.build:
             parser.error('--verify-only requires --version and --build')
-        version = release_version('v' + args.version)
+        version = stable_version(args.version)
         if not re.fullmatch(r'[1-9][0-9]{0,3}(\.(0|[1-9][0-9]?)){0,2}', args.build):
             raise ValueError('Invalid verification build number')
         if not args.signing_only:
@@ -93,12 +107,12 @@ def main(argv=None):
     else:
         if not args.version:
             parser.error('A stable release needs --version MAJOR.MINOR.PATCH')
-        tag = 'v' + release_version('v' + args.version)
+        tag = 'v' + stable_version(args.version)
     repository = os.environ["GITHUB_REPOSITORY"]
     run("git", "fetch", "origin", "main")
     run("git", "merge-base", "--is-ancestor", "HEAD", "origin/main")
     repository_preflight(repository)
-    project = Path("LPMVault/LPMVault.xcodeproj/project.pbxproj").read_text()
+    project = Path(PROJECT).read_text()
     release_channels.publish(repository, args.channel, tag, project, run, output, sign_release, subprocess_environment())
 
 

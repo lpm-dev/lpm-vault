@@ -60,11 +60,11 @@ class ReleaseSecurity(unittest.TestCase):
         with self.assertRaises(ValueError):
             appcast.verify(root, manifest, 123)
 
-    def test_release_tag_validation(self):
-        self.assertEqual(release.release_version('v1.2.3'), '1.2.3')
-        for tag in ['main', 'v1', 'v1.2.3-beta', 'v01.2.3', 'v1.2.3;echo secret']:
-            with self.subTest(tag=tag), self.assertRaises(ValueError):
-                release.release_version(tag)
+    def test_stable_version_validation(self):
+        self.assertEqual(release.stable_version('1.2.3'), '1.2.3')
+        for value in ['main', '1', 'v1.2.3', '1.2.3-beta', '01.2.3', '1.2.3;echo secret', '']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                release.stable_version(value)
 
     def test_signing_requires_every_sparkle_component(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -297,6 +297,30 @@ class ReleaseSecurity(unittest.TestCase):
         command.assert_not_called()
         output.assert_not_called()
         publish.assert_not_called()
+
+    def test_the_version_check_compares_a_stable_version_with_the_project_offline(self):
+        project = 'MARKETING_VERSION = 1.0.2; CURRENT_PROJECT_VERSION = 7;'
+        with mock.patch.object(release, 'run') as command, \
+             mock.patch.object(release, 'output') as output, \
+             mock.patch.object(release.Path, 'read_text', return_value=project):
+            release.main(['--check-version', ''])
+            release.main(['--check-version', '1.0.2'])
+            for version in ['1.0.3', 'v1.0.2', '1.0', '1.0.2;echo unsafe']:
+                with self.subTest(version=version), self.assertRaises(ValueError):
+                    release.main(['--check-version', version])
+        command.assert_not_called()
+        output.assert_not_called()
+
+    def test_a_malformed_version_is_described_as_the_option_expects_it(self):
+        for arguments in [['--version', 'v1.0.2'], ['--check-version', 'v1.0.2']]:
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, 'MAJOR.MINOR.PATCH without a leading v'):
+                release.main(arguments)
+
+    def test_the_version_check_takes_no_other_options(self):
+        for arguments in [['--check-version', '1.0.2', '--version', '1.0.2'], ['--check-version', '1.0.2', '--verify-only'],
+                          ['--check-version', '1.0.2', '--channel', 'nightly']]:
+            with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
+                release.main(arguments)
 
     def test_subprocess_failure_does_not_expose_arguments(self):
         with self.assertRaises(RuntimeError) as result:

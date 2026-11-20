@@ -1054,12 +1054,25 @@ class SigningWorkflowTests(unittest.TestCase):
             workflow = path.read_text()
             for name in re.findall(r'^  ([\w-]+):$', workflow.split('\njobs:\n', 1)[-1], re.MULTILINE):
                 lines = job(workflow, name)
-                if any(re.search(r'secrets\.(?!GITHUB_TOKEN\b)', line) for line in lines):
+                if any(re.search(r'\bsecrets\b(?!\.GITHUB_TOKEN\b)', line) for line in lines):
                     holders[(path.name, name)] = next(
                         (line.split(':', 1)[1].strip() for line in lines if line.startswith('    environment:')), None)
         self.assertEqual(holders, {(path, name): 'release' for path, name in self.SIGNERS.items()})
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            with self.subTest(workflow=path.name):
+                self.assertNotRegex(path.read_text(), r'secrets:\s*inherit', 'a called workflow must not inherit every secret')
 
-    def test_signing_workflows_start_only_from_main_by_schedule_or_by_hand(self):
+    def test_only_the_signing_jobs_name_an_environment(self):
+        named = {}
+        for path in sorted(self.WORKFLOWS.glob('*.yml')):
+            workflow = path.read_text()
+            for name in re.findall(r'^  ([\w-]+):$', workflow.split('\njobs:\n', 1)[-1], re.MULTILINE):
+                environment = [line for line in job(workflow, name) if re.match(r'\s+environment:', line)]
+                if environment:
+                    named[(path.name, name)] = environment
+        self.assertEqual(named, {(path, name): ['    environment: release'] for path, name in self.SIGNERS.items()})
+
+    def test_signing_workflows_start_only_by_schedule_or_by_hand(self):
         self.assertEqual(events((self.WORKFLOWS / 'release.yml').read_text()), {'schedule', 'workflow_dispatch'})
         self.assertEqual(events((self.WORKFLOWS / 'verify-release.yml').read_text()), {'workflow_dispatch'})
         for path in self.SIGNERS:
@@ -1076,6 +1089,19 @@ class SigningWorkflowTests(unittest.TestCase):
                       '          else\n'
                       '            python3 LPMVault/Scripts/ci-release.py --channel nightly\n', release)
         self.assertNotIn('GITHUB_EVENT_NAME', release)
+
+    def test_a_stable_version_is_checked_before_the_macos_gates_run(self):
+        workflow = (self.WORKFLOWS / 'release.yml').read_text()
+        version = '\n'.join(job(workflow, 'version'))
+        self.assertIn('    runs-on: ubuntu-latest\n', version)
+        self.assertNotIn('environment:', version)
+        self.assertNotIn('secrets.', version)
+        self.assertIn('          RELEASE_VERSION: ${{ inputs.version }}\n', version)
+        self.assertIn('if [[ "$GITHUB_REF" != refs/heads/main ]]; then', version)
+        self.assertIn('python3 LPMVault/Scripts/ci-release.py --check-version "$RELEASE_VERSION"', version)
+        for gate in ['checks', 'ui']:
+            with self.subTest(gate=gate):
+                self.assertIn('    needs: [version]', job(workflow, gate))
 
 
 if __name__ == '__main__':

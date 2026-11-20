@@ -89,9 +89,19 @@ Publication uses `GITHUB_TOKEN` with **Contents: write** permission.
 The script passes the separate read credential only to the settings request.
 Other subprocesses do not receive that credential.
 
-Only `main` can use the `release` environment (**Settings → Environments → release → Deployment branches and tags**).
+Only `main` can use the `release` environment (**Settings → Environments → release → Deployment branches and tags**), and administrators can't bypass that rule.
 A workflow on any other branch, a pull request or a tag therefore never sees the signing or Sparkle keys.
 Keep these secrets in the environment, not at the repository level, where every branch's workflows can read them.
+A repository secret with the same name stays readable to every branch even after the environment holds its own copy, because the environment's copy only takes precedence in its own jobs.
+After you set or replace a secret in the environment, check **Settings → Secrets and variables → Actions** and delete any repository copy.
+
+To set up the environment:
+
+1. Create the `release` environment.
+2. Under **Deployment branches and tags**, choose **Selected branches and tags** and add one **Branch** rule, `main`. Add no tag rules. **Protected branches only** would also admit any other protected branch.
+3. Turn off the option that lets administrators bypass the environment's rules.
+4. Add every secret in the table above.
+5. Delete the repository copies of those secrets.
 
 ### Configure the settings credential
 
@@ -136,7 +146,7 @@ python3 LPMVault/Scripts/ci-release.py --preflight-only
 This command requires `GITHUB_REPOSITORY`, `GH_TOKEN`, and `IMMUTABLE_RELEASES_READ_TOKEN` in the environment.
 It does not create a release or use the Apple signing secrets.
 
-Run it from `main` with a test version and build number:
+Run **Verify signed release** from `main` with a test version and build number:
 
 ```bash
 gh workflow run verify-release.yml --ref main -f version=1.0.0 -f build=3
@@ -165,6 +175,8 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 9. Verify that the published description contains the guidance and retains the generated list.
 
 A run without a version publishes a nightly, as the schedule does.
+The run builds `main` as it is when it starts. Merge nothing else between the version change and the run, and check the run's commit.
+To recover a failed stable release, rerun that run instead of starting a new one.
 The run starts the CI gates again. The release job runs only from `main`, with a public repository and immutable releases.
 It refuses a version that differs from the project's, and a `vMAJOR.MINOR.PATCH` tag that already exists without its release.
 Publishing creates that tag at the `main` commit the job built.
@@ -193,6 +205,10 @@ Copy the reviewed guidance into the published release description through **Rele
 Immutable releases protect published assets. Their descriptions remain editable.
 
 If publication stops with a draft release, inspect its assets before recovery. The workflow refuses to replace an existing release. Published immutable assets cannot be replaced.
+
+Never push a `v*` tag by hand. After signing, the workflow creates the tag at the commit it built and then creates the release on that tag. A tag of that version at another commit stops the release, before signing or, if it appears during signing, before any draft exists, until you delete it. A tag at the built commit, left by an earlier attempt, is reused. Every release that enters the update feed must have its tag on the commit it was built from.
+
+Release runs wait for one another, and GitHub keeps only one waiting run. A later run, such as the scheduled nightly, replaces a run that is still waiting. If your stable run shows as cancelled before it started, run it again.
 
 ## Local verification
 

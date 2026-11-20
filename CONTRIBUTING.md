@@ -136,7 +136,7 @@ Use `skip-changelog` only for changes that do not belong in release notes.
 Maintainers apply labels. Contributors can propose a label in the pull request.
 The [release configuration](.github/release.yml) groups merged pull requests by label.
 
-Prepare short user-facing highlights and any upgrade instructions before you tag a release.
+Prepare short user-facing highlights and any upgrade instructions before you run the release workflow.
 Generated notes list pull requests. They do not replace migration guidance.
 After publication, add reviewed highlights and upgrade instructions to the release description.
 Keep the generated pull request list below that guidance.

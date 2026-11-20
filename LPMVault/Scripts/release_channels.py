@@ -187,6 +187,50 @@ def publish_feed(repository, entries, tools, temporary, run, output, environment
         run("gh", "api", "--method", "POST", f"repos/{repository}/git/refs", "-f", "ref=refs/heads/updates", "-f", f"sha={commit['sha']}", stdout=subprocess.DEVNULL)
 
 
+def project_version(project):
+    """The one marketing version and build number the Xcode project declares."""
+    versions = set(re.findall(r"MARKETING_VERSION = ([0-9.]+);", project))
+    builds = set(re.findall(r"CURRENT_PROJECT_VERSION = ([0-9.]+);", project))
+    if len(versions) != 1 or len(builds) != 1:
+        raise ValueError("Project must declare one version and build")
+    return versions.pop(), builds.pop()
+
+
+def check_stable_version(release_version, project):
+    if version_tuple(release_version) != version_tuple(project_version(project)[0]):
+        raise ValueError("Stable tag must match the project's version")
+
+
+def tag_commit(repository, tag, output):
+    """The commit `tag` names, following annotated tags, or None when the tag doesn't exist."""
+    refs = json.loads(output("gh", "api", f"repos/{repository}/git/matching-refs/tags/{tag}"))
+    target = next((ref["object"] for ref in refs if ref.get("ref") == f"refs/tags/{tag}"), None)
+    for _ in range(4):
+        if target is None:
+            return None
+        if target.get("type") == "commit":
+            return target.get("sha")
+        if target.get("type") != "tag":
+            raise ValueError(f"Tag {tag} does not name a commit")
+        target = json.loads(output("gh", "api", f"repos/{repository}/git/tags/{target['sha']}"))["object"]
+    raise ValueError(f"Tag {tag} nests too many annotated tags")
+
+
+def claim_tag(repository, tag, commit, output):
+    """Create `tag` at `commit`, or accept it where an earlier attempt already created it."""
+    current = tag_commit(repository, tag, output)
+    if current is None:
+        try:
+            output("gh", "api", "-X", "POST", f"repos/{repository}/git/refs", "-f", f"ref=refs/tags/{tag}", "-f", f"sha={commit}")
+        except RuntimeError:
+            pass
+        current = tag_commit(repository, tag, output)
+    if current is None:
+        raise RuntimeError(f"Could not create tag {tag}")
+    if current != commit:
+        raise ValueError(f"Tag {tag} appeared at another commit while the release was being signed; inspect it before retrying")
+
+
 def publish(repository, channel, tag, project, run, output, sign, environment):
     temporary = Path(environment["RUNNER_TEMP"]) / "vault-release-state"
     temporary.mkdir(exist_ok=True)
@@ -214,12 +258,12 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
             run("gh", "release", "download", release_tag, "--repo", repository, "--pattern", "release-manifest.json", "--pattern", "appcast.xml", "--dir", str(directory), "--clobber")
             manifest = json.loads((directory / "release-manifest.json").read_text())
             validate_manifest(manifest, release_tag, release["prerelease"])
+            # Manifests from before source commits were recorded can't be checked against their tag.
+            source = manifest.get("sourceCommit")
+            if source and tag_commit(repository, release_tag, output) != source:
+                raise ValueError(f"Tag {release_tag} does not point at the commit its release was built from")
             latest[release_channel] = (release, manifest, directory)
-    versions = set(re.findall(r"MARKETING_VERSION = ([0-9.]+);", project))
-    builds = set(re.findall(r"CURRENT_PROJECT_VERSION = ([0-9.]+);", project))
-    if len(versions) != 1 or len(builds) != 1:
-        raise ValueError("Project must declare one version and build")
-    version, floor = versions.pop(), builds.pop()
+    version, floor = project_version(project)
     comparisons = {}
     if channel == "nightly":
         if environment.get("GITHUB_REF") != "refs/heads/main":
@@ -240,16 +284,14 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
         if environment.get("GITHUB_REF") != "refs/heads/main":
             raise ValueError("Stable releases must run from main")
         release_version = tag[1:]
-        if version_tuple(release_version) != version_tuple(version):
-            raise ValueError("Stable tag must match the project's version")
+        check_stable_version(release_version, project)
     existing = next((release for release in releases if release["tag_name"] == tag), None)
     if existing and existing["draft"]:
         raise ValueError("A release draft already exists; inspect and remove it before retrying")
     if not existing:
-        # Publishing creates the tag at the source commit, but an existing tag would be reused wherever it points.
-        refs = json.loads(output("gh", "api", f"repos/{repository}/git/matching-refs/tags/{tag}"))
-        if any(ref.get("ref") == f"refs/tags/{tag}" for ref in refs):
-            raise ValueError(f"Tag {tag} already exists without its release; remove it before publishing")
+        # A release takes its tag wherever the tag points, so only a tag at the source commit can be used.
+        if tag_commit(repository, tag, output) not in (None, commit):
+            raise ValueError(f"Tag {tag} already exists at another commit without its release; remove it before publishing")
         for previous_channel, (release, _, _) in latest.items():
             previous = release["tag_name"]
             status = comparisons.get(previous)
@@ -271,7 +313,8 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
             raise ValueError("Signed release metadata differs from publication plan")
         names = [f"LPM-Vault-{release_version}.dmg", f"LPM-Vault-{release_version}-macos-universal.zip",
                  "LPM-Vault.dmg", "appcast.xml", "checksums.txt", "release-manifest.json"]
-        run("gh", "release", "create", tag, "--repo", repository, "--target", commit,
+        claim_tag(repository, tag, commit, output)
+        run("gh", "release", "create", tag, "--repo", repository, "--verify-tag",
             "--draft", "--title", f"LPM Vault {release_version}", "--generate-notes",
             *(str(Path("release-output") / name) for name in names))
         run("gh", "release", "edit", tag, "--repo", repository, "--draft=false",
@@ -279,11 +322,13 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
         published = json.loads(output("gh", "api", f"repos/{repository}/releases/tags/{tag}"))
         if published.get("tag_name") != tag or published.get("draft") is not False or published.get("immutable") is not True or published.get("prerelease") is not (channel == "nightly"):
             raise RuntimeError("Release publication did not confirm immutable protection and channel")
-        if json.loads(output("gh", "api", f"repos/{repository}/commits/{tag}"))["sha"] != commit:
-            raise RuntimeError(f"Published tag {tag} does not point at the source commit")
+        if tag_commit(repository, tag, output) != commit:
+            raise RuntimeError(f"Published tag {tag} does not point at the commit its release was built from")
         latest[channel] = (published, manifest, directory)
     elif channel not in latest or latest[channel][0]["tag_name"] != tag:
         raise ValueError("Refusing to republish an obsolete release")
+    elif channel == "stable":
+        print(f"Stable {tag} is already published; repairing feed publication if needed")
     tools = Path(environment["RUNNER_TEMP"]) / "vault-signing/sparkle"
     if not tools.exists():
         tools = temporary / "sparkle"

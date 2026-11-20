@@ -14,7 +14,25 @@ concurrency:
   group: vault-production-release
   cancel-in-progress: false
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check the version to release
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Releases run only from main."
+            exit 1
+          fi
+          python3 LPMVault/Scripts/ci-release.py --check-version "$RELEASE_VERSION"
   checks:
+    needs: [version]
     # The CI workflow's plan job asks for it, and a called workflow can't have
     # more than its caller grants.
     permissions:
@@ -22,6 +40,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/ci.yml
   ui:
+    needs: [version]
     uses: ./.github/workflows/ui.yml
   release:
     needs: [checks, ui]
