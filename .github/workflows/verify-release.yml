@@ -21,7 +21,19 @@ concurrency:
   group: vault-release-verification
   cancel-in-progress: false
 jobs:
+  ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Refuse any ref but main
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Verification runs only from main, the only ref that can use the release environment."
+            exit 1
+          fi
   checks:
+    needs: [ref]
     # The CI workflow's plan job asks for it, and a called workflow can't have
     # more than its caller grants.
     permissions:
@@ -29,6 +41,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/ci.yml
   ui:
+    needs: [ref]
     uses: ./.github/workflows/ui.yml
   verify:
     needs: [checks, ui]

@@ -1107,6 +1107,18 @@ class SigningWorkflowTests(unittest.TestCase):
         for gate in ['checks', 'ui']:
             with self.subTest(gate=gate):
                 self.assertIn('    needs: [version]', job(workflow, gate))
+        self.assertIn('    timeout-minutes: 5', job(workflow, 'version'))
+
+    def test_verification_refuses_another_ref_before_the_macos_gates_run(self):
+        workflow = (self.WORKFLOWS / 'verify-release.yml').read_text()
+        ref = '\n'.join(job(workflow, 'ref'))
+        self.assertIn('    runs-on: ubuntu-latest\n', ref)
+        self.assertIn('    timeout-minutes: 5', ref)
+        self.assertNotIn('environment:', ref)
+        self.assertIn('if [[ "$GITHUB_REF" != refs/heads/main ]]; then', ref)
+        for gate in ['checks', 'ui']:
+            with self.subTest(gate=gate):
+                self.assertIn('    needs: [ref]', job(workflow, gate))
 
 
 if __name__ == '__main__':
