@@ -4471,20 +4471,16 @@ final class VaultStore {
     }
   }
 
-  /// Why a new project can't have `folder`, as the New Project sheet says
-  /// it: its lpm.json links another project or can't be read, it's gone,
-  /// or another project here uses it. nil when it can.
+  /// Why a new project can't have `folder`: another project here uses it,
+  /// or its lpm.json links another project, whose rules it holds. nil when
+  /// it can. A folder that's gone or whose lpm.json can't be read still
+  /// gets its project, whose link failing says how to finish it later.
   func folderRefusal(_ folder: String, for vaultId: String) async -> String? {
     let status = await BlockingWork.run { ProjectCLILink.status(vaultId: vaultId, folder: folder) }
     let choice = ProjectFolderChoice(path: folder, chosenInside: nil, status: status)
     if let user = await folderUser(choice, for: vaultId) { return user.explanation }
-    let name = (folder as NSString).lastPathComponent.escapingDirectionControls
-    switch status {
-    case .linkedToOtherVault: return "\(name)’s lpm.json links another project. Choose another folder."
-    case .unreadable: return "\(name)’s lpm.json can’t be read safely. Fix it, or choose another folder."
-    case .noFolder: return "\(name) can’t be found any more. Choose it again."
-    case .linked, .notLinked: return nil
-    }
+    guard case .linkedToOtherVault = status else { return nil }
+    return "\((folder as NSString).lastPathComponent.escapingDirectionControls)’s lpm.json links another project. Choose another folder."
   }
 
   /// `folderUser(_:for:)` for a folder given by its path, whose lpm.json is read for it.

@@ -162,6 +162,23 @@ extension SheetInteractionTests {
 			#expect(fixture.store.projectFolder(for: project) == own.path)
 		}
 
+		@Test("Change Folder… on a folder whose lpm.json links another project leaves the folder as it was, and says Connect CLI replaces the link")
+		func changeFolderToAnotherVaultsFolder() async throws {
+			let own = try ProjectIconFixture.folder(), linked = try ProjectIconFixture.folder()
+			defer { for folder in [own, linked] { try? FileManager.default.removeItem(at: folder) } }
+			try Data(#"{"vault":"someone-else"}"#.utf8).write(to: linked.appending(path: "lpm.json"))
+			let fixture = try makeFixture(path: own.path)
+			defer { fixture.tearDown() }
+			let project = try #require(fixture.store.projects.first)
+			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, folderPicker: { linked }, onBack: {}, onDelete: {}),
+				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("Change Folder…")
+			#expect(try await host.waitForText("lpm.json links another project. Replace its vault ID from Connect CLI to use it here."))
+			#expect(fixture.store.projectFolder(for: project) == own.path)
+		}
+
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {
 			let host = SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: fixture.preferences)),

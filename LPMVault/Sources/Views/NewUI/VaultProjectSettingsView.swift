@@ -29,7 +29,13 @@ struct VaultProjectSettingsView: View {
 	/// A folder being chosen, which leaving the page stops before it's taken.
 	@State private var chooseTask: Task<Void, Never>?
 	/// Why the folder last chosen wasn't taken.
-	@State private var folderRefusal: ProjectFolderRefusal?
+	@State private var folderRefusal: FolderRefusal?
+
+	private enum FolderRefusal {
+		case refused(ProjectFolderRefusal)
+		/// Its lpm.json links another vault, which only Connect CLI replaces.
+		case linksAnotherVault(folder: String)
+	}
 	/// Another project that uses this one's folder, whose lpm.json links none.
 	@State private var sharedFolder: ProjectFolderUser?
 
@@ -259,8 +265,10 @@ struct VaultProjectSettingsView: View {
 						.foregroundStyle(VaultPalette.redText)
 				}
 				switch folderRefusal {
-				case .usedBy(let user)?: VaultInlineWarning(text: user.explanation)
-				case .unusable(let error)?: Text(error.localizedDescription).foregroundStyle(VaultPalette.redText)
+				case .refused(.usedBy(let user))?: VaultInlineWarning(text: user.explanation)
+				case .refused(.unusable(let error))?: Text(error.localizedDescription).foregroundStyle(VaultPalette.redText)
+				case .linksAnotherVault(let chosen)?:
+					VaultInlineWarning(text: "\((chosen as NSString).lastPathComponent.escapingDirectionControls)’s lpm.json links another project. Replace its vault ID from Connect CLI to use it here.")
 				case nil: if let sharedFolder { VaultInlineWarning(text: sharedFolder.explanation) }
 				}
 			}
@@ -423,7 +431,12 @@ struct VaultProjectSettingsView: View {
 			let result = await store.chooseProjectFolder(at: url, for: projectID)
 			isChoosingFolder = false
 			guard !Task.isCancelled else { return }
-			if case .failure(let refusal) = result { folderRefusal = refusal } else { folderRefusal = nil }
+			switch result {
+			case .success(let choice):
+				if case .linkedToOtherVault = choice.status { folderRefusal = .linksAnotherVault(folder: choice.path) } else { folderRefusal = nil }
+			case .failure(let refusal):
+				folderRefusal = .refused(refusal)
+			}
 		}
 	}
 

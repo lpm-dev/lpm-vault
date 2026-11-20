@@ -609,13 +609,9 @@ struct ConnectCLISheet: View {
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
 			configuration = config
-			if resolved == .notLinked {
-				let user = await store.folderUser(ProjectFolderChoice(path: folder, chosenInside: nil, status: resolved), for: vaultId)
-				guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
-				sharedFolder = user
-			} else {
-				sharedFolder = nil
-			}
+			let user = await store.folderUser(ProjectFolderChoice(path: folder, chosenInside: nil, status: resolved), for: vaultId)
+			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
+			sharedFolder = user
 			// lpm.json shows at once; the Keychain check waits for the lock the
 			// CLI holds while it reads values.
 			guard resolved == .linked else { return }
@@ -655,11 +651,10 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	/// Takes the project the CLI would act on for the chosen folder: the nearest
-	/// folder at or above it with a package.json or lpm.json. A folder whose
-	/// .lpm is the LPM home is refused.
 	/// Takes the project the CLI would act on for the chosen folder, as the
-	/// store chooses it: a folder another project here uses stays its.
+	/// store chooses it: the nearest folder at or above it with a package.json
+	/// or lpm.json. A folder whose .lpm is the LPM home is refused, and one
+	/// another project here uses stays its.
 	private func chooseFolder() {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
