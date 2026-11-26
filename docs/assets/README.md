@@ -9,9 +9,10 @@ The values use dummy strings and reserved `.test` domains.
 `social-preview.jpg` is its 1280 × 640 JPEG render.
 The fonts and logo come from this repository.
 
-The website uses [og-image.png](../../web/public/og-image.png) for Open Graph and Twitter/X cards.
-This supplied marketing image is a 1200 × 630 PNG.
+The website uses [og-image.jpg](../../web/public/og-image.jpg) for Open Graph and Twitter/X cards.
+This supplied marketing image is a 2400 × 1260 JPEG.
 Its dimensions and image type must match the metadata in `web/public/index.html`.
+The image build copies it to `/assets/og-image.<sha256>.jpg` and points the metadata there, so a new image gets a new URL.
 
 To render the preview, serve the repository root with a local HTTP server.
 Open `docs/assets/social-preview.html` with a 1280 × 640 browser viewport.
