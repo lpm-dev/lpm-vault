@@ -16,7 +16,7 @@ ASSET_TYPES = {
     '/lpm-vault.svg': 'image/svg+xml',
     '/lpm-vault-32.png': 'image/png',
     '/lpm-vault-512.png': 'image/png',
-    '/og-image.png': 'image/png',
+    '/og-image.jpg': 'image/jpeg',
     '/apple-touch-icon.png': 'image/png',
     '/fonts/geist-5.3.0-latin.woff2': 'font/woff2',
     '/fonts/jetbrains-mono-5.3.0-latin.woff2': 'font/woff2',
@@ -29,6 +29,20 @@ ASSET_TYPES = {
     '/vendor/LICENSE-PostHog.txt': 'text/plain',
     '/sitemap.xml': 'xml',
 }
+
+
+def jpeg_size(image):
+    """The (width, height) in a JPEG's start-of-frame segment."""
+    if image[:3] != b'\xff\xd8\xff':
+        raise ValueError('not a JPEG')
+    offset = 2
+    while offset + 9 < len(image) and image[offset] == 0xFF:
+        marker = image[offset + 1]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            height, width = struct.unpack('>HH', image[offset + 5:offset + 9])
+            return width, height
+        offset += 2 + struct.unpack('>H', image[offset + 2:offset + 4])[0]
+    raise ValueError('no start-of-frame segment')
 
 
 class PageInventory(HTMLParser):
@@ -131,10 +145,12 @@ class Routes(unittest.TestCase):
         _, _, body = self.request('/')
         page = PageInventory()
         page.feed(body.decode())
-        image_url = 'https://vault.lpm.dev/og-image.png'
+        digest = hashlib.sha256((ROOT / 'web/public/og-image.jpg').read_bytes()).hexdigest()
+        path = f'/assets/og-image.{digest}.jpg'
+        image_url = f'https://vault.lpm.dev{path}'
         for key, value in {
             'og:image': image_url,
-            'og:image:type': 'image/png',
+            'og:image:type': 'image/jpeg',
             'twitter:card': 'summary_large_image',
             'twitter:image': image_url,
         }.items():
@@ -144,15 +160,14 @@ class Routes(unittest.TestCase):
         self.assertTrue(page.metadata['og:image:alt'][0].strip())
         self.assertEqual(page.metadata.get('twitter:image:alt'), page.metadata['og:image:alt'])
 
-        status, headers, image = self.request('/og-image.png')
+        status, headers, image = self.request(path)
         self.assertEqual(status, 200)
-        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['Content-Type'], 'image/jpeg')
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
-        self.assertEqual(image[:8], b'\x89PNG\r\n\x1a\n')
-        self.assertEqual(image[12:16], b'IHDR')
-        width, height = struct.unpack('>II', image[16:24])
-        self.assertGreaterEqual(width, 1200)
-        self.assertGreaterEqual(height, 630)
+        self.assertEqual(headers['Cache-Control'], 'public, max-age=31536000, immutable')
+        self.assertEqual(hashlib.sha256(image).hexdigest(), digest)
+        width, height = jpeg_size(image)
+        self.assertEqual((width, height), (2400, 1260))
         self.assertEqual(page.metadata.get('og:image:width'), [str(width)])
         self.assertEqual(page.metadata.get('og:image:height'), [str(height)])
 
